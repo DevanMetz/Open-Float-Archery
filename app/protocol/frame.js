@@ -41,6 +41,42 @@ export function parseBinaryFrame(bytes, offset = 0) {
   };
 }
 
+// Decode one 20-byte binary shot-event frame (type=2). Returns a Shot or null.
+export function parseBinaryShotFrame(bytes, offset = 0) {
+  if (bytes.length - offset < BINARY_FRAME_LEN) return null;
+  if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
+
+  const view = new DataView(
+    bytes.buffer,
+    bytes.byteOffset + offset,
+    BINARY_FRAME_LEN,
+  );
+  if (view.getUint8(3) !== 2) return null;
+
+  return {
+    shotCount: view.getUint16(4, true),
+    shotId: view.getUint16(6, true),
+    axMg: view.getInt16(8, true),
+    ayMg: view.getInt16(10, true),
+    azMg: view.getInt16(12, true),
+    thresholdG: view.getUint16(14, true) / 100,
+  };
+}
+
+// Decode any binary frame, dispatching on the type byte.
+// Returns { kind: "sample", sample } | { kind: "shot", shot } | null.
+export function decodeBinaryFrame(bytes, offset = 0) {
+  if (bytes.length - offset < BINARY_FRAME_LEN) return null;
+  if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
+
+  if (bytes[offset + 3] === 2) {
+    const shot = parseBinaryShotFrame(bytes, offset);
+    return shot && { kind: "shot", shot };
+  }
+  const sample = parseBinaryFrame(bytes, offset);
+  return sample && { kind: "sample", sample };
+}
+
 // Decode an OFRAW serial line. Returns a Sample or null.
 export function parseOfrawLine(line) {
   const parts = line.split(",");

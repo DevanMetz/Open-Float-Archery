@@ -16,9 +16,15 @@
           <p class="subtitle">Live dashboard for the bow-mounted nRF54L15 sensor module</p>
         </div>
       </div>
-      <div id="statusBadge" class="status">
-        <span class="dot"></span>
-        <span id="statusText">Disconnected</span>
+      <div class="header-status-group">
+        <div id="syncBadge" class="status sync-local clickable" title="Configure Cloud Sync">
+          <span class="dot"></span>
+          <span id="syncText">Local-Only</span>
+        </div>
+        <div id="statusBadge" class="status">
+          <span class="dot"></span>
+          <span id="statusText">Disconnected</span>
+        </div>
       </div>
     </header>
 
@@ -27,28 +33,25 @@
         <div class="field">
           <label for="transportSelect">Transport</label>
           <select id="transportSelect">
-            <option value="serial" selected>USB / Web Serial</option>
-            <option value="ble">Bluetooth (BLE)</option>
-          </select>
-        </div>
-
-        <div class="field" id="baudField">
-          <label for="baudSelect">Serial Baud</label>
-          <select id="baudSelect">
-            <option value="115200" selected>115200</option>
-            <option value="1000000">1000000</option>
+            <option value="ble" selected>Bluetooth (BLE)</option>
           </select>
         </div>
 
         <button id="connectBtn" class="primary">Connect Live Sensor</button>
         <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
         <button id="demoBtn">Run Demo Stream</button>
+        <button id="saveManualBtn" disabled style="background: var(--cyan); border-color: var(--cyan); color: #071014; margin-top: 6px;">Save 30s Capture</button>
+
+        <div class="field">
+          <label for="thresholdSlider">Shot Threshold &mdash; <span id="thresholdValue">12.0</span> g</label>
+          <input type="range" id="thresholdSlider" min="2" max="30" step="0.5" value="12">
+          <p class="note">On-device detection threshold, sent to the firmware over BLE. Requires a Bluetooth connection.</p>
+        </div>
 
         <p class="note">
-          Serial decodes <strong>OFRAW</strong> text lines; BLE decodes the
-          20-byte <strong>OF</strong> live frame (proto, type, seq, dt_us,
-          accel mg, gyro dps). Web Serial / Web Bluetooth need Chrome or Edge
-          over https or localhost.
+          BLE decodes the 20-byte <strong>OF</strong> live frame (proto, type, seq, dt_us,
+          accel mg, gyro dps). Web Bluetooth needs Chrome or Edge
+          over https or localhost. The "Run Demo Stream" button triggers synthetic sensor data.
         </p>
 
         <div class="panel">
@@ -92,8 +95,15 @@
 
         <div class="panel chart-panel">
           <div class="panel-head">
-            <h2>Live Motion Trace</h2>
+            <h2 id="chartTitle">Live Motion Trace</h2>
             <span class="note">green ax, cyan ay, amber az</span>
+          </div>
+          <div id="reviewBanner" class="review-overlay hidden">
+            <div class="review-details">
+              <strong>Trace Review Mode</strong>
+              <span id="reviewInfo">--</span>
+            </div>
+            <button id="exitReviewBtn" class="primary" style="min-height: 30px; height: 30px; font-size: 11px; font-weight: 700; padding: 0 12px; border-radius: 6px;">Exit Review</button>
           </div>
           <canvas id="traceCanvas"></canvas>
         </div>
@@ -121,9 +131,49 @@
           </div>
         </div>
 
-        <div class="panel log" id="eventLog"></div>
+        <div class="panel tabs-panel">
+          <div class="tabs-header">
+            <button id="showLogTabBtn" class="tab-btn active">Live Terminal Log</button>
+            <button id="showHistoryTabBtn" class="tab-btn">Saved Shots History</button>
+          </div>
+          <div id="eventLog" class="tab-content log"></div>
+          <div id="shotHistoryTab" class="tab-content hidden">
+            <div class="history-list-wrapper">
+              <div id="historyList" class="history-list">
+                <p class="note" style="padding: 24px; text-align: center;">No saved shots yet.</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
+  </div>
+
+  <!-- Cloud Settings Modal -->
+  <div id="cloudModal" class="modal-overlay hidden">
+    <div class="modal-content panel">
+      <div class="modal-header">
+        <h3>Cloud Sync Settings</h3>
+        <button id="closeCloudModalBtn" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="note" style="margin-bottom: 14px;">
+          Connect to your Supabase project to back up your bow profiles, sessions, shots, and telemetry traces.
+        </p>
+        <div class="field" style="margin-bottom: 12px;">
+          <label for="sbUrlInput">Supabase URL</label>
+          <input type="text" id="sbUrlInput" placeholder="https://your-project.supabase.co">
+        </div>
+        <div class="field" style="margin-bottom: 16px;">
+          <label for="sbKeyInput">Supabase Anon Key</label>
+          <input type="password" id="sbKeyInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
+        </div>
+        <div class="modal-actions">
+          <button id="saveCloudSettingsBtn" class="primary">Connect & Sync</button>
+          <button id="clearCloudSettingsBtn" class="danger">Disconnect Cloud</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="app/main.js"></script>

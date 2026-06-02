@@ -15,6 +15,19 @@ export function mountDashboard({ store, telemetry, el }) {
     el.statusText.textContent = s.statusText;
     el.connectBtn.disabled = s.connected;
     el.disconnectBtn.disabled = !s.connected;
+    el.saveManualBtn.disabled = !s.connected;
+
+    // Toggle Review Mode layout components reactively
+    if (el.reviewBanner && el.reviewInfo && el.chartTitle) {
+      if (s.reviewMode) {
+        el.reviewBanner.classList.remove("hidden");
+        el.chartTitle.textContent = "Trace Review Mode";
+        el.reviewInfo.textContent = s.reviewInfo || "";
+      } else {
+        el.reviewBanner.classList.add("hidden");
+        el.chartTitle.textContent = "Live Motion Trace";
+      }
+    }
 
     el.hzValue.textContent = String(s.hz || 0);
     el.lossValue.textContent = String(s.lost || 0);
@@ -64,7 +77,9 @@ export function mountDashboard({ store, telemetry, el }) {
       ctx.stroke();
     }
 
-    const data = telemetry.getTrace();
+    const state = store.get();
+    const data = state.reviewMode ? (state.reviewTrace || []) : telemetry.getTrace();
+
     drawSeries(ctx, data, "ax", cssVar("--green"), w, h);
     drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h);
     drawSeries(ctx, data, "az", cssVar("--amber"), w, h);
@@ -83,8 +98,9 @@ function drawSeries(ctx, data, key, color, w, h) {
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.beginPath();
+  const maxIdx = data.length - 1;
   for (let i = 0; i < data.length; i += 1) {
-    const x = (i / (MAX_TRACE_POINTS - 1)) * w;
+    const x = (i / maxIdx) * w;
     const clamped = Math.max(-2, Math.min(2, data[i][key]));
     const y = h / 2 - (clamped / 4) * h;
     if (i === 0) ctx.moveTo(x, y);

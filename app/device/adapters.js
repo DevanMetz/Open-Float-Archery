@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { parseBinaryFrame, TextLineParser } from "../protocol/frame.js";
+import { decodeBinaryFrame, TextLineParser } from "../protocol/frame.js";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
@@ -32,6 +32,13 @@ class BaseAdapter {
 
   emitSample(sample) {
     this.bus.emit("sample", { ...sample, sequenceStep: this.sequenceStep });
+  }
+
+  // Transports that support a control channel override this. Default is a
+  // no-op so the UI can call it unconditionally.
+  async sendControl(command) {
+    this.log(`Control channel not available on ${this.name}.`);
+    return false;
   }
 }
 
@@ -206,7 +213,7 @@ export class BleAdapter extends BaseAdapter {
     this.live.addEventListener("characteristicvaluechanged", (e) => this._onValue(e));
     await this.live.startNotifications();
     this.log("BLE notifications subscribed.");
-    await this._sendStart();
+    await this.sendControl("start");
 
     this.connected = true;
     this.status("live", `BLE ${this.device.name || ""}`.trim());
@@ -217,32 +224,39 @@ export class BleAdapter extends BaseAdapter {
     this.watchdog = setTimeout(() => {
       if (this.connected && this.sampleCount === 0) {
         this.log("No BLE frames after 2s — re-sending start.");
-        this._sendStart();
+        this.sendControl("start");
       }
     }, 2000);
   }
 
-  async _sendStart() {
+  async sendControl(command) {
     if (!this.control) {
-      this.log("No control characteristic; relying on notify subscription alone.");
-      return;
+      this.log("No control characteristic available.");
+      return false;
     }
     try {
-      await this.control.writeValue(new TextEncoder().encode("start"));
-      this.log("Sent BLE control: start.");
+      await this.control.writeValue(new TextEncoder().encode(command));
+      this.log(`Sent BLE control: ${command}.`);
+      return true;
     } catch (error) {
-      this.log(`BLE start write failed: ${error.message}`);
+      this.log(`BLE control write failed: ${error.message}`);
+      return false;
     }
   }
 
   _onValue(event) {
     const dv = event.target.value;
     const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
-    const sample = parseBinaryFrame(bytes, 0);
-    if (sample) {
+    const decoded = decodeBinaryFrame(bytes, 0);
+
+    if (decoded && decoded.kind === "sample") {
       if (this.sampleCount === 0) this.log("BLE frames flowing.");
       this.sampleCount += 1;
-      this.emitSample(sample);
+      this.emitSample(decoded.sample);
+      return;
+    }
+    if (decoded && decoded.kind === "shot") {
+      this.bus.emit("shot", decoded.shot);
       return;
     }
     const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
