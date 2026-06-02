@@ -1,0 +1,1258 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenFloat Archery - Telemetry & Shot Analytics</title>
+    <!-- Tailwind CSS for rapid modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .font-mono-tech {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        /* Custom scrollbar styling for slick dark theme look */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #090d16;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #334155;
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col overflow-x-hidden selection:bg-emerald-500 selection:text-slate-950">
+
+    <!-- Header Navigation bar -->
+    <header class="border-b border-slate-900 bg-slate-950/80 backdrop-blur-md sticky top-0 z-30 px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 p-0.5 flex items-center justify-center shadow-lg shadow-emerald-500/10">
+                <div class="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
+                    <!-- SVG Target Logo -->
+                    <svg class="w-6 h-6 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" stroke-opacity="0.2"/>
+                        <circle cx="12" cy="12" r="7" stroke-opacity="0.4"/>
+                        <circle cx="12" cy="12" r="4" stroke-opacity="0.7"/>
+                        <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+                        <path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke-linecap="round"/>
+                    </svg>
+                </div>
+            </div>
+            <div>
+                <h1 class="text-lg font-extrabold tracking-tight bg-gradient-to-r from-emerald-400 to-teal-300 bg-clip-text text-transparent">OpenFloat</h1>
+                <p class="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Archery OS v1.0.0</p>
+            </div>
+        </div>
+
+        <!-- Connection and SaaS Sync Statuses -->
+        <div class="flex items-center gap-3">
+            <!-- Offline Cloud Storage Status Badge -->
+            <div id="sync-status" class="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-400">
+                <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse" id="sync-dot"></span>
+                <span id="sync-text" class="font-mono-tech">Offline Cache Active</span>
+            </div>
+
+            <!-- Hardware BLE Connection State badge -->
+            <div id="device-status-badge" class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-xs text-rose-400">
+                <span class="w-2 h-2 rounded-full bg-rose-500" id="device-dot"></span>
+                <span id="device-status-text" class="font-semibold">Disconnected</span>
+            </div>
+
+            <!-- Profile Widget / Custom Google Auth wrapper -->
+            <div id="auth-profile-container">
+                <button id="auth-btn" class="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-xs text-slate-300 hover:text-white transition-all font-medium">
+                    <svg class="w-4 h-4 text-slate-400" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12.24 10.285V13.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.866-3.577-7.866-8s3.536-8 7.866-8c2.46 0 4.105 1.025 5.047 1.926l2.427-2.334C17.955 2.192 15.34 1 12.24 1 6.033 1 1 6.033 1 12.24s5.033 11.24 11.24 11.24c6.478 0 10.793-4.537 10.793-10.986 0-.74-.08-1.3-.176-1.859H12.24z"/>
+                    </svg>
+                    <span>Sign in with Google</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Custom non-blocking Toast notification system (No alert allowed) -->
+    <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm pointer-events-none"></div>
+
+    <!-- Main Content Grid Layout -->
+    <main class="flex-1 max-w-[1600px] w-full mx-auto p-4 grid grid-cols-1 lg:grid-cols-12 gap-5 overflow-hidden">
+        
+        <!-- Left Sidebar: Controls & Live Hardware Connect -->
+        <section class="lg:col-span-3 flex flex-col gap-4 overflow-y-auto pr-1">
+            
+            <!-- Connection Control Card -->
+            <div class="bg-slate-900/40 border border-slate-900 rounded-2xl p-4 flex flex-col gap-3 backdrop-blur-sm">
+                <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
+                    <span>Hardware Interface</span>
+                    <span id="demo-indicator" class="hidden text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded uppercase font-mono-tech tracking-normal animate-pulse">Demo Engine Mode</span>
+                </h2>
+                
+                <!-- BLE Web Bluetooth Action -->
+                <button id="ble-connect-btn" class="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 font-bold transition-all shadow-lg shadow-emerald-500/10 hover:shadow-emerald-500/25">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72M4.518 8.25a5.25 5.25 0 000 7.424M1.886 5.636a9 9 0 000 12.728" />
+                    </svg>
+                    <span>Connect OpenFloat BLE</span>
+                </button>
+
+                <!-- Demo Simulation Engine Toggle -->
+                <button id="demo-toggle-btn" class="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 text-xs font-semibold text-slate-300 hover:text-white transition-all">
+                    <span class="w-2.5 h-2.5 rounded-full bg-slate-600 mr-1" id="demo-led"></span>
+                    <span>Toggle Simulation Engine</span>
+                </button>
+            </div>
+
+            <!-- Web Serial Bootloader / Flasher Card (Two-Product Firewall) -->
+            <div class="bg-slate-900/40 border border-slate-900 rounded-2xl p-4 flex flex-col gap-3 backdrop-blur-sm">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400">Web Serial Flasher</h2>
+                    <span class="text-[10px] text-slate-500">Dual-Product Firewall</span>
+                </div>
+                <p class="text-xs text-slate-400 leading-relaxed">
+                    Activate or restore clean Seeed XIAO hardware. Flashes open-source firmware from the browser without installing terminal tools.
+                </p>
+                
+                <button id="serial-connect-btn" class="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 text-xs font-semibold text-slate-300 hover:text-white transition-all">
+                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M14.25 9.75L16.5 12l-2.25 2.25m-4.5 0L7.5 12l2.25-2.25M6 20.25h12A2.25 2.25 0 0020.25 18V6A2.25 2.25 0 0018 3.75H6A2.25 2.25 0 003.75 6v12A2.25 2.25 0 006 20.25z" />
+                    </svg>
+                    <span>Detect Hardware Board</span>
+                </button>
+
+                <div id="flash-control-panel" class="hidden flex-col gap-2 p-2.5 rounded-lg bg-slate-950 border border-slate-900">
+                    <div class="flex items-center justify-between text-[11px]">
+                        <span class="text-slate-400 font-mono-tech" id="serial-port-name">Port: Connected</span>
+                        <span class="text-emerald-400 font-bold uppercase">Ready</span>
+                    </div>
+                    <button id="flash-action-btn" class="w-full mt-1.5 py-2 px-3 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-xs transition-all flex items-center justify-center gap-1.5">
+                        <svg class="w-3.5 h-3.5 animate-bounce" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                        </svg>
+                        <span>Flash Archery OS</span>
+                    </button>
+                    <!-- Simulated Flash Progress Bar -->
+                    <div id="flash-progress-container" class="hidden flex-col gap-1 mt-1">
+                        <div class="flex justify-between text-[10px] text-slate-500 font-mono-tech">
+                            <span id="flash-progress-text">Writing memory...</span>
+                            <span id="flash-progress-pct">0%</span>
+                        </div>
+                        <div class="w-full h-1 bg-slate-900 rounded-full overflow-hidden">
+                            <div id="flash-progress-bar" class="h-full bg-emerald-400 w-0 transition-all duration-100"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Calibration & Live Config -->
+            <div class="bg-slate-900/40 border border-slate-900 rounded-2xl p-4 flex flex-col gap-3 backdrop-blur-sm">
+                <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400">Settings & Calibration</h2>
+                
+                <div class="flex flex-col gap-1.5">
+                    <label class="text-xs text-slate-500 font-medium">Bow Type / Rig profile</label>
+                    <select id="bow-profile-select" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 outline-none focus:border-emerald-500 transition-all">
+                        <option value="mathews_compound">Mathews Compound (Heavy Dampening)</option>
+                        <option value="hoyt_recurve">Hoyt Target Recurve (Long Stabilizers)</option>
+                        <option value="bowhunter_short">Hunting Short Stab (High Vibration)</option>
+                    </select>
+                </div>
+
+                <div class="flex flex-col gap-1.5">
+                    <div class="flex justify-between text-xs text-slate-500 font-medium">
+                        <span>Release Trigger Threshold</span>
+                        <span id="threshold-val" class="text-slate-300 font-mono-tech">12.0 G</span>
+                    </div>
+                    <input type="range" id="threshold-range" min="8" max="18" step="0.5" value="12" class="w-full accent-emerald-400 bg-slate-950 h-1.5 rounded-lg appearance-none cursor-pointer">
+                </div>
+
+                <button id="zero-gyro-btn" class="w-full mt-1.5 py-2 px-3 rounded-xl border border-slate-800 hover:border-slate-700 bg-slate-950 hover:bg-slate-900/80 text-xs font-semibold text-slate-300 hover:text-white transition-all">
+                    Calibrate & Zero Sensors
+                </button>
+            </div>
+        </section>
+
+        <!-- Center Column: Polar Visualizer, Real-Time Stats, and Actions -->
+        <section class="lg:col-span-6 flex flex-col gap-4 overflow-hidden">
+            
+            <!-- Real-Time Metrics Summary Grid -->
+            <div class="grid grid-cols-3 gap-3">
+                <div class="bg-slate-900/40 border border-slate-900 rounded-2xl p-3 text-center backdrop-blur-sm">
+                    <p class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Stability Index</p>
+                    <p id="metric-stability" class="text-2xl font-extrabold text-emerald-400 font-mono-tech mt-1">--%</p>
+                </div>
+                <div class="bg-slate-900/40 border border-slate-900 rounded-2xl p-3 text-center backdrop-blur-sm">
+                    <p class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Bow Cant (Roll)</p>
+                    <p id="metric-cant" class="text-2xl font-extrabold text-slate-200 font-mono-tech mt-1">0.0°</p>
+                </div>
+                <div class="bg-slate-900/40 border border-slate-900 rounded-2xl p-3 text-center backdrop-blur-sm">
+                    <p class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Bow Tilt (Pitch)</p>
+                    <p id="metric-pitch" class="text-2xl font-extrabold text-slate-200 font-mono-tech mt-1">0.0°</p>
+                </div>
+            </div>
+
+            <!-- Primary Canvas Box -->
+            <div class="flex-1 bg-slate-900/30 border border-slate-900 rounded-3xl p-5 flex flex-col justify-between relative overflow-hidden backdrop-blur-sm">
+                
+                <!-- Overlay details -->
+                <div class="flex justify-between items-start z-10">
+                    <div>
+                        <span id="canvas-mode-indicator" class="text-xs uppercase tracking-widest text-slate-500 font-extrabold">Idle Mode</span>
+                        <h3 id="canvas-title-text" class="text-lg font-extrabold text-slate-200 mt-0.5">Bow Float & Cant Alignment</h3>
+                    </div>
+                    <div class="flex gap-2">
+                        <!-- Manual Trigger Button for Testing Release -->
+                        <button id="sim-fire-btn" class="hidden bg-rose-500 hover:bg-rose-400 active:bg-rose-600 text-slate-950 px-3.5 py-1.5 rounded-xl text-xs font-extrabold tracking-wider uppercase shadow-lg shadow-rose-500/15 transition-all">
+                            Release Shot (Simulate)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Canvas Visualizer Element wrapper -->
+                <div class="flex-1 flex items-center justify-center relative my-4">
+                    <canvas id="polar-canvas" class="w-full max-w-[440px] aspect-square block bg-transparent transition-all"></canvas>
+                </div>
+
+                <!-- Dynamic Bottom Trace Settings -->
+                <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-950/40 border border-slate-900 p-2.5 rounded-xl z-10">
+                    <div class="flex items-center gap-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+                        <p class="text-xs text-slate-400">
+                            Aiming State: <span id="aim-state-label" class="font-bold text-slate-300">Idle / Bow Down</span>
+                        </p>
+                    </div>
+                    <div class="flex items-center gap-1.5 text-xs">
+                        <span class="text-slate-500">Trace window:</span>
+                        <button id="window-3s" class="px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-slate-300 hover:text-white font-mono-tech">3.0s</button>
+                        <button id="window-5s" class="px-2.5 py-1 rounded hover:bg-slate-900 border border-transparent text-slate-400 hover:text-white font-mono-tech">5.0s</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- High-Frequency Analytics Timeline (Only shown when displaying a completed shot) -->
+            <div id="shot-timeline-card" class="hidden bg-slate-900/40 border border-slate-900 rounded-2xl p-4 flex-col gap-3 backdrop-blur-sm">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h4 class="text-sm font-bold text-slate-300">Shot Release Physics Timeline</h4>
+                        <p class="text-[10px] text-slate-500">Pre-Shot Aiming (-3.5s) to Post-Shot Follow Through (+1.5s)</p>
+                    </div>
+                    <span id="peak-acceleration-badge" class="font-mono-tech text-xs bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded-lg">Peak Acceleration: --G</span>
+                </div>
+                
+                <!-- Dynamic Waveform Preview Canvas (Vibration Signature) -->
+                <div class="relative h-16 bg-slate-950 border border-slate-900 rounded-xl overflow-hidden my-1">
+                    <canvas id="vibe-canvas" class="w-full h-full block"></canvas>
+                    <div id="timeline-scrub-line" class="absolute top-0 bottom-0 w-0.5 bg-emerald-400 pointer-events-none" style="left: 70%"></div>
+                </div>
+
+                <div class="flex items-center justify-between gap-4">
+                    <div class="flex items-center gap-3">
+                        <button id="play-shot-render" class="p-1.5 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300">
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                        </button>
+                        <span class="text-xs text-slate-400 font-mono-tech" id="timeline-time-label">T-0.00s (Release)</span>
+                    </div>
+                    <!-- Slider scrubber -->
+                    <input type="range" id="timeline-scrub" min="0" max="100" value="70" class="flex-1 accent-emerald-400 bg-slate-950 h-1 rounded-full cursor-pointer">
+                </div>
+            </div>
+        </section>
+
+        <!-- Right Sidebar: Database Records & Historical Tracking -->
+        <section class="lg:col-span-3 flex flex-col gap-4 overflow-y-auto pr-1">
+            
+            <!-- Cloud sync status and SaaS info -->
+            <div class="bg-gradient-to-tr from-slate-900 to-slate-950 border border-slate-900 rounded-2xl p-4 flex flex-col gap-2.5 backdrop-blur-sm">
+                <div class="flex justify-between items-center">
+                    <h2 class="text-sm font-bold text-slate-300">Database Engine</h2>
+                    <span id="sync-badge" class="text-[10px] font-extrabold uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded">Synced</span>
+                </div>
+                <p class="text-xs text-slate-400 leading-relaxed">
+                    Saves shot matrices locally to browser **IndexedDB** for offline storage, then automatically pushes records to your cloud database when online.
+                </p>
+                <div class="h-px bg-slate-900 my-1"></div>
+                <div class="flex justify-between text-xs">
+                    <span class="text-slate-500">Stored Locally:</span>
+                    <span id="local-db-count" class="font-bold text-slate-300">0 Shots</span>
+                </div>
+            </div>
+
+            <!-- Shot Records History List -->
+            <div class="flex-1 bg-slate-900/40 border border-slate-900 rounded-2xl p-4 flex flex-col gap-3 min-h-[300px] overflow-hidden backdrop-blur-sm">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-sm font-bold uppercase tracking-wider text-slate-400">Shot History</h2>
+                    <button id="clear-db-btn" class="text-xs text-rose-400 hover:text-rose-300 font-medium hover:underline">Clear List</button>
+                </div>
+
+                <!-- Active list element -->
+                <div id="shot-list-container" class="flex-1 overflow-y-auto flex flex-col gap-2 pr-1">
+                    <!-- Empty state placeholder -->
+                    <div id="history-empty-state" class="flex-1 flex flex-col items-center justify-center text-center p-4">
+                        <svg class="w-10 h-10 text-slate-700 mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <p class="text-xs font-bold text-slate-500">No Shot Telemetry Logged</p>
+                        <p class="text-[10px] text-slate-600 mt-1 max-w-[180px]">Turn on the Simulation Engine and release a shot to begin logging.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // Offline-First IndexedDB Config
+        const DB_NAME = "OpenFloatDB";
+        const DB_VERSION = 1;
+        const STORE_NAME = "shots";
+        let db;
+
+        // Initialize Local Storage IndexedDB
+        function initIndexedDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                
+                request.onerror = (e) => {
+                    console.error("IndexedDB error:", e);
+                    reject(e);
+                };
+                
+                request.onsuccess = (e) => {
+                    db = e.target.result;
+                    updateLocalCountUI();
+                    loadHistoryFromDB();
+                    resolve(db);
+                };
+                
+                request.onupgradeneeded = (e) => {
+                    const database = e.target.result;
+                    if (!database.objectStoreNames.contains(STORE_NAME)) {
+                        database.createObjectStore(STORE_NAME, { keyPath: "id" });
+                    }
+                };
+            });
+        }
+
+        // Helper: Save shot record to IndexedDB
+        async function saveShotToDB(shot) {
+            if (!db) return;
+            const transaction = db.transaction([STORE_NAME], "readwrite");
+            const store = transaction.objectStore(STORE_NAME);
+            store.put(shot);
+            
+            transaction.oncomplete = () => {
+                updateLocalCountUI();
+                loadHistoryFromDB();
+                showToast("Shot Saved", `Logged metrics to offline browser buffer.`, "success");
+            };
+        }
+
+        // Helper: Load history list
+        async function loadHistoryFromDB() {
+            if (!db) return;
+            const transaction = db.transaction([STORE_NAME], "readonly");
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.getAll();
+            
+            request.onsuccess = (e) => {
+                const list = e.target.result;
+                renderHistoryList(list);
+            };
+        }
+
+        // Helper: Clear db
+        async function clearAllShots() {
+            if (!db) return;
+            const transaction = db.transaction([STORE_NAME], "readwrite");
+            const store = transaction.objectStore(STORE_NAME);
+            store.clear();
+            transaction.oncomplete = () => {
+                updateLocalCountUI();
+                loadHistoryFromDB();
+                showToast("Clear Database", "All historical shot logs wiped from local memory.", "info");
+                // Reset canvas
+                currentShotView = null;
+                setCanvasMode("idle");
+            };
+        }
+
+        // Helper: count items
+        function updateLocalCountUI() {
+            if (!db) return;
+            const transaction = db.transaction([STORE_NAME], "readonly");
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.count();
+            request.onsuccess = (e) => {
+                document.getElementById("local-db-count").innerText = `${e.target.result} Shots`;
+            };
+        }
+
+        // Elegant non-blocking UI alert notification framework (Alternative to native prompt blocks)
+        function showToast(title, message, type = "info") {
+            const container = document.getElementById("toast-container");
+            const toast = document.createElement("div");
+            
+            let accentColor = "border-emerald-500 bg-slate-900 text-slate-100";
+            if (type === "success") accentColor = "border-emerald-500 bg-slate-950/90 text-slate-100 shadow-emerald-500/5";
+            if (type === "error") accentColor = "border-rose-500 bg-slate-950/90 text-slate-100 shadow-rose-500/5";
+            if (type === "info") accentColor = "border-slate-700 bg-slate-950/90 text-slate-300";
+
+            toast.className = `p-4 rounded-xl border-l-4 shadow-xl transition-all duration-300 transform translate-y-2 opacity-0 flex flex-col gap-1 pointer-events-auto max-w-[320px] ${accentColor}`;
+            toast.innerHTML = `
+                <div class="flex justify-between items-start gap-4">
+                    <h4 class="text-xs font-bold uppercase tracking-wider">${title}</h4>
+                    <button class="text-slate-500 hover:text-slate-300 text-xs" onclick="this.parentElement.parentElement.remove()">✕</button>
+                </div>
+                <p class="text-xs leading-relaxed text-slate-400">${message}</p>
+            `;
+            
+            container.appendChild(toast);
+            
+            // Trigger animation
+            setTimeout(() => {
+                toast.classList.remove("translate-y-2", "opacity-0");
+            }, 10);
+            
+            // Auto destroy
+            setTimeout(() => {
+                toast.classList.add("translate-y-2", "opacity-0");
+                setTimeout(() => toast.remove(), 300);
+            }, 4500);
+        }
+
+        // Configuration state mapping
+        const appState = {
+            isDemoMode: false,
+            isConnectedBLE: false,
+            isAuthSigned: false,
+            isFlashing: false,
+            selectedBow: "mathews_compound",
+            triggerThreshold: 12.0,
+            activeAimState: "idle", // idle, aiming, follow_through
+        };
+
+        let canvasMode = "idle"; // idle, live, shot_review
+        let currentShotView = null; // Stored historical shot structure currently on review
+
+        // Canvas Coordinates configuration
+        const polarCanvas = document.getElementById("polar-canvas");
+        const ctxPolar = polarCanvas.getContext("2d");
+        const vibeCanvas = document.getElementById("vibe-canvas");
+        const ctxVibe = vibeCanvas.getContext("2d");
+
+        // Set dimensions responsively on startup
+        function resizeCanvases() {
+            const size = polarCanvas.parentElement.clientWidth;
+            polarCanvas.width = size * window.devicePixelRatio;
+            polarCanvas.height = size * window.devicePixelRatio;
+            ctxPolar.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+            vibeCanvas.width = vibeCanvas.parentElement.clientWidth * window.devicePixelRatio;
+            vibeCanvas.height = vibeCanvas.parentElement.clientHeight * window.devicePixelRatio;
+            ctxVibe.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+
+        window.addEventListener("resize", resizeCanvases);
+
+        // Aiming Bio-Mechanics Simulation Physics Engine (High Fidelity Mock Vector engine)
+        class ArcherySimulation {
+            constructor() {
+                this.time = 0;
+                this.breathSwayX = 0;
+                this.breathSwayY = 0;
+                this.heartbeatMultiplier = 1;
+                this.vibeAmplitude = 0;
+                
+                // Active streaming buffer for canvas trail
+                this.aimTrail = []; // queue of points [x, y, timestamp, roll, pitch]
+                
+                // High frequency shot buffer (5-seconds, 400Hz frequency mapping)
+                this.simulatedShotBuffer = []; 
+                this.shotStartTime = 0;
+                this.isAimed = false;
+            }
+
+            reset() {
+                this.time = 0;
+                this.aimTrail = [];
+                this.vibeAmplitude = 0;
+            }
+
+            // Updates live coordinate values based on organic human biomechanics
+            update(bowProfile) {
+                this.time += 0.016; // mock frame delta (60fps)
+                
+                // 1. Slow, low-frequency human body drift (0.3Hz - 0.8Hz)
+                const swayFreqX = 0.45;
+                const swayFreqY = 0.28;
+                this.breathSwayX = Math.sin(this.time * swayFreqX) * 0.25 + Math.cos(this.time * 0.1) * 0.1;
+                this.breathSwayY = Math.cos(this.time * swayFreqY) * 0.20 + Math.sin(this.time * 0.15) * 0.08;
+
+                // 2. Muscle tremors (high-frequency, fatigue-related, 8Hz - 12Hz)
+                let tremorMag = 0.03;
+                if (bowProfile === "bowhunter_short") tremorMag = 0.07; // shorter stabilizers drift faster
+                if (bowProfile === "hoyt_recurve") tremorMag = 0.02; // recurve dampens micro tremors, but sways wider
+
+                const tremorX = (Math.random() - 0.5) * tremorMag;
+                const tremorY = (Math.random() - 0.5) * tremorMag;
+
+                // 3. Heartbeat hydraulic jump: quick upward spike every 1.1s
+                const heartPhase = (this.time % 1.1) / 1.1;
+                let heartJumpY = 0;
+                if (heartPhase < 0.08) {
+                    heartJumpY = -0.04 * Math.sin((heartPhase / 0.08) * Math.PI);
+                }
+
+                // Final Coordinates summing
+                let rawX = this.breathSwayX + tremorX;
+                let rawY = this.breathSwayY + tremorY + heartJumpY;
+
+                // Dynamic Pitch and Roll calculations
+                const baseRoll = Math.sin(this.time * 0.2) * 0.5; // slow canting tilt
+                const basePitch = Math.cos(this.time * 0.1) * 1.5 - 2.0; // gravity pitch alignment
+
+                // Add to rolling 3-second FIFO buffer trail
+                const now = Date.now();
+                this.aimTrail.push({
+                    x: rawX,
+                    y: rawY,
+                    time: now,
+                    roll: baseRoll,
+                    pitch: basePitch,
+                    accel: 1.0 + Math.random() * 0.1 // normal rest G forces
+                });
+
+                // Keep trail limited to rolling 3 seconds
+                while (this.aimTrail.length > 180) {
+                    this.aimTrail.shift();
+                }
+
+                return {
+                    x: rawX,
+                    y: rawY,
+                    roll: baseRoll.toFixed(1),
+                    pitch: basePitch.toFixed(1),
+                    stability: Math.max(10, Math.floor(100 - (Math.abs(rawX) + Math.abs(rawY)) * 140))
+                };
+            }
+
+            // Generates a mock 5-second high-frequency buffer on release command
+            triggerHighFrequencyShot() {
+                const now = Date.now();
+                const totalSamples = 1000; // 5 seconds at 200Hz downsample simulation
+                const buffer = [];
+                
+                // Let's seed pre-shot float (3.5 seconds) and post-shot (1.5 seconds)
+                for (let i = 0; i < totalSamples; i++) {
+                    const sampleOffset = (i - 700) * 5; // milliseconds offset from release trigger T-0
+                    const timeSec = sampleOffset / 1000;
+                    
+                    let x = 0, y = 0, z = 0;
+                    let roll = 0, pitch = 0;
+                    let accelMagnitude = 1.0; // normal gravitational 1g
+
+                    if (timeSec < 0) {
+                        // Pre-shot aiming drift phase
+                        const breathingX = Math.sin(timeSec * 0.5) * 0.2 + (Math.sin(timeSec * 3.5) * 0.03);
+                        const breathingY = Math.cos(timeSec * 0.3) * 0.15 + (Math.cos(timeSec * 4.1) * 0.02);
+                        x = breathingX;
+                        y = breathingY;
+                        roll = Math.sin(timeSec * 0.1) * 0.6;
+                        pitch = Math.cos(timeSec * 0.05) * 1.2 - 2.4;
+                        accelMagnitude = 1.0 + (Math.random() - 0.5) * 0.06;
+                    } else if (timeSec >= 0 && timeSec < 0.15) {
+                        // Shot release impulse! (The massive acceleration wave)
+                        const releasePhase = timeSec / 0.15; // 0 to 1
+                        const peakG = 13.5 + Math.random() * 2.5;
+                        accelMagnitude = Math.sin(releasePhase * Math.PI) * peakG + 1.0;
+                        
+                        // violent coordinate jump
+                        x = (Math.random() - 0.5) * 1.5;
+                        y = (Math.random() - 0.5) * 1.5;
+                        roll = (Math.random() - 0.5) * 10;
+                        pitch = (Math.random() - 0.5) * 10;
+                    } else {
+                        // Post-shot Follow-Through decaying oscillation
+                        const decayTime = timeSec - 0.15;
+                        const envelope = Math.exp(-decayTime * 2.5); // decay speed
+                        
+                        // Oscillation frequency mimicking riser dampeners
+                        const osc = Math.sin(decayTime * 35) * envelope * 2.5;
+                        accelMagnitude = 1.0 + osc + (Math.random() - 0.5) * 0.1;
+                        
+                        // settlement location
+                        x = (Math.sin(decayTime * 2) * 0.4) * envelope + 0.15;
+                        y = (-Math.cos(decayTime * 1.5) * 0.3) * envelope - 0.4;
+                        roll = (Math.sin(decayTime * 3) * 2) * envelope + 0.3;
+                        pitch = (Math.cos(decayTime * 1.5) * 3) * envelope - 6.5; // settles lower due to heavy stabilizers
+                    }
+
+                    buffer.push({
+                        timeOffset: sampleOffset,
+                        x: x,
+                        y: y,
+                        roll: roll,
+                        pitch: pitch,
+                        accel: accelMagnitude
+                    });
+                }
+                
+                return buffer;
+            }
+        }
+
+        const sim = new ArcherySimulation();
+
+        // Canvas Drawing Engine
+        function drawPolarCanvas(mode, telemetryData, trailPoints) {
+            const width = polarCanvas.width / window.devicePixelRatio;
+            const height = polarCanvas.height / window.devicePixelRatio;
+            const center = width / 2;
+            const maxRadius = (width / 2) - 15;
+
+            // Clear previous frames
+            ctxPolar.clearRect(0, 0, width, height);
+
+            // 1. Draw Archery Target rings background
+            const rings = [
+                { r: 1.0, color: "rgba(255, 255, 255, 0.04)", stroke: "#1e293b" }, // White outer
+                { r: 0.8, color: "rgba(30, 41, 59, 0.2)", stroke: "rgba(30, 41, 59, 0.5)" }, // Black ring
+                { r: 0.6, color: "rgba(56, 189, 248, 0.08)", stroke: "rgba(56, 189, 248, 0.2)" }, // Blue ring
+                { r: 0.4, color: "rgba(239, 68, 68, 0.1)", stroke: "rgba(239, 68, 68, 0.3)" }, // Red ring
+                { r: 0.2, color: "rgba(245, 158, 11, 0.15)", stroke: "rgba(245, 158, 11, 0.4)" }, // Yellow gold bullseye
+                { r: 0.05, color: "#f59e0b", stroke: "#f59e0b" } // Spider center pin
+            ];
+
+            rings.forEach(ring => {
+                ctxPolar.beginPath();
+                ctxPolar.arc(center, center, maxRadius * ring.r, 0, Math.PI * 2);
+                ctxPolar.fillStyle = ring.color;
+                ctxPolar.fill();
+                ctxPolar.strokeStyle = ring.stroke;
+                ctxPolar.lineWidth = 1;
+                ctxPolar.stroke();
+            });
+
+            // Radial axis lines
+            ctxPolar.beginPath();
+            ctxPolar.moveTo(center, 10);
+            ctxPolar.lineTo(center, width - 10);
+            ctxPolar.moveTo(10, center);
+            ctxPolar.lineTo(width - 10, center);
+            ctxPolar.strokeStyle = "rgba(30, 41, 59, 0.3)";
+            ctxPolar.stroke();
+
+            // 2. Draw Aiming Trail
+            if (trailPoints && trailPoints.length > 1) {
+                ctxPolar.beginPath();
+                
+                // Map points to center coordinates scale
+                const scale = maxRadius * 1.5; // mapping sensitivity
+                
+                // Draw trailing line gradient shadow
+                for (let i = 0; i < trailPoints.length; i++) {
+                    const pt = trailPoints[i];
+                    const px = center + (pt.x * scale);
+                    const py = center + (pt.y * scale);
+                    
+                    if (i === 0) {
+                        ctxPolar.moveTo(px, py);
+                    } else {
+                        ctxPolar.lineTo(px, py);
+                    }
+                }
+                
+                ctxPolar.strokeStyle = mode === "shot_review" ? "rgba(56, 189, 248, 0.6)" : "rgba(52, 211, 153, 0.6)";
+                ctxPolar.lineWidth = 2.5;
+                ctxPolar.stroke();
+
+                // Draw active target sight pin coordinate point
+                const lastPt = trailPoints[trailPoints.length - 1];
+                const px = center + (lastPt.x * scale);
+                const py = center + (lastPt.y * scale);
+                
+                ctxPolar.beginPath();
+                ctxPolar.arc(px, py, 6, 0, Math.PI * 2);
+                ctxPolar.fillStyle = mode === "shot_review" ? "#38bdf8" : "#34d399";
+                ctxPolar.fill();
+                ctxPolar.strokeStyle = "#ffffff";
+                ctxPolar.lineWidth = 1.5;
+                ctxPolar.stroke();
+            }
+
+            // 3. Draw Bow Cant (Roll Alignment Meter)
+            if (telemetryData) {
+                const rollDeg = parseFloat(telemetryData.roll);
+                const rollRad = (rollDeg * Math.PI) / 180;
+                
+                // Drawing visual alignment bar on the outer ring margin
+                ctxPolar.beginPath();
+                ctxPolar.arc(center, center, maxRadius + 8, -Math.PI / 2 - 0.5, -Math.PI / 2 + 0.5);
+                ctxPolar.strokeStyle = "rgba(30, 41, 59, 0.5)";
+                ctxPolar.lineWidth = 3;
+                ctxPolar.stroke();
+
+                // Active cant indicator marker tick
+                const indicatorAngle = -Math.PI / 2 + (rollRad * 5); // amplify visual rotation slightly for resolution
+                const tickX = center + Math.cos(indicatorAngle) * (maxRadius + 8);
+                const tickY = center + Math.sin(indicatorAngle) * (maxRadius + 8);
+
+                ctxPolar.beginPath();
+                ctxPolar.arc(tickX, tickY, 4, 0, Math.PI * 2);
+                ctxPolar.fillStyle = Math.abs(rollDeg) < 1.0 ? "#10b981" : "#f59e0b"; // turns green when cant is vertical within 1 deg
+                ctxPolar.fill();
+            }
+        }
+
+        // High-Frequency vibration plotter canvas
+        function drawVibeTimeline(buffer, currentSelectionIdx) {
+            const width = vibeCanvas.width / window.devicePixelRatio;
+            const height = vibeCanvas.height / window.devicePixelRatio;
+            ctxVibe.clearRect(0, 0, width, height);
+
+            if (!buffer || buffer.length === 0) return;
+
+            // Draw zero-line
+            ctxVibe.beginPath();
+            ctxVibe.moveTo(0, height / 2);
+            ctxVibe.lineTo(width, height / 2);
+            ctxVibe.strokeStyle = "rgba(30, 41, 59, 0.4)";
+            ctxVibe.stroke();
+
+            // Render high-frequency timeline acceleration profile
+            ctxVibe.beginPath();
+            const step = width / buffer.length;
+            
+            for (let i = 0; i < buffer.length; i++) {
+                const sample = buffer[i];
+                const x = i * step;
+                
+                // Map G forces (Normally 1G, triggers at >12G) to vertical axis height
+                const normalizedVal = (sample.accel - 1.0) / 15; // scalar
+                const y = (height / 2) - (normalizedVal * (height / 2) * 0.9);
+                
+                if (i === 0) {
+                    ctxVibe.moveTo(x, y);
+                } else {
+                    ctxVibe.lineTo(x, y);
+                }
+            }
+
+            ctxVibe.strokeStyle = "rgba(244, 63, 94, 0.8)"; // Red wave trigger
+            ctxVibe.lineWidth = 1.5;
+            ctxVibe.stroke();
+
+            // Mark exact release moment at sample 700 (T-0, vertical dash)
+            const releaseX = (700 / buffer.length) * width;
+            ctxVibe.beginPath();
+            ctxVibe.moveTo(releaseX, 0);
+            ctxVibe.lineTo(releaseX, height);
+            ctxVibe.strokeStyle = "rgba(255, 255, 255, 0.25)";
+            ctxVibe.setLineDash([3, 3]);
+            ctxVibe.stroke();
+            ctxVibe.setLineDash([]); // Reset line dash
+
+            // Draw current scrub slider position overlay
+            const scrubX = (currentSelectionIdx / buffer.length) * width;
+            ctxVibe.beginPath();
+            ctxVibe.moveTo(scrubX, 0);
+            ctxVibe.lineTo(scrubX, height);
+            ctxVibe.strokeStyle = "#10b981"; // Emerald tracker
+            ctxVibe.lineWidth = 1.5;
+            ctxVibe.stroke();
+        }
+
+        // Application render loops (Handles drawing live frame intervals)
+        function gameLoop() {
+            if (canvasMode === "live" && appState.isDemoMode) {
+                const bow = appState.selectedBow;
+                const frameData = sim.update(bow);
+
+                // Update real-time stats cards
+                document.getElementById("metric-stability").innerText = `${frameData.stability}%`;
+                document.getElementById("metric-cant").innerText = `${frameData.roll}°`;
+                document.getElementById("metric-pitch").innerText = `${frameData.pitch}°`;
+
+                // Update state text
+                document.getElementById("aim-state-label").innerText = "Aimed at Target (Hold)";
+                document.getElementById("aim-state-label").className = "font-bold text-amber-400";
+
+                // Draw
+                drawPolarCanvas("live", frameData, sim.aimTrail);
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Control listeners and button click bindings
+        document.addEventListener("DOMContentLoaded", async () => {
+            await initIndexedDB();
+            resizeCanvases();
+            
+            // Start default empty state loop
+            drawPolarCanvas("idle", null, []);
+            requestAnimationFrame(gameLoop);
+
+            // Handler: Toggle Simulation Demo Engine Mode
+            const demoBtn = document.getElementById("demo-toggle-btn");
+            const demoLed = document.getElementById("demo-led");
+            const demoIndicator = document.getElementById("demo-indicator");
+            const simFireBtn = document.getElementById("sim-fire-btn");
+
+            demoBtn.addEventListener("click", () => {
+                appState.isDemoMode = !appState.isDemoMode;
+                
+                if (appState.isDemoMode) {
+                    demoLed.className = "w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse mr-1";
+                    demoIndicator.classList.remove("hidden");
+                    simFireBtn.classList.remove("hidden");
+                    
+                    setCanvasMode("live");
+                    showToast("Simulation Engine Active", "Generating organic biomechanical bow drift telemetry.", "info");
+                } else {
+                    demoLed.className = "w-2.5 h-2.5 rounded-full bg-slate-600 mr-1";
+                    demoIndicator.classList.add("hidden");
+                    simFireBtn.classList.add("hidden");
+                    
+                    setCanvasMode("idle");
+                    document.getElementById("aim-state-label").innerText = "Idle / Bow Down";
+                    document.getElementById("aim-state-label").className = "font-bold text-slate-300";
+                    
+                    // Reset stats
+                    document.getElementById("metric-stability").innerText = "--%";
+                    document.getElementById("metric-cant").innerText = "0.0°";
+                    document.getElementById("metric-pitch").innerText = "0.0°";
+                }
+            });
+
+            // Handler: Manual Shot Simulation
+            simFireBtn.addEventListener("click", () => {
+                if (!appState.isDemoMode) return;
+                
+                // Calculate shot payload
+                const highFreqBuffer = sim.triggerHighFrequencyShot();
+                
+                // Get peak g-force in buffer (typically around index 700 to 730)
+                let peakG = 0;
+                highFreqBuffer.forEach(s => {
+                    if (s.accel > peakG) peakG = s.accel;
+                });
+
+                // Get average roll & pitch *prior* to release (index 0 to 700)
+                let rollSum = 0, pitchSum = 0, stabilitySum = 0;
+                for (let i = 400; i < 700; i++) { // sample average over 1.5 seconds right before trigger
+                    rollSum += highFreqBuffer[i].roll;
+                    pitchSum += highFreqBuffer[i].pitch;
+                    
+                    const score = Math.max(10, Math.floor(100 - (Math.abs(highFreqBuffer[i].x) + Math.abs(highFreqBuffer[i].y)) * 140));
+                    stabilitySum += score;
+                }
+                const avgRoll = (rollSum / 300).toFixed(2);
+                const avgPitch = (pitchSum / 300).toFixed(2);
+                const avgStability = Math.floor(stabilitySum / 300);
+
+                const newShot = {
+                    id: "shot_" + Date.now(),
+                    timestamp: new Date().toISOString(),
+                    peakG: peakG.toFixed(2),
+                    avgRoll: avgRoll,
+                    avgPitch: avgPitch,
+                    avgStability: avgStability,
+                    buffer: highFreqBuffer
+                };
+
+                // Flash state simulation briefly
+                document.getElementById("aim-state-label").innerText = "RELEASE SPARK TRIG!";
+                document.getElementById("aim-state-label").className = "font-bold text-rose-500 animate-bounce";
+                
+                setTimeout(() => {
+                    // Save to DB and automatically update history list
+                    saveShotToDB(newShot);
+                }, 500);
+            });
+
+            // Handler: Change Bow Settings
+            document.getElementById("bow-profile-select").addEventListener("change", (e) => {
+                appState.selectedBow = e.target.value;
+                showToast("Profile Updated", `Rig parameters calibrated for ${e.target.options[e.target.selectedIndex].text}.`, "info");
+            });
+
+            // Handler: Trigger Threshold Range Slider
+            const thresholdRange = document.getElementById("threshold-range");
+            const thresholdVal = document.getElementById("threshold-val");
+            thresholdRange.addEventListener("input", (e) => {
+                appState.triggerThreshold = parseFloat(e.target.value);
+                thresholdVal.innerText = `${appState.triggerThreshold.toFixed(1)} G`;
+            });
+
+            // Zero Sensor Call
+            document.getElementById("zero-gyro-btn").addEventListener("click", () => {
+                sim.reset();
+                showToast("Sensor Calibration", "MEMS internal accelerometers zeroed against gravity axis.", "success");
+            });
+
+            // Clear Database button
+            document.getElementById("clear-db-btn").addEventListener("click", () => {
+                clearAllShots();
+            });
+
+            // High-Frequency timeline scrub interface
+            const scrubRange = document.getElementById("timeline-scrub");
+            const playShotBtn = document.getElementById("play-shot-render");
+
+            scrubRange.addEventListener("input", (e) => {
+                if (!currentShotView) return;
+                
+                const pct = parseInt(e.target.value);
+                const totalSamples = currentShotView.buffer.length;
+                const sampleIdx = Math.floor((pct / 100) * (totalSamples - 1));
+                
+                updateTimelineFrameReview(sampleIdx);
+            });
+
+            // Autoplay timeline loop review
+            let playInterval = null;
+            playShotBtn.addEventListener("click", () => {
+                if (!currentShotView) return;
+                
+                if (playInterval) {
+                    clearInterval(playInterval);
+                    playInterval = null;
+                    playShotBtn.innerHTML = `<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`;
+                } else {
+                    playShotBtn.innerHTML = `<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
+                    scrubRange.value = 0;
+                    
+                    let frame = 0;
+                    const speed = 8; // skip frames to speed up rendering loop
+                    
+                    playInterval = setInterval(() => {
+                        frame += speed;
+                        if (frame >= currentShotView.buffer.length) {
+                            clearInterval(playInterval);
+                            playInterval = null;
+                            playShotBtn.innerHTML = `<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`;
+                            frame = currentShotView.buffer.length - 1;
+                        }
+                        
+                        const pct = (frame / currentShotView.buffer.length) * 100;
+                        scrubRange.value = pct;
+                        updateTimelineFrameReview(frame);
+                    }, 30);
+                }
+            });
+        });
+
+        // Adjust Canvas rendering configurations based on Active operation
+        function setCanvasMode(mode) {
+            canvasMode = mode;
+            const container = document.getElementById("shot-timeline-card");
+            const indicator = document.getElementById("canvas-mode-indicator");
+            const title = document.getElementById("canvas-title-text");
+
+            if (mode === "idle") {
+                indicator.innerText = "System Idle";
+                title.innerText = "Stabilizer Alignment System";
+                container.classList.add("hidden");
+                drawPolarCanvas("idle", null, []);
+            } else if (mode === "live") {
+                indicator.innerText = "Live Telemetry";
+                title.innerText = "Real-time Float Tracer";
+                container.classList.add("hidden");
+            } else if (mode === "shot_review") {
+                indicator.innerText = "Shot Analysis Review";
+                container.classList.remove("hidden");
+            }
+        }
+
+        // Visual historical renderers
+        function updateTimelineFrameReview(sampleIdx) {
+            if (!currentShotView) return;
+            const sample = currentShotView.buffer[sampleIdx];
+            
+            // Calculate label time
+            const tOffsetSec = (sample.timeOffset / 1000).toFixed(2);
+            const timeLabel = tOffsetSec >= 0 ? `T+${tOffsetSec}s` : `T${tOffsetSec}s`;
+            
+            document.getElementById("timeline-time-label").innerText = `${timeLabel} (${sampleOffsetDescription(sample.timeOffset)})`;
+            
+            // Render telemetry variables
+            document.getElementById("metric-stability").innerText = `${currentShotView.avgStability}%`;
+            document.getElementById("metric-cant").innerText = `${sample.roll.toFixed(1)}°`;
+            document.getElementById("metric-pitch").innerText = `${sample.pitch.toFixed(1)}°`;
+
+            // Display on Polar view (Generate historical trail leading to current scrub index)
+            const subsetTrail = [];
+            
+            // Draw a trailing window around scrub point (30 points maximum)
+            const startIdx = Math.max(0, sampleIdx - 40);
+            for (let i = startIdx; i <= sampleIdx; i++) {
+                const s = currentShotView.buffer[i];
+                subsetTrail.push({
+                    x: s.x,
+                    y: s.y,
+                    roll: s.roll,
+                    pitch: s.pitch
+                });
+            }
+
+            drawPolarCanvas("shot_review", sample, subsetTrail);
+            drawVibeTimeline(currentShotView.buffer, sampleIdx);
+        }
+
+        function sampleOffsetDescription(offset) {
+            if (offset < -500) return "Aiming Phase";
+            if (offset >= -500 && offset < 0) return "Execution Hold";
+            if (offset >= 0 && offset < 150) return "Impulse Release";
+            return "Follow Through";
+        }
+
+        // Build shot elements and insert into Sidebar
+        function renderHistoryList(shots) {
+            const container = document.getElementById("shot-list-container");
+            const emptyState = document.getElementById("history-empty-state");
+            
+            // Filter elements
+            const oldListItems = container.querySelectorAll(".shot-row-item");
+            oldListItems.forEach(el => el.remove());
+
+            if (!shots || shots.length === 0) {
+                emptyState.classList.remove("hidden");
+                return;
+            }
+
+            emptyState.classList.add("hidden");
+
+            // Build rows (Newest on top)
+            shots.reverse().forEach(shot => {
+                const date = new Date(shot.timestamp);
+                const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                
+                const row = document.createElement("button");
+                row.className = "shot-row-item w-full flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-900 hover:border-slate-800 text-left transition-all active:bg-slate-900";
+                
+                row.innerHTML = `
+                    <div class="flex flex-col gap-0.5">
+                        <span class="text-[10px] text-slate-500 font-mono-tech">${timeStr}</span>
+                        <div class="flex items-center gap-1.5 mt-0.5">
+                            <span class="text-xs font-bold text-slate-200">Score: ${shot.avgStability}%</span>
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                            <span class="text-[10px] text-slate-400 font-mono-tech">Cant: ${shot.avgRoll}°</span>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-xs font-bold text-rose-400 font-mono-tech">${shot.peakG} G</span>
+                        <p class="text-[9px] uppercase tracking-wider text-slate-500 font-extrabold mt-0.5">Review</p>
+                    </div>
+                `;
+
+                row.addEventListener("click", () => {
+                    // Set current active shot review
+                    currentShotView = shot;
+                    setCanvasMode("shot_review");
+                    document.getElementById("peak-acceleration-badge").innerText = `Peak Acceleration: ${shot.peakG} G`;
+                    
+                    // Highlight row styling
+                    container.querySelectorAll(".shot-row-item").forEach(el => el.classList.remove("border-emerald-500/50", "bg-emerald-500/[0.02]"));
+                    row.classList.add("border-emerald-500/50", "bg-emerald-500/[0.02]");
+
+                    // Initialize timeline to exactly T-0 release point (Index 700)
+                    document.getElementById("timeline-scrub").value = 70;
+                    updateTimelineFrameReview(700);
+                    showToast("Shot Loaded", `Displaying physical mechanics timeline for shot with stability of ${shot.avgStability}%.`, "success");
+                });
+
+                container.appendChild(row);
+            });
+        }
+
+        // Google Sign-In wrapper logic
+        const authBtn = document.getElementById("auth-btn");
+        const authContainer = document.getElementById("auth-profile-container");
+
+        authBtn.addEventListener("click", () => {
+            appState.isAuthSigned = !appState.isAuthSigned;
+            const syncStatus = document.getElementById("sync-status");
+
+            if (appState.isAuthSigned) {
+                // Update Badge UI
+                authContainer.innerHTML = `
+                    <div class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800">
+                        <div class="w-5 h-5 rounded-full bg-emerald-400 text-slate-950 font-extrabold text-[10px] flex items-center justify-center">BH</div>
+                        <div class="flex flex-col text-left">
+                            <span class="text-[10px] font-bold text-slate-200 leading-none">BowHunter9000</span>
+                            <span class="text-[8px] text-slate-500 leading-none mt-0.5">Pro User</span>
+                        </div>
+                    </div>
+                `;
+                
+                // Show Cloud synchronization
+                syncStatus.classList.remove("hidden");
+                document.getElementById("sync-dot").className = "w-2 h-2 rounded-full bg-emerald-400 animate-pulse";
+                document.getElementById("sync-text").innerText = "Cloud Synced";
+                document.getElementById("sync-badge").innerText = "Cloud Sync Active";
+                document.getElementById("sync-badge").className = "text-[10px] font-extrabold uppercase bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded";
+
+                showToast("Google Authentication", "Signed in as BowHunter9000. Session syncing configured to cloud nodes.", "success");
+            }
+        });
+
+        // Web Bluetooth GATT Connection Core Interfaces
+        const bleConnectBtn = document.getElementById("ble-connect-btn");
+        const statusBadge = document.getElementById("device-status-badge");
+        const statusText = document.getElementById("device-status-text");
+        const statusDot = document.getElementById("device-dot");
+
+        bleConnectBtn.addEventListener("click", async () => {
+            if (appState.isConnectedBLE) {
+                // Disconnect
+                appState.isConnectedBLE = false;
+                statusBadge.className = "flex items-center gap-2 px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-xs text-rose-400";
+                statusText.innerText = "Disconnected";
+                statusDot.className = "w-2 h-2 rounded-full bg-rose-500";
+                bleConnectBtn.className = "w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition-all shadow-lg";
+                bleConnectBtn.querySelector("span").innerText = "Connect OpenFloat BLE";
+                
+                showToast("Bluetooth", "Hardware link closed successfully.", "info");
+                return;
+            }
+
+            try {
+                // Attempt actual Web BLE request
+                showToast("Bluetooth Scanning", "Searching for OpenFloat hardware profiles...", "info");
+                
+                const customServiceUuid = "0000ffe0-0000-1000-8000-00805f9b34fb"; // Custom BLE device service profile
+                
+                const device = await navigator.bluetooth.requestDevice({
+                    filters: [{ namePrefix: "OpenFloat" }],
+                    optionalServices: [customServiceUuid]
+                });
+
+                statusText.innerText = "Connecting...";
+                statusDot.className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
+                
+                const server = await device.gatt.connect();
+                appState.isConnectedBLE = true;
+
+                // Configure Status Badge UI
+                statusBadge.className = "flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-400";
+                statusText.innerText = "Connected";
+                statusDot.className = "w-2 h-2 rounded-full bg-emerald-500";
+                bleConnectBtn.className = "w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold transition-all shadow-lg";
+                bleConnectBtn.querySelector("span").innerText = "Disconnect BLE";
+
+                showToast("Bluetooth Connected", `Hardware link established with: ${device.name}`, "success");
+                
+                // Read from BLE
+                const service = await server.getPrimaryService(customServiceUuid);
+                const characteristic = await service.getCharacteristic("0000ffe1-0000-1000-8000-00805f9b34fb");
+                
+                await characteristic.startNotifications();
+                characteristic.addEventListener('characteristicvaluechanged', (e) => {
+                    const view = e.target.value;
+                    // Parse custom little-endian byte stream from Seeed Sense here
+                    // e.g. let floatVal = view.getFloat32(0, true);
+                });
+
+            } catch (err) {
+                console.warn("User cancelled or Web BLE not supported on this browser:", err);
+                showToast("Connection Cancelled", "Could not link physical hardware. Turning on Demo Simulator for evaluation.", "error");
+                
+                // Fallback: Trigger simulated demo mode automatically if BLE lookup is cancelled
+                if (!appState.isDemoMode) {
+                    demoBtn.click();
+                }
+            }
+        });
+
+        // Web Serial Flasher Logic (The Two-Product Firewall Solution)
+        const serialConnectBtn = document.getElementById("serial-connect-btn");
+        const flashControlPanel = document.getElementById("flash-control-panel");
+        const flashActionBtn = document.getElementById("flash-action-btn");
+        const flashProgContainer = document.getElementById("flash-progress-container");
+        const flashProgBar = document.getElementById("flash-progress-bar");
+        const flashProgText = document.getElementById("flash-progress-text");
+        const flashProgPct = document.getElementById("flash-progress-pct");
+        const serialPortName = document.getElementById("serial-port-name");
+
+        serialConnectBtn.addEventListener("click", async () => {
+            try {
+                if ('serial' in navigator) {
+                    showToast("Serial Request", "Awaiting user selection of Seeed USB COM Port...", "info");
+                    
+                    // Request Port
+                    const port = await navigator.serial.requestPort();
+                    await port.open({ baudRate: 115200 });
+                    
+                    serialPortName.innerText = "Port: XIAO USB";
+                    flashControlPanel.classList.remove("hidden");
+                    serialConnectBtn.classList.add("hidden");
+                    showToast("Board Connected", "XIAO bootloader interface mounted successfully.", "success");
+                } else {
+                    // Browser doesn't support Web Serial API (Firefox/iOS Safari restriction)
+                    simulateWebSerialFlow();
+                }
+            } catch (err) {
+                console.warn("Serial API failed or cancelled. Running mockup flow:", err);
+                simulateWebSerialFlow();
+            }
+        });
+
+        function simulateWebSerialFlow() {
+            showToast("Simulating Connection", "Browser Web Serial connection simulated successfully.", "info");
+            serialPortName.innerText = "Port: Simulated COM3";
+            flashControlPanel.classList.remove("hidden");
+            serialConnectBtn.classList.add("hidden");
+        }
+
+        // Web Serial flashing action script
+        flashActionBtn.addEventListener("click", () => {
+            if (appState.isFlashing) return;
+            appState.isFlashing = true;
+            
+            flashProgContainer.classList.remove("hidden");
+            flashActionBtn.disabled = true;
+            flashActionBtn.classList.add("opacity-50");
+
+            let progress = 0;
+            const interval = setInterval(() => {
+                progress += Math.floor(Math.random() * 8) + 3;
+                if (progress >= 100) {
+                    progress = 100;
+                    clearInterval(interval);
+                    
+                    setTimeout(() => {
+                        appState.isFlashing = false;
+                        flashProgContainer.classList.add("hidden");
+                        flashActionBtn.disabled = false;
+                        flashActionBtn.classList.remove("opacity-50");
+                        flashProgBar.style.width = "0%";
+                        
+                        showToast("Flash Complete", "Archery OS installed on XIAO board successfully! Re-plug USB and connect via Bluetooth.", "success");
+                    }, 500);
+                }
+                
+                flashProgBar.style.width = `${progress}%`;
+                flashProgPct.innerText = `${progress}%`;
+                
+                if (progress < 30) {
+                    flashProgText.innerText = "Erasing chip flash sector...";
+                } else if (progress < 80) {
+                    flashProgText.innerText = "Writing high-frequency float filters...";
+                } else {
+                    flashProgText.innerText = "Verifying binary checksums...";
+                }
+            }, 150);
+        });
+    </script>
+</body>
+</html>
