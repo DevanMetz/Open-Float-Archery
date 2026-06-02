@@ -1,0 +1,275 @@
+// Device adapters: one small class per transport, all behind the same
+// interface so the rest of the app never branches on how data arrives.
+//
+//   adapter.connect()      -> Promise, begins streaming
+//   adapter.disconnect()   -> Promise, stops and cleans up
+//   adapter.name           -> human label
+//   adapter.sequenceStep   -> expected sequence increment (for loss detection)
+//
+// Adapters communicate outward only through the shared EventBus:
+//   "sample" -> Sample, "shot" -> Shot, "log" -> string,
+//   "status" -> { mode, text }
+
+import { parseBinaryFrame, TextLineParser } from "../protocol/frame.js";
+
+const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
+const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
+const OPENFLOAT_CONTROL = "8f3f3b10-0f5a-4f4c-9a2d-000000000003";
+
+class BaseAdapter {
+  constructor(bus) {
+    this.bus = bus;
+    this.connected = false;
+  }
+
+  log(message) {
+    this.bus.emit("log", message);
+  }
+
+  status(mode, text) {
+    this.bus.emit("status", { mode, text });
+  }
+
+  emitSample(sample) {
+    this.bus.emit("sample", { ...sample, sequenceStep: this.sequenceStep });
+  }
+}
+
+// Synthetic stream so the dashboard is usable with no hardware attached.
+export class DemoAdapter extends BaseAdapter {
+  get name() {
+    return "Demo";
+  }
+
+  get sequenceStep() {
+    return 1;
+  }
+
+  async connect() {
+    this.connected = true;
+    let seq = 0;
+    this.status("demo", "Demo stream");
+    this.log("Demo stream started.");
+
+    this.timer = setInterval(() => {
+      const t = performance.now() / 1000;
+      this.emitSample({
+        source: "demo",
+        protocol: 1,
+        type: 1,
+        sequence: seq++,
+        dtUs: 2400,
+        axMg: Math.round(Math.sin(t * 4) * 180),
+        ayMg: Math.round(Math.cos(t * 3) * 120),
+        azMg: Math.round(980 + Math.sin(t * 2) * 35),
+        gxDps: Math.sin(t * 5) * 18,
+        gyDps: Math.cos(t * 4) * 12,
+        gzDps: Math.sin(t * 3) * 8,
+        flags: 0,
+      });
+    }, 16);
+  }
+
+  async disconnect() {
+    clearInterval(this.timer);
+    this.timer = null;
+    this.connected = false;
+    this.status("", "Disconnected");
+    this.log("Demo stream stopped.");
+  }
+}
+
+// Web Serial: the firmware emits OFRAW/OFSHOT text lines at 115200 baud.
+export class SerialAdapter extends BaseAdapter {
+  constructor(bus, { baudRate = 115200 } = {}) {
+    super(bus);
+    this.baudRate = baudRate;
+  }
+
+  get name() {
+    return "Serial";
+  }
+
+  // Firmware prints every 8th IMU sample, so sequence advances by 8.
+  get sequenceStep() {
+    return 8;
+  }
+
+  async connect() {
+    if (!("serial" in navigator)) {
+      this.log("Web Serial unavailable. Use Chrome/Edge over https or localhost.");
+      throw new Error("Web Serial not supported");
+    }
+
+    this.port = await navigator.serial.requestPort();
+    await this.port.open({ baudRate: this.baudRate });
+    if (this.port.setSignals) {
+      await this.port.setSignals({ dataTerminalReady: true, requestToSend: true });
+    }
+
+    this.reader = this.port.readable.getReader();
+    this.connected = true;
+    this.keepReading = true;
+
+    this.status("live", `Live serial @ ${this.baudRate}`);
+    this.log(
+      `Serial connected @ ${this.baudRate} (DTR/RTS asserted). ` +
+        "Press reset on the module if no frames appear.",
+    );
+
+    this._readLoop(new TextLineParser());
+  }
+
+  async _readLoop(parser) {
+    try {
+      while (this.keepReading && this.reader) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        if (!value) continue;
+
+        for (const event of parser.feed(value)) {
+          if (event.kind === "sample") this.emitSample(event.sample);
+          else if (event.kind === "shot") this.bus.emit("shot", event.shot);
+          else this.log(event.line);
+        }
+      }
+    } catch (error) {
+      if (this.keepReading) this.log(`Serial read error: ${error.message}`);
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  async disconnect() {
+    this.keepReading = false;
+
+    if (this.reader) {
+      try {
+        await this.reader.cancel();
+      } catch (_) {}
+      try {
+        this.reader.releaseLock();
+      } catch (_) {}
+      this.reader = null;
+    }
+
+    if (this.port) {
+      try {
+        await this.port.close();
+      } catch (_) {}
+      this.port = null;
+    }
+
+    if (this.connected) this.log("Serial disconnected.");
+    this.connected = false;
+    this.status("", "Disconnected");
+  }
+}
+
+// Web Bluetooth: the firmware notifies one 20-byte binary frame per update.
+export class BleAdapter extends BaseAdapter {
+  get name() {
+    return "Bluetooth";
+  }
+
+  // Firmware notifies every 8th IMU sample, so sequence advances by 8.
+  get sequenceStep() {
+    return 8;
+  }
+
+  async connect() {
+    if (!("bluetooth" in navigator)) {
+      this.log("Web Bluetooth unavailable. Use Chrome/Edge over https or localhost.");
+      throw new Error("Web Bluetooth not supported");
+    }
+
+    // Match by advertised service UUID (carried in the primary advertisement)
+    // or by name prefix (carried in the scan response) — service is the more
+    // reliable of the two for discovery.
+    this.device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [OPENFLOAT_SERVICE] }, { namePrefix: "OpenFloat" }],
+      optionalServices: [OPENFLOAT_SERVICE],
+    });
+    this.device.addEventListener("gattserverdisconnected", () => this._onDrop());
+
+    const server = await this.device.gatt.connect();
+    const service = await server.getPrimaryService(OPENFLOAT_SERVICE);
+    this.live = await service.getCharacteristic(OPENFLOAT_LIVE);
+    try {
+      this.control = await service.getCharacteristic(OPENFLOAT_CONTROL);
+    } catch (error) {
+      this.control = null;
+      this.log(`BLE control characteristic not found: ${error.message}`);
+    }
+
+    this.sampleCount = 0;
+    this.live.addEventListener("characteristicvaluechanged", (e) => this._onValue(e));
+    await this.live.startNotifications();
+    this.log("BLE notifications subscribed.");
+    await this._sendStart();
+
+    this.connected = true;
+    this.status("live", `BLE ${this.device.name || ""}`.trim());
+    this.log(`BLE connected to ${this.device.name || this.device.id}.`);
+
+    // The firmware streams only once notifications are enabled; if nothing
+    // arrives shortly, nudge it with another start command.
+    this.watchdog = setTimeout(() => {
+      if (this.connected && this.sampleCount === 0) {
+        this.log("No BLE frames after 2s — re-sending start.");
+        this._sendStart();
+      }
+    }, 2000);
+  }
+
+  async _sendStart() {
+    if (!this.control) {
+      this.log("No control characteristic; relying on notify subscription alone.");
+      return;
+    }
+    try {
+      await this.control.writeValue(new TextEncoder().encode("start"));
+      this.log("Sent BLE control: start.");
+    } catch (error) {
+      this.log(`BLE start write failed: ${error.message}`);
+    }
+  }
+
+  _onValue(event) {
+    const dv = event.target.value;
+    const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+    const sample = parseBinaryFrame(bytes, 0);
+    if (sample) {
+      if (this.sampleCount === 0) this.log("BLE frames flowing.");
+      this.sampleCount += 1;
+      this.emitSample(sample);
+      return;
+    }
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
+    this.log(`BLE frame not decoded (${dv.byteLength} bytes): ${hex}`);
+  }
+
+  _onDrop() {
+    if (!this.connected) return;
+    this.connected = false;
+    this.log("BLE disconnected.");
+    this.status("", "Disconnected");
+  }
+
+  async disconnect() {
+    clearTimeout(this.watchdog);
+    try {
+      if (this.live) await this.live.stopNotifications();
+    } catch (_) {}
+    try {
+      if (this.device && this.device.gatt.connected) this.device.gatt.disconnect();
+    } catch (_) {}
+    this._onDrop();
+  }
+}
+
+export function createAdapter(kind, bus, options) {
+  if (kind === "serial") return new SerialAdapter(bus, options);
+  if (kind === "ble") return new BleAdapter(bus, options);
+  return new DemoAdapter(bus, options);
+}

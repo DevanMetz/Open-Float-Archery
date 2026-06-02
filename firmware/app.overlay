@@ -1,0 +1,18 @@
+&pdm_imu_pwr {
+	regulator-always-on;
+};
+
+&imu_power_default_on {
+	output-high;
+};
+
+&lsm6ds3tr_c {
+	vin-supply = <&pdm_imu_pwr>;
+};
+
+/ {
+	chosen {
+		zephyr,console = &uart20;
+		zephyr,shell-uart = &uart20;
+	};
+};

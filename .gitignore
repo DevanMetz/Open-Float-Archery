@@ -1,0 +1,16 @@
+# Zephyr / NCS firmware build output
+firmware/build/
+firmware/build-*/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor / tooling / local config
+.claude/
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
