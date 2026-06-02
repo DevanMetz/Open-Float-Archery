@@ -67,22 +67,142 @@ export function mountDashboard({ store, telemetry, el }) {
     const h = rect.height;
     ctx.clearRect(0, 0, w, h);
 
-    ctx.strokeStyle = "rgba(142, 166, 160, 0.22)";
-    ctx.lineWidth = 1;
-    for (let i = 1; i < 4; i += 1) {
-      const y = (h / 4) * i;
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y);
-      ctx.stroke();
-    }
-
     const state = store.get();
     const data = state.reviewMode ? (state.reviewTrace || []) : telemetry.getTrace();
 
-    drawSeries(ctx, data, "ax", cssVar("--green"), w, h);
-    drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h);
-    drawSeries(ctx, data, "az", cssVar("--amber"), w, h);
+    if (state.chartView === "target") {
+      const cx = w / 2;
+      const cy = h / 2;
+      const maxRadius = Math.min(w, h) * 0.45;
+
+      // Draw concentric archery target rings outer-to-inner (White, Black, Blue, Red, Yellow)
+      const colors = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
+      const radii = [maxRadius, maxRadius * 0.8, maxRadius * 0.6, maxRadius * 0.4, maxRadius * 0.2];
+
+      for (let i = 0; i < 5; i++) {
+        ctx.fillStyle = colors[i];
+        ctx.strokeStyle = "rgba(142, 166, 160, 0.35)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radii[i], 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.stroke();
+
+        // Sub-ring detailed line
+        ctx.beginPath();
+        ctx.arc(cx, cy, radii[i] - (radii[i] - (radii[i + 1] || 0)) / 2, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+
+      if (data.length >= 2) {
+        let rollCenter = 0;
+        let pitchCenter = 0;
+
+        if (state.reviewMode) {
+          // Centering around release (index of max acceleration G-force magnitude)
+          let releaseIdx = 0;
+          let maxG = 0;
+          for (let i = 0; i < data.length; i++) {
+            const pt = data[i];
+            const g = Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0);
+            if (g > maxG) {
+              maxG = g;
+              releaseIdx = i;
+            }
+          }
+          const refPt = data[releaseIdx] || { roll: 0, pitch: 0 };
+          rollCenter = refPt.roll || 0;
+          pitchCenter = refPt.pitch || 0;
+        } else {
+          // Centering around hold average in live streaming view
+          let sumRoll = 0;
+          let sumPitch = 0;
+          for (let i = 0; i < data.length; i++) {
+            sumRoll += data[i].roll || 0;
+            sumPitch += data[i].pitch || 0;
+          }
+          rollCenter = sumRoll / data.length;
+          pitchCenter = sumPitch / data.length;
+        }
+
+        // Normalize scale: find the maximum deviation to ensure the path fits the target rings
+        let maxDev = 1.0; // Minimum 1.0 degree window to prevent infinite zoom on tiny movements
+        for (let i = 0; i < data.length; i++) {
+          const pt = data[i];
+          const dx = (pt.roll || 0) - rollCenter;
+          const dy = (pt.pitch || 0) - pitchCenter;
+          const dist = Math.hypot(dx, dy);
+          if (dist > maxDev) {
+            maxDev = dist;
+          }
+        }
+
+        // Map the maximum deviation exactly to the outer ring of the target face (maxRadius)
+        const scale = maxRadius / maxDev;
+        ctx.lineWidth = 2.5;
+
+        for (let i = 1; i < data.length; i++) {
+          const pt1 = data[i - 1];
+          const pt2 = data[i];
+
+          const x1 = cx + ((pt1.roll || 0) - rollCenter) * scale;
+          const y1 = cy - ((pt1.pitch || 0) - pitchCenter) * scale;
+          const x2 = cx + ((pt2.roll || 0) - rollCenter) * scale;
+          const y2 = cy - ((pt2.pitch || 0) - pitchCenter) * scale;
+
+          const ratio = i / data.length;
+          let color;
+          if (ratio < 0.5) {
+            const r = Math.round(255 - (255 - 53) * (ratio * 2));
+            const g = Math.round(93 + (199 - 93) * (ratio * 2));
+            const b = Math.round(115 + (232 - 115) * (ratio * 2));
+            color = `rgb(${r}, ${g}, ${b})`;
+          } else {
+            const t = (ratio - 0.5) * 2;
+            const r = Math.round(53 - (53 - 48) * t);
+            const g = Math.round(199 + (227 - 199) * t);
+            const b = Math.round(232 - (232 - 155) * t);
+            color = `rgb(${r}, ${g}, ${b})`;
+          }
+
+          ctx.strokeStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+
+        // Draw current pin dot or release position marker
+        const finalPt = data[data.length - 1];
+        const fx = cx + ((finalPt.roll || 0) - rollCenter) * scale;
+        const fy = cy - ((finalPt.pitch || 0) - pitchCenter) * scale;
+
+        ctx.fillStyle = state.reviewMode ? "#FF5D73" : "#30E39B"; // Red release point, Green live pin
+        ctx.beginPath();
+        ctx.arc(fx, fy, 5, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    } else {
+      ctx.strokeStyle = "rgba(142, 166, 160, 0.22)";
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 4; i += 1) {
+        const y = (h / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      const state = store.get();
+      const data = state.reviewMode ? (state.reviewTrace || []) : telemetry.getTrace();
+
+      drawSeries(ctx, data, "ax", cssVar("--green"), w, h);
+      drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h);
+      drawSeries(ctx, data, "az", cssVar("--amber"), w, h);
+    }
 
     requestAnimationFrame(draw);
   }

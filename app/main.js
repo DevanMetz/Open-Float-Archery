@@ -20,7 +20,8 @@ const ELEMENT_IDS = [
   "saveManualBtn",
   "chartTitle", "reviewBanner", "reviewInfo", "exitReviewBtn",
   "showLogTabBtn", "showHistoryTabBtn", "shotHistoryTab", "historyList",
-  "thresholdSlider", "thresholdValue"
+  "thresholdSlider", "thresholdValue",
+  "viewTraceBtn", "viewTargetBtn"
 ];
 
 const el = {};
@@ -44,7 +45,8 @@ const store = createStore({
   cloudUser: null,
   reviewMode: false,
   reviewTrace: null,
-  reviewInfo: ""
+  reviewInfo: "",
+  chartView: "line"
 });
 
 // Initialize database
@@ -71,6 +73,12 @@ store.subscribe((state) => {
     if (state.syncStatus) {
       el.syncBadge.classList.add(`sync-${state.syncStatus}`);
     }
+  }
+
+  // Sync active states of the line vs target toggle buttons
+  if (el.viewTraceBtn && el.viewTargetBtn) {
+    el.viewTraceBtn.classList.toggle("active", state.chartView === "line");
+    el.viewTargetBtn.classList.toggle("active", state.chartView === "target");
   }
 });
 
@@ -187,6 +195,15 @@ el.showHistoryTabBtn.addEventListener("click", () => {
   el.shotHistoryTab.classList.remove("hidden");
   el.eventLog.classList.add("hidden");
   loadShotHistoryList();
+});
+
+// Chart View Toggle Event Listeners
+el.viewTraceBtn.addEventListener("click", () => {
+  store.set({ chartView: "line" });
+});
+
+el.viewTargetBtn.addEventListener("click", () => {
+  store.set({ chartView: "target" });
 });
 
 // Query local database for shots and render them

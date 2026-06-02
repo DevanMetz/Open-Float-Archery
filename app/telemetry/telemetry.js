@@ -53,21 +53,33 @@ export class TelemetryStore {
     this.frameCount += 1;
     this.framesThisSecond += 1;
 
+    const ax = sample.axMg / 1000;
+    const ay = sample.ayMg / 1000;
+    const az = sample.azMg / 1000;
+
+    // Calculate pitch and roll based on gravity projection
+    const roll = sample.rollDeg !== undefined ? sample.rollDeg : Math.atan2(ay, az) * (180 / Math.PI);
+    const pitch = sample.pitchDeg !== undefined ? sample.pitchDeg : Math.atan2(-ax, Math.hypot(ay, az)) * (180 / Math.PI);
+
     this.trace.push({
-      ax: sample.axMg / 1000,
-      ay: sample.ayMg / 1000,
-      az: sample.azMg / 1000,
+      ax,
+      ay,
+      az,
+      roll,
+      pitch
     });
     if (this.trace.length > MAX_TRACE_POINTS) this.trace.shift();
 
     // Push full samples to rolling history buffer (30 seconds * ~52 Hz = ~1560 samples)
     this.history30s.push({
-      ax: sample.axMg / 1000,
-      ay: sample.ayMg / 1000,
-      az: sample.azMg / 1000,
+      ax,
+      ay,
+      az,
       gx: sample.gxDps,
       gy: sample.gyDps,
-      gz: sample.gzDps
+      gz: sample.gzDps,
+      roll,
+      pitch
     });
     if (this.history30s.length > 1600) this.history30s.shift();
 
@@ -82,6 +94,8 @@ export class TelemetryStore {
       gyroMag,
       shotCount:
         sample.shotCount != null ? sample.shotCount : this.store.get().shotCount,
+      roll,
+      pitch
     });
   }
 
@@ -117,15 +131,21 @@ export class TelemetryStore {
 
       // 2. Save Shot Metadata
       const localShotId = generateUUID();
+      const ax = (shot.axMg || 0) / 1000;
+      const ay = (shot.ayMg || 0) / 1000;
+      const az = (shot.azMg || 1000) / 1000;
+      const computedRoll = Math.atan2(ay, az) * (180 / Math.PI);
+      const computedPitch = Math.atan2(-ax, Math.hypot(ay, az)) * (180 / Math.PI);
+
       const shotRecord = {
         id: localShotId,
         session_id: this.currentSessionId,
         device_id: "OpenFloat-Sensor",
         timestamp: new Date().toISOString(),
         peak_g: peakG,
-        cant_angle_deg: shot.rollDeg || 0,
-        pitch_angle_deg: shot.pitchDeg || 0,
-        roll_angle_deg: shot.rollDeg || 0,
+        cant_angle_deg: Number((shot.rollDeg !== undefined ? shot.rollDeg : computedRoll).toFixed(1)),
+        pitch_angle_deg: Number((shot.pitchDeg !== undefined ? shot.pitchDeg : computedPitch).toFixed(1)),
+        roll_angle_deg: Number((shot.rollDeg !== undefined ? shot.rollDeg : computedRoll).toFixed(1)),
         stability_score: Number((100 - Math.min(100, Math.hypot(shot.gxDps || 0, shot.gyDps || 0, shot.gzDps || 0))).toFixed(1)),
         packet_loss_count: this.lost
       };
@@ -214,7 +234,9 @@ export class TelemetryStore {
         return {
           ax: pt.ax,
           ay: pt.ay,
-          az: pt.az
+          az: pt.az,
+          roll: pt.roll,
+          pitch: pt.pitch
         };
       });
 
