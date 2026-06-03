@@ -271,6 +271,8 @@ async def run_client(args) -> None:
     last_print = 0.0
     last_seq: Optional[int] = None
     frames = 0
+    notifications = 0
+    bytes_received = 0
     lost = 0
     csv_writer = None
     csv_file = None
@@ -298,7 +300,10 @@ async def run_client(args) -> None:
         )
 
     def on_notify(_sender, data: bytearray) -> None:
-        nonlocal frames, last_print, last_seq, lost
+        nonlocal frames, notifications, bytes_received, last_print, last_seq, lost
+
+        notifications += 1
+        bytes_received += len(data)
 
         if args.raw:
             print(data.hex(" "))
@@ -357,7 +362,10 @@ async def run_client(args) -> None:
         while deadline is None or time.monotonic() < deadline:
             await asyncio.sleep(0.2)
 
-        await client.stop_notify(notify_uuid)
+        try:
+            await client.stop_notify(notify_uuid)
+        except OSError as exc:
+            print(f"Warning: stop_notify failed: {exc}")
     finally:
         if client.is_connected:
             try:
@@ -368,7 +376,12 @@ async def run_client(args) -> None:
             csv_file.close()
 
     elapsed = time.monotonic() - start
-    print(f"Done. frames={frames} lost={lost} elapsed={elapsed:.1f}s rate={frames / max(elapsed, 0.001):.1f} Hz")
+    print(
+        f"Done. frames={frames} lost={lost} elapsed={elapsed:.1f}s "
+        f"rate={frames / max(elapsed, 0.001):.1f} Hz "
+        f"notifications={notifications} notify_rate={notifications / max(elapsed, 0.001):.1f} Hz "
+        f"bytes={bytes_received} bytes_per_s={bytes_received / max(elapsed, 0.001):.0f}"
+    )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -387,8 +400,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sequence-step",
         type=int,
-        default=8,
-        help="Expected sequence increment between BLE notifications.",
+        default=1,
+        help="Expected sequence increment between decoded BLE frames.",
     )
     parser.add_argument("--csv", help="Optional CSV output path.")
     parser.add_argument("--reset-command", help="Optional command to write after connecting, such as start or zero.")

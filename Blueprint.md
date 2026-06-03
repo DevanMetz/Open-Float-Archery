@@ -14,8 +14,10 @@ This blueprint mixes shipped reality with forward-looking design. As of the
 NCS v3.3.0 firmware (see `firmware/`), the following is **built and verified on
 hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
 
-- IMU accelerometer + gyroscope sampled at **416 Hz** (the LSM6DS3TR-C native
-  ODR closest to the 400 Hz target).
+- IMU accelerometer + gyroscope previously verified at **416 Hz** (the
+  LSM6DS3TR-C native ODR closest to the 400 Hz target). The current experiment
+  requests the sensor's **6664 Hz** ODR and averages raw reads into a target
+  **1000 Hz** BLE output stream.
 - On-device orientation: a Madgwick filter produces a quaternion and Euler
   angles (cant/roll, pitch, yaw) **on the device**, not in the browser.
 - Shot detection: a 12 g (117.72 m/s^2) acceleration-magnitude threshold with
@@ -24,16 +26,25 @@ hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
 - Two telemetry transports carrying the same data:
   - **USB / Web Serial**: human-readable `OFRAW` text lines at ~52 Hz
     (every 8th sample) plus `#` comment/banner lines and `OFSHOT` events.
-  - **BLE**: a custom GATT service notifying a compact **20-byte binary frame**
-    every 8th sample (~24 Hz measured on Windows/Bleak).
+  - **BLE**: a custom GATT service notifying batches of compact 20-byte binary
+    frames. The current high-rate experiment batches ten averaged frames into a
+    200-byte notification.
 - Button-triggered zeroing of cant and pitch offsets.
 
 Verified test clients: `tools/openfloat_ble_client.py` (BLE + serial decoder)
 and the Web Serial dashboard in `index.html`.
 
-**Not yet implemented** (still design targets below): batched multi-sample live
-packets with a CRC footer, 800 Hz sampling, the on-device rolling shot buffer
-and shot replay/transfer, the device-info / shot-event / shot-data / config
+**Measured high-rate caveat:** on Windows/Bleak with 2M PHY and 217-byte data
+length, the raw-register high-rate firmware produced `frames=7500 lost=0
+elapsed=8.6s rate=873.0 Hz notifications=750 notify_rate=87.3 Hz bytes=150000
+bytes_per_s=17461`. BLE carried 200-byte notifications without loss, but the
+current raw I2C polling path still did not reach the 1000 Hz averaged output
+target. Hitting 1000 Hz likely requires using the IMU FIFO/data-ready path so
+multiple raw samples can be drained per I2C transaction.
+
+**Not yet implemented** (still design targets below): CRC-footed live packets,
+validated 800-1000 Hz capture, the on-device rolling shot buffer and shot
+replay/transfer, the device-info / shot-event / shot-data / config
 characteristics, and cloud sync. Where a section below describes one of these,
 treat it as the intended direction rather than current behavior.
 
@@ -166,11 +177,13 @@ OpenFloat should support full-rate live telemetry and a local rolling buffer at 
 | Gyro range | Highest available practical range |
 | Timestamp | Monotonic device timestamp or sample counter |
 
-**Implemented v1:** the firmware samples accel + gyro at **416 Hz** (nearest
-LSM6DS3TR-C ODR to 400 Hz) and stamps each sample with a monotonic device
-uptime (microseconds) plus an inter-sample `dt_us`. Telemetry is decimated by 8
-before transmission on both transports. 800 Hz and the per-sample fixed-point
-transport packing below are not yet in place.
+**Implemented v1 / current experiment:** the stable baseline sampled accel +
+gyro at **416 Hz** (nearest LSM6DS3TR-C ODR to 400 Hz). The current firmware
+configures **6664 Hz** accel + gyro ODR through raw LSM6DSL registers, averages
+however many raw reads are available in each 1 ms window, and emits averaged
+fixed-point frames over BLE. The latest Windows/Bleak run measured about
+**873 averaged frames/s** with 200-byte notifications and no sequence loss,
+short of the 1000 Hz target with the current I2C polling implementation.
 
 ### Local Rolling Buffer
 
@@ -242,9 +255,11 @@ The browser converts fixed-point values into physical units using scale factors 
 
 ### Implemented v1 Live Frame
 
-The batched, CRC-footed packet above is the target. The current firmware ships a
-simpler **fixed 20-byte, single-sample** frame, sent identically over BLE
-notifications and (optionally) raw serial:
+The CRC-footed packet above is the longer-term target. The current firmware
+ships a simpler **fixed 20-byte, single-sample** frame. BLE notifications
+currently batch ten averaged frames into a **200-byte payload** in the
+high-rate experiment; text serial emits `OFRAW` lines at a lower diagnostic
+rate instead:
 
 ```text
 offset 0  magic[2]      "OF"
@@ -261,12 +276,8 @@ There is **no CRC and no flags field** in the v1 frame; sequence is `u16`, not
 on-device Euler angles, quaternion, and shot count. Scale factors are fixed in
 firmware for now rather than announced over a device-info characteristic.
 
-> Compatibility note: `tools/openfloat_ble_client.py` decodes this 20-byte frame
-> correctly. The binary parser in `index.html` currently expects a 26-byte
-> layout (u32 sequence, flags, trailing crc16) and will reject real frames on
-> the checksum check — it needs to be updated to this v1 layout (or the firmware
-> upgraded to emit the batched/CRC format) before BLE/binary serial decode works
-> in the browser.
+`tools/openfloat_ble_client.py` and the browser BLE adapter decode these
+batched v1 frames.
 
 ### Reliability Strategy
 
@@ -303,8 +314,9 @@ post_samples: uint16
 flags: uint16
 ```
 
-**Implemented v1:** detection runs on the raw acceleration magnitude against a
-fixed **12 g (117.72 m/s^2)** threshold with an **800 ms** refractory window. A
+**Implemented v1:** detection runs on the raw acceleration magnitude against an
+initial **12 g** threshold with an **800 ms** refractory window. The threshold is
+runtime-configurable over BLE with `thresh:<g>` and is clamped to 2-30 g. A
 detected shot increments a shot counter, pulses the user LED, and emits a serial
 event:
 
@@ -357,9 +369,10 @@ Control  8f3f3b10-0f5a-4f4c-9a2d-000000000003  write   (ASCII commands)
 ```
 
 The control characteristic currently accepts the ASCII commands `start` and
-`stop` (toggle live notifications) and `zero` (acknowledged; live zeroing is
-still owned by the user button). The device-info, shot-event, shot-data, and
-config characteristics are not implemented yet.
+`stop` (toggle live notifications), `zero` (acknowledged; live zeroing is still
+owned by the user button), and `thresh:<g>` (sets the shot detection threshold,
+clamped to 2-30 g). The device-info, shot-event, shot-data, and config
+characteristics are not implemented yet.
 
 ### Shot Data Chunking
 
@@ -571,9 +584,11 @@ not begun. See the Implementation Status section near the top for detail.
 
 ### Phase 3: Full-Rate BLE Live Stream  [partial]
 
-- Implement packed binary live packets. (20-byte single-sample v1 frame; not yet
-  batched, and decimated to every 8th sample rather than full-rate.)
-- Tune BLE connection interval and MTU. (Modest buffers in use; ~24 Hz over BLE.)
+- Implement packed binary live packets. (20-byte v1 frames; current high-rate
+  experiment batches 10 averaged frames into 200-byte notifications.)
+- Tune BLE connection interval and MTU. (212-byte L2CAP TX MTU, 217-byte ACL
+  TX/RX buffers, and 7.5 ms preferred interval are in use; 200-byte BLE
+  payloads verified on Windows/Bleak at 87.3 notifications/s with zero loss.)
 - Detect packet loss in the browser. (Done in `openfloat_ble_client.py` via the
   sequence field; `index.html` binary decode still needs the v1 layout.)
 
@@ -588,7 +603,7 @@ not begun. See the Implementation Status section near the top for detail.
 
 - Add axis orientation mapping. (Fixed mount rotation + button-zeroed cant/pitch
   offsets in firmware.)
-- Add threshold configuration. (Compile-time constant for now.)
+- Add threshold configuration. (Runtime BLE command `thresh:<g>` implemented.)
 - Add sample-rate and range configuration. (Not yet runtime-configurable.)
 
 ### Phase 6: Local-First Persistence  [todo]
@@ -626,10 +641,12 @@ not begun. See the Implementation Status section near the top for detail.
 ## 17. Open Questions
 
 - Can the selected integrated IMU capture release shock without clipping?
-- Is 800 Hz full-rate BLE stable enough across target devices?
+- Is the current ~873 Hz / 87 notifications/s raw-register BLE mode stable
+  enough across target devices?
+- Should the next high-rate firmware step use the IMU FIFO/data-ready path to
+  close the remaining gap to 1000 Hz?
 - Should USB/Web Serial be the recommended mode for lab-grade full-rate capture?
 - What mounting position gives the best signal-to-noise ratio?
 - How much damping protects electronics without hiding useful shot dynamics?
 - Which metrics are most valuable to archers and coaches in the first release?
 - What data should be public/exportable for the open-source community?
-

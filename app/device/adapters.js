@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { decodeBinaryFrame, TextLineParser } from "../protocol/frame.js";
+import { BINARY_FRAME_LEN, decodeBinaryFrame, TextLineParser } from "../protocol/frame.js";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
@@ -173,15 +173,15 @@ export class SerialAdapter extends BaseAdapter {
   }
 }
 
-// Web Bluetooth: the firmware notifies one 20-byte binary frame per update.
+// Web Bluetooth: the firmware notifies batched 20-byte binary frames.
 export class BleAdapter extends BaseAdapter {
   get name() {
     return "Bluetooth";
   }
 
-  // Firmware notifies every 8th IMU sample, so sequence advances by 8.
+  // Firmware adds a BLE frame every IMU sample, so sequence advances by 1.
   get sequenceStep() {
-    return 8;
+    return 1;
   }
 
   async connect() {
@@ -247,20 +247,27 @@ export class BleAdapter extends BaseAdapter {
   _onValue(event) {
     const dv = event.target.value;
     const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
-    const decoded = decodeBinaryFrame(bytes, 0);
 
-    if (decoded && decoded.kind === "sample") {
-      if (this.sampleCount === 0) this.log("BLE frames flowing.");
-      this.sampleCount += 1;
-      this.emitSample(decoded.sample);
-      return;
+    let decodedCount = 0;
+    for (let offset = 0; offset + BINARY_FRAME_LEN <= bytes.length; offset += BINARY_FRAME_LEN) {
+      const decoded = decodeBinaryFrame(bytes, offset);
+      if (decoded && decoded.kind === "sample") {
+        if (this.sampleCount === 0) this.log("BLE frames flowing.");
+        this.sampleCount += 1;
+        decodedCount += 1;
+        this.emitSample(decoded.sample);
+        continue;
+      }
+      if (decoded && decoded.kind === "shot") {
+        decodedCount += 1;
+        this.bus.emit("shot", decoded.shot);
+      }
     }
-    if (decoded && decoded.kind === "shot") {
-      this.bus.emit("shot", decoded.shot);
-      return;
+
+    if (decodedCount === 0) {
+      const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
+      this.log(`BLE frame not decoded (${dv.byteLength} bytes): ${hex}`);
     }
-    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
-    this.log(`BLE frame not decoded (${dv.byteLength} bytes): ${hex}`);
   }
 
   _onDrop() {

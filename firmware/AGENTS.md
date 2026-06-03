@@ -78,14 +78,15 @@ warning: SB_CONFIG_PARTITION_MANAGER is enabled, partition manager has been depr
 warning: BT_HCI_TX_STACK_SIZE was assigned 2048 but got 1536
 ```
 
-The BLE bring-up requires modest Bluetooth buffer sizing that matches the working stock Zephyr peripheral sample:
+The BLE bring-up originally required modest Bluetooth buffer sizing that matched the working stock Zephyr peripheral sample. The current firmware keeps a larger MTU/data-length configuration so notification payload size can be tuned without returning to tiny defaults:
 
 ```text
-CONFIG_BT_BUF_ACL_RX_SIZE=69
-CONFIG_BT_L2CAP_TX_MTU=65
+CONFIG_BT_BUF_ACL_RX_SIZE=217
+CONFIG_BT_BUF_ACL_TX_SIZE=217
+CONFIG_BT_L2CAP_TX_MTU=212
 ```
 
-Leaving these at the tiny defaults (`BT_BUF_ACL_RX_SIZE=27`, `BT_L2CAP_TX_MTU=23`) caused an MPU fault inside Zephyr `net_buf_alloc_len()` during `bt_enable()` on this board. Very large 251-byte ACL/data-length settings also caused net buffer faults, so keep the current modest values unless there is a specific MTU test plan.
+Leaving these at the tiny defaults (`BT_BUF_ACL_RX_SIZE=27`, `BT_BUF_ACL_TX_SIZE=27`, `BT_L2CAP_TX_MTU=23`) fragments or prevents the intended 200-byte notification path. Very large 251-byte ACL/data-length settings caused net buffer faults in earlier bring-up. The current 217/212 settings build, boot, advertise, and stream 200-byte notifications on Windows/Bleak; retest boot and BLE any time these values move.
 
 ## Flash With OpenOCD
 
@@ -199,11 +200,20 @@ Live:    8f3f3b10-0f5a-4f4c-9a2d-000000000002
 Control: 8f3f3b10-0f5a-4f4c-9a2d-000000000003
 ```
 
-The BLE live characteristic notifies a compact 20-byte binary frame so it fits the default ATT notification payload:
+The BLE live characteristic notifies ten compact 20-byte binary frames per notification, for a 200-byte payload and a target cadence of about 100 notifications/s:
 
 ```text
 magic[2]="OF", proto u8, type u8, seq u16, dt_us u16,
 accel_mg int16[3], gyro_dps_q4 int16[3]
+```
+
+The BLE control characteristic accepts ASCII commands:
+
+```text
+start       Enable live notifications
+stop        Disable live notifications
+zero        Acknowledge a zeroing request; user button still owns live zeroing
+thresh:<g>  Set shot detection threshold in g, clamped to 2.0-30.0
 ```
 
 The host-side test client lives in the web repo:
@@ -224,11 +234,20 @@ Current BLE verification status:
 ```text
 Windows found OpenFloat-463D at DB:92:7D:1C:E9:DA.
 The client connected to the custom live UUID.
-Decoded accel/gyro notifications were received.
-Final checked run: frames=170, lost=0, elapsed=7.0s, rate=24.2 Hz.
+Decoded 200-byte notifications were received; each contained ten averaged 20-byte frames.
+Serial banner confirmed imu_odr_hz=6664 and ble_output_hz=1000 averaged samples/s.
+Raw-register IMU path configured the LSM6DS3TR-C directly over I2C at 6664 Hz ODR, accel +/-16 g, gyro +/-2000 dps.
+Final high-rate checked run: frames=7500, lost=0, elapsed=8.6s, rate=873.0 Hz, notifications=750, notify_rate=87.3 Hz, bytes=150000, bytes_per_s=17461.
 ```
 
-The Python client uses `--sequence-step 8` by default because firmware sends BLE notifications every eighth IMU sample. Do not treat the intentional sequence stride as packet loss.
+The Python client uses `--sequence-step 1` by default because each decoded BLE frame represents one IMU sample. Do not treat the intentional sequence stride as packet loss.
+
+The 1000 Hz averaged BLE mode is currently a throughput experiment, not a validated capture rate. The IMU accepts the requested 6664 Hz ODR and BLE carries 200-byte notifications without sequence loss, but the raw I2C polling loop measured about 873 averaged frames/s. Reaching the 1000 Hz target likely needs the LSM6DS3TR-C FIFO/data-ready path so multiple raw samples can be drained per I2C transaction.
+On Windows, include `--reset-command start` in automated BLE tests to match the browser adapter's control write after subscribing:
+
+```powershell
+python tools\openfloat_ble_client.py --name-prefix OpenFloat --scan-timeout 12 --duration 8 --reset-command start
+```
 
 One Windows-specific caveat remains: after the Python/Bleak client exits, Windows may hold the BLE connection for a while. In that state immediate rediscovery by scanning can fail even though serial continues streaming and the firmware remains alive. The firmware restarts advertising in its `disconnected` callback, so if a real disconnect reaches the device it should advertise again. For repeat automated tests on this host, resetting the module through OpenOCD before the next scan is currently the reliable path.
 

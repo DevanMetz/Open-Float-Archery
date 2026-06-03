@@ -10,6 +10,10 @@
 	vin-supply = <&pdm_imu_pwr>;
 };
 
+&i2c30 {
+	clock-frequency = <1000000>;
+};
+
 / {
 	chosen {
 		zephyr,console = &uart20;

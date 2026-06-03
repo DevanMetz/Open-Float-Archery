@@ -9,12 +9,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/sensor.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
@@ -26,11 +27,21 @@
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/uuid.h>
 
-#define SAMPLE_HZ 416
-#define SAMPLE_PERIOD_US (1000000 / SAMPLE_HZ)
-#define SERIAL_PRINT_DIVIDER 8
-#define BLE_NOTIFY_DIVIDER 8
+#define IMU_ODR_HZ 6664
+#define IMU_ACCEL_FS_G 16
+#define IMU_GYRO_FS_DPS 2000
+#define BLE_OUTPUT_HZ 1000
+#define BLE_OUTPUT_PERIOD_US (1000000 / BLE_OUTPUT_HZ)
+#define SERIAL_PRINT_DIVIDER 100
+#define BLE_NOTIFY_DIVIDER 1
 #define OPENFLOAT_BLE_FRAME_SIZE 20
+#define OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION 10
+#define OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE \
+	(OPENFLOAT_BLE_FRAME_SIZE * OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION)
+#define OPENFLOAT_CONN_INTERVAL_MIN 6  /* 7.5 ms */
+#define OPENFLOAT_CONN_INTERVAL_MAX 6  /* 7.5 ms */
+#define OPENFLOAT_CONN_LATENCY 0
+#define OPENFLOAT_CONN_TIMEOUT 400 /* 4 s */
 #define MADGWICK_BETA 0.08f
 
 #define RAD_TO_DEG 57.29577951308232f
@@ -39,22 +50,41 @@
 #define SCALE_MG 101.97162129779283f
 #define SCALE_GYRO_MDPS (RAD_TO_DEG * 1000.0f)
 #define SCALE_GYRO_DPS_Q4 (RAD_TO_DEG * 16.0f)
+#define LSM6DSL_REG_WHO_AM_I 0x0f
+#define LSM6DSL_WHO_AM_I 0x6a
+#define LSM6DSL_REG_CTRL1_XL 0x10
+#define LSM6DSL_REG_CTRL2_G 0x11
+#define LSM6DSL_REG_CTRL3_C 0x12
+#define LSM6DSL_REG_CTRL6_C 0x15
+#define LSM6DSL_REG_CTRL7_G 0x16
+#define LSM6DSL_REG_OUTX_L_G 0x22
+#define LSM6DSL_ODR_6664HZ 0x0a
+#define LSM6DSL_ACCEL_FS_16G 0x01
+#define LSM6DSL_GYRO_FS_2000DPS 0x03
+#define LSM6DSL_CTRL3_C_BDU BIT(6)
+#define LSM6DSL_CTRL3_C_IF_INC BIT(2)
+#define LSM6DSL_CTRL6_C_XL_HM_MODE BIT(4)
+#define LSM6DSL_CTRL7_G_HM_MODE BIT(7)
+#define LSM6DSL_ACCEL_16G_MPS2_PER_LSB \
+	((float)IMU_ACCEL_FS_G * MPS2_PER_G / 32768.0f)
+#define LSM6DSL_GYRO_2000DPS_RAD_PER_S_PER_LSB \
+	(((float)IMU_GYRO_FS_DPS * 2.0f / 65536.0f) / RAD_TO_DEG)
 
 /* Mounting: XIAO rotated 90 degrees about the cant/forward axis.
  * Flip this sign if the mounted board reads pitch or cant inverted.
  */
 #define MOUNT_ROT_X_SIGN 1
 
-/* 12 g initial release threshold. This is intentionally configurable in code
- * until field data tells us the right per-bow/default value.
- */
-#define SHOT_ACCEL_THRESHOLD_MPS2 117.72f
+#define MPS2_PER_G 9.81f
+#define DEFAULT_SHOT_ACCEL_THRESHOLD_G 12.0f
+#define MIN_SHOT_ACCEL_THRESHOLD_G 2.0f
+#define MAX_SHOT_ACCEL_THRESHOLD_G 30.0f
 #define SHOT_REFRACTORY_MS 800
 
 #define LED_IDLE_PERIOD_MS 500
 #define LED_SHOT_PULSE_MS 120
 
-static const struct device *const imu = DEVICE_DT_GET(DT_ALIAS(imu0));
+static const struct i2c_dt_spec imu_i2c = I2C_DT_SPEC_GET(DT_ALIAS(imu0));
 static const struct gpio_dt_spec user_led =
 	GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, { 0 });
 static const struct gpio_dt_spec user_btn =
@@ -67,10 +97,15 @@ static float pitch_offset_deg;
 static int shot_count;
 static uint32_t shot_id;
 static uint32_t telemetry_sequence;
+static uint32_t raw_sample_sequence;
 static uint32_t ble_dropped_samples;
 static int64_t led_shot_until_ms;
+static float shot_accel_threshold_mps2 =
+	DEFAULT_SHOT_ACCEL_THRESHOLD_G * MPS2_PER_G;
 static struct bt_conn *current_conn;
 static bool ble_notify_enabled;
+static void tune_ble_link_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(tune_ble_link_work, tune_ble_link_work_handler);
 
 static struct bt_uuid_128 openfloat_service_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x8f3f3b10, 0x0f5a, 0x4f4c, 0x9a2d,
@@ -232,34 +267,87 @@ static void apply_mount_rotation(struct vec3 *v)
 	v->z = (float)(MOUNT_ROT_X_SIGN) * y;
 }
 
-static int configure_imu(void)
+static int16_t le16_to_s16(const uint8_t *buf)
 {
-	struct sensor_value odr = {
-		.val1 = SAMPLE_HZ,
-		.val2 = 0,
-	};
+	return (int16_t)((uint16_t)buf[0] | ((uint16_t)buf[1] << 8));
+}
+
+static int configure_imu_raw_registers(void)
+{
+	uint8_t who_am_i;
 	int err;
 
-	if (!device_is_ready(imu)) {
-		printk("# IMU device %s is not ready\n", imu->name);
+	if (!device_is_ready(imu_i2c.bus)) {
+		printk("# IMU I2C bus %s is not ready\n", imu_i2c.bus->name);
 		return -ENODEV;
 	}
 
-	err = sensor_attr_set(imu, SENSOR_CHAN_ACCEL_XYZ,
-			      SENSOR_ATTR_SAMPLING_FREQUENCY, &odr);
+	err = i2c_reg_read_byte_dt(&imu_i2c, LSM6DSL_REG_WHO_AM_I, &who_am_i);
 	if (err) {
-		printk("# Could not set accelerometer ODR: %d\n", err);
+		printk("# Could not read IMU WHO_AM_I: %d\n", err);
+		return err;
+	}
+	if (who_am_i != LSM6DSL_WHO_AM_I) {
+		printk("# Unexpected IMU WHO_AM_I: 0x%02x\n", who_am_i);
+		return -ENODEV;
+	}
+
+	err = i2c_reg_update_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL3_C,
+				     LSM6DSL_CTRL3_C_BDU |
+					     LSM6DSL_CTRL3_C_IF_INC,
+				     LSM6DSL_CTRL3_C_BDU |
+					     LSM6DSL_CTRL3_C_IF_INC);
+	if (err) {
+		printk("# Could not enable IMU BDU/auto-increment: %d\n", err);
 		return err;
 	}
 
-	err = sensor_attr_set(imu, SENSOR_CHAN_GYRO_XYZ,
-			      SENSOR_ATTR_SAMPLING_FREQUENCY, &odr);
+	err = i2c_reg_write_byte_dt(
+		&imu_i2c, LSM6DSL_REG_CTRL1_XL,
+		(LSM6DSL_ODR_6664HZ << 4) | (LSM6DSL_ACCEL_FS_16G << 2));
 	if (err) {
-		printk("# Could not set gyroscope ODR: %d\n", err);
+		printk("# Could not set raw accelerometer config: %d\n", err);
 		return err;
 	}
 
-	printk("# IMU ready: %s, accel+gyro %d Hz\n", imu->name, SAMPLE_HZ);
+	err = i2c_reg_write_byte_dt(
+		&imu_i2c, LSM6DSL_REG_CTRL2_G,
+		(LSM6DSL_ODR_6664HZ << 4) | (LSM6DSL_GYRO_FS_2000DPS << 2));
+	if (err) {
+		printk("# Could not set raw gyroscope config: %d\n", err);
+		return err;
+	}
+
+	err = i2c_reg_update_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL6_C,
+				     LSM6DSL_CTRL6_C_XL_HM_MODE, 0);
+	if (err) {
+		printk("# Could not enable accelerometer high performance: %d\n",
+		       err);
+		return err;
+	}
+
+	err = i2c_reg_update_byte_dt(&imu_i2c, LSM6DSL_REG_CTRL7_G,
+				     LSM6DSL_CTRL7_G_HM_MODE, 0);
+	if (err) {
+		printk("# Could not enable gyroscope high performance: %d\n", err);
+		return err;
+	}
+
+	return 0;
+}
+
+static int configure_imu(void)
+{
+	int err;
+
+	err = configure_imu_raw_registers();
+	if (err) {
+		return err;
+	}
+
+	printk("# IMU ready: raw I2C burst on %s@0x%02x, accel+gyro ODR %d Hz, accel +/- %dg, gyro +/- %d dps\n",
+	       imu_i2c.bus->name, imu_i2c.addr, IMU_ODR_HZ, IMU_ACCEL_FS_G,
+	       IMU_GYRO_FS_DPS);
 	k_sleep(K_MSEC(100));
 
 	return 0;
@@ -267,31 +355,34 @@ static int configure_imu(void)
 
 static int read_imu(struct vec3 *accel, struct vec3 *gyro)
 {
-	struct sensor_value accel_values[3];
-	struct sensor_value gyro_values[3];
+	uint8_t raw[12];
+	int16_t raw_gx;
+	int16_t raw_gy;
+	int16_t raw_gz;
+	int16_t raw_ax;
+	int16_t raw_ay;
+	int16_t raw_az;
 	int err;
 
-	err = sensor_sample_fetch(imu);
+	err = i2c_burst_read_dt(&imu_i2c, LSM6DSL_REG_OUTX_L_G, raw,
+				sizeof(raw));
 	if (err) {
 		return err;
 	}
 
-	err = sensor_channel_get(imu, SENSOR_CHAN_ACCEL_XYZ, accel_values);
-	if (err) {
-		return err;
-	}
+	raw_gx = le16_to_s16(&raw[0]);
+	raw_gy = le16_to_s16(&raw[2]);
+	raw_gz = le16_to_s16(&raw[4]);
+	raw_ax = le16_to_s16(&raw[6]);
+	raw_ay = le16_to_s16(&raw[8]);
+	raw_az = le16_to_s16(&raw[10]);
 
-	err = sensor_channel_get(imu, SENSOR_CHAN_GYRO_XYZ, gyro_values);
-	if (err) {
-		return err;
-	}
-
-	accel->x = sensor_value_to_float(&accel_values[0]);
-	accel->y = sensor_value_to_float(&accel_values[1]);
-	accel->z = sensor_value_to_float(&accel_values[2]);
-	gyro->x = sensor_value_to_float(&gyro_values[0]);
-	gyro->y = sensor_value_to_float(&gyro_values[1]);
-	gyro->z = sensor_value_to_float(&gyro_values[2]);
+	accel->x = (float)raw_ax * LSM6DSL_ACCEL_16G_MPS2_PER_LSB;
+	accel->y = (float)raw_ay * LSM6DSL_ACCEL_16G_MPS2_PER_LSB;
+	accel->z = (float)raw_az * LSM6DSL_ACCEL_16G_MPS2_PER_LSB;
+	gyro->x = (float)raw_gx * LSM6DSL_GYRO_2000DPS_RAD_PER_S_PER_LSB;
+	gyro->y = (float)raw_gy * LSM6DSL_GYRO_2000DPS_RAD_PER_S_PER_LSB;
+	gyro->z = (float)raw_gz * LSM6DSL_GYRO_2000DPS_RAD_PER_S_PER_LSB;
 
 	apply_mount_rotation(accel);
 	apply_mount_rotation(gyro);
@@ -379,7 +470,8 @@ static void detect_shot(const struct vec3 *accel, uint64_t now_us)
 	static int64_t last_shot_ms;
 	float mag2 = (accel->x * accel->x) + (accel->y * accel->y) +
 		     (accel->z * accel->z);
-	float thresh2 = SHOT_ACCEL_THRESHOLD_MPS2 * SHOT_ACCEL_THRESHOLD_MPS2;
+	float threshold = shot_accel_threshold_mps2;
+	float thresh2 = threshold * threshold;
 	int64_t now_ms = k_uptime_get();
 
 	if (mag2 > thresh2 && (now_ms - last_shot_ms) > SHOT_REFRACTORY_MS) {
@@ -395,6 +487,38 @@ static void detect_shot(const struct vec3 *accel, uint64_t now_us)
 		       scale_float(accel->z, SCALE_MG),
 		       shot_count);
 	}
+}
+
+static void print_threshold_g(float threshold_g)
+{
+	int32_t tenths = scale_float(threshold_g, 10.0f);
+
+	printk("# BLE control: shot threshold set to %d.%01d g\n",
+	       tenths / 10, tenths % 10);
+}
+
+static bool set_shot_threshold_from_command(const char *command)
+{
+	const char *value = command + strlen("thresh:");
+	char *end;
+	float threshold_g;
+
+	errno = 0;
+	threshold_g = strtof(value, &end);
+	if (errno != 0 || end == value || *end != '\0') {
+		printk("# BLE control: invalid threshold command '%s'\n", command);
+		return false;
+	}
+
+	if (threshold_g < MIN_SHOT_ACCEL_THRESHOLD_G) {
+		threshold_g = MIN_SHOT_ACCEL_THRESHOLD_G;
+	} else if (threshold_g > MAX_SHOT_ACCEL_THRESHOLD_G) {
+		threshold_g = MAX_SHOT_ACCEL_THRESHOLD_G;
+	}
+
+	shot_accel_threshold_mps2 = threshold_g * MPS2_PER_G;
+	print_threshold_g(threshold_g);
+	return true;
 }
 
 static int16_t clamp_i16(int32_t value)
@@ -499,6 +623,8 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		ble_notify_enabled = true;
 	} else if (!strcmp(command, "stop")) {
 		ble_notify_enabled = false;
+	} else if (!strncmp(command, "thresh:", strlen("thresh:"))) {
+		(void)set_shot_threshold_from_command(command);
 	} else {
 		printk("# BLE control: unknown command '%s'\n", command);
 	}
@@ -554,6 +680,48 @@ static int start_ble_advertising(void)
 	return 0;
 }
 
+static void tune_ble_link_work_handler(struct k_work *work)
+{
+	struct bt_le_conn_param conn_param = BT_LE_CONN_PARAM_INIT(
+		OPENFLOAT_CONN_INTERVAL_MIN,
+		OPENFLOAT_CONN_INTERVAL_MAX,
+		OPENFLOAT_CONN_LATENCY,
+		OPENFLOAT_CONN_TIMEOUT);
+	const struct bt_conn_le_data_len_param *data_len_param =
+		BT_LE_DATA_LEN_PARAM_MAX;
+	const struct bt_conn_le_phy_param *phy_param = BT_CONN_LE_PHY_PARAM_2M;
+	int err;
+
+	ARG_UNUSED(work);
+
+	if (!current_conn) {
+		return;
+	}
+
+	err = bt_conn_le_param_update(current_conn, &conn_param);
+	if (err) {
+		printk("# BLE conn param update request failed: %d\n", err);
+	} else {
+		printk("# BLE conn param update requested: interval %u-%u units\n",
+		       conn_param.interval_min, conn_param.interval_max);
+	}
+
+	err = bt_conn_le_data_len_update(current_conn, data_len_param);
+	if (err) {
+		printk("# BLE data length update request failed: %d\n", err);
+	} else {
+		printk("# BLE data length update requested: tx %u bytes %u us\n",
+		       data_len_param->tx_max_len, data_len_param->tx_max_time);
+	}
+
+	err = bt_conn_le_phy_update(current_conn, phy_param);
+	if (err) {
+		printk("# BLE PHY update request failed: %d\n", err);
+	} else {
+		printk("# BLE PHY update requested: 2M\n");
+	}
+}
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
@@ -564,12 +732,14 @@ static void connected(struct bt_conn *conn, uint8_t err)
 
 	current_conn = bt_conn_ref(conn);
 	printk("# BLE connected\n");
+	(void)k_work_reschedule(&tune_ble_link_work, K_MSEC(500));
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	printk("# BLE disconnected: %u %s\n", reason, bt_hci_err_to_str(reason));
 	ble_notify_enabled = false;
+	(void)k_work_cancel_delayable(&tune_ble_link_work);
 
 	if (current_conn) {
 		bt_conn_unref(current_conn);
@@ -579,9 +749,33 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	(void)start_ble_advertising();
 }
 
+static void le_param_updated(struct bt_conn *conn, uint16_t interval,
+			     uint16_t latency, uint16_t timeout)
+{
+	printk("# BLE conn params: interval=%u units latency=%u timeout=%u\n",
+	       interval, latency, timeout);
+}
+
+static void le_phy_updated(struct bt_conn *conn,
+			   struct bt_conn_le_phy_info *param)
+{
+	printk("# BLE PHY updated: tx=%u rx=%u\n", param->tx_phy, param->rx_phy);
+}
+
+static void le_data_len_updated(struct bt_conn *conn,
+				struct bt_conn_le_data_len_info *info)
+{
+	printk("# BLE data length updated: tx=%u/%u us rx=%u/%u us\n",
+	       info->tx_max_len, info->tx_max_time,
+	       info->rx_max_len, info->rx_max_time);
+}
+
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
+	.le_param_updated = le_param_updated,
+	.le_phy_updated = le_phy_updated,
+	.le_data_len_updated = le_data_len_updated,
 };
 
 static int init_ble(void)
@@ -597,23 +791,19 @@ static int init_ble(void)
 	return start_ble_advertising();
 }
 
-static void notify_openfloat_live_binary(uint32_t sequence, uint32_t dt_us,
-					 const struct vec3 *accel,
-					 const struct vec3 *gyro,
-					 uint16_t flags)
+static void notify_openfloat_live_binary(const uint8_t *payload, size_t len,
+					 uint8_t frame_count)
 {
-	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
 	int err;
 
 	if (!current_conn || !ble_notify_enabled) {
 		return;
 	}
 
-	build_openfloat_live_binary(frame, sequence, dt_us, accel, gyro, flags);
 	err = bt_gatt_notify(current_conn, &openfloat_svc.attrs[2],
-			     frame, sizeof(frame));
+			     payload, len);
 	if (err) {
-		ble_dropped_samples++;
+		ble_dropped_samples += frame_count;
 	}
 }
 
@@ -653,15 +843,18 @@ int main(void)
 		.z = 0.0f,
 	};
 	uint64_t last_sample_us;
+	uint64_t last_output_us;
 	int err;
 
 	printk("# OPENFLOAT_PROTO,1\n");
 	printk("# target: Seeed XIAO nRF54L15 Sense\n");
-	printk("# sample_hz: %d\n", SAMPLE_HZ);
+	printk("# imu_odr_hz: %d\n", IMU_ODR_HZ);
+	printk("# ble_output_hz: %d averaged samples/s\n", BLE_OUTPUT_HZ);
 	printk("# ui: user LED status, user button calibration\n");
-	printk("# ble: %s, notify every %d samples\n", CONFIG_BT_DEVICE_NAME,
-	       BLE_NOTIFY_DIVIDER);
-	printk("# BLE live frame: 20 bytes, magic[2]='OF', proto u8, type u8, seq u16, dt_us u16, accel_mg int16[3], gyro_dps_q4 int16[3]\n");
+	printk("# ble: %s, batch %d averaged frames per notification\n",
+	       CONFIG_BT_DEVICE_NAME, OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION);
+	printk("# BLE live frame: 20 bytes each, batched payload %d bytes, magic[2]='OF', proto u8, type u8, seq u16, dt_us u16, accel_mg int16[3], gyro_dps_q4 int16[3]\n",
+	       OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE);
 	printk("# format: OFSHOT,proto,shot_id,uptime_us,ax_mg,ay_mg,az_mg,shot_count\n");
 
 	init_user_led();
@@ -675,10 +868,16 @@ int main(void)
 	}
 
 	last_sample_us = uptime_us();
+	last_output_us = last_sample_us;
 
 	while (1) {
 		struct vec3 accel;
 		struct vec3 gyro;
+		static uint8_t ble_payload[OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE];
+		static uint8_t ble_payload_frames;
+		static struct vec3 accel_sum;
+		static struct vec3 gyro_sum;
+		static uint32_t avg_count;
 		float roll_deg;
 		float pitch_deg;
 		float yaw_deg;
@@ -692,44 +891,84 @@ int main(void)
 		err = read_imu(&accel, &gyro);
 		if (err) {
 			printk("# IMU sample failed: %d\n", err);
-			k_sleep(K_USEC(SAMPLE_PERIOD_US));
+			k_yield();
 			continue;
 		}
 
-		if (dt_s <= 0.0f || dt_s > 0.2f) {
-			dt_s = 1.0f / SAMPLE_HZ;
-			dt_us = SAMPLE_PERIOD_US;
+		raw_sample_sequence++;
+		accel_sum.x += accel.x;
+		accel_sum.y += accel.y;
+		accel_sum.z += accel.z;
+		gyro_sum.x += gyro.x;
+		gyro_sum.y += gyro.y;
+		gyro_sum.z += gyro.z;
+		avg_count++;
+
+		if ((now_us - last_output_us) >= BLE_OUTPUT_PERIOD_US) {
+			struct vec3 avg_accel = {
+				.x = accel_sum.x / avg_count,
+				.y = accel_sum.y / avg_count,
+				.z = accel_sum.z / avg_count,
+			};
+			struct vec3 avg_gyro = {
+				.x = gyro_sum.x / avg_count,
+				.y = gyro_sum.y / avg_count,
+				.z = gyro_sum.z / avg_count,
+			};
+			uint32_t output_dt_us = (uint32_t)(now_us - last_output_us);
+
+			last_output_us += BLE_OUTPUT_PERIOD_US;
+			if ((now_us - last_output_us) >= BLE_OUTPUT_PERIOD_US) {
+				last_output_us = now_us;
+			}
+			accel_sum = (struct vec3){ 0 };
+			gyro_sum = (struct vec3){ 0 };
+			avg_count = 0;
+
+			if (dt_s <= 0.0f || dt_s > 0.2f) {
+				dt_s = (float)output_dt_us / 1000000.0f;
+			}
+
+			detect_shot(&avg_accel, now_us);
+			madgwick_update_imu(&q, &avg_gyro, &avg_accel,
+					    (float)output_dt_us / 1000000.0f);
+			quat_to_euler(&q, &roll_deg, &pitch_deg, &yaw_deg);
+
+			if (user_btn_pressed()) {
+				cant_offset_deg = roll_deg;
+				pitch_offset_deg = pitch_deg;
+				flags |= BIT(0);
+				printk("# Calibrated: cant=0 pitch=0\n");
+			}
+
+			update_user_led();
+			if (shot_count > 0) {
+				flags |= BIT(1);
+			}
+			if ((telemetry_sequence % SERIAL_PRINT_DIVIDER) == 0) {
+				print_openfloat_live_text(telemetry_sequence,
+							  output_dt_us,
+							  &avg_accel, &avg_gyro,
+							  &q, roll_deg,
+							  pitch_deg, yaw_deg);
+			}
+
+			size_t offset = ble_payload_frames * OPENFLOAT_BLE_FRAME_SIZE;
+
+			build_openfloat_live_binary(&ble_payload[offset],
+						    telemetry_sequence, output_dt_us,
+						    &avg_accel, &avg_gyro, flags);
+			ble_payload_frames++;
+			if (ble_payload_frames >= OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION) {
+				notify_openfloat_live_binary(
+					ble_payload, sizeof(ble_payload),
+					ble_payload_frames);
+				ble_payload_frames = 0;
+			}
+
+			telemetry_sequence++;
 		}
 
-		detect_shot(&accel, now_us);
-		madgwick_update_imu(&q, &gyro, &accel, dt_s);
-		quat_to_euler(&q, &roll_deg, &pitch_deg, &yaw_deg);
-
-		if (user_btn_pressed()) {
-			cant_offset_deg = roll_deg;
-			pitch_offset_deg = pitch_deg;
-			flags |= BIT(0);
-			printk("# Calibrated: cant=0 pitch=0\n");
-		}
-
-		update_user_led();
-		if (shot_count > 0) {
-			flags |= BIT(1);
-		}
-		if ((telemetry_sequence % SERIAL_PRINT_DIVIDER) == 0) {
-			print_openfloat_live_text(telemetry_sequence, dt_us,
-						  &accel, &gyro, &q,
-						  roll_deg, pitch_deg,
-						  yaw_deg);
-		}
-		if ((telemetry_sequence % BLE_NOTIFY_DIVIDER) == 0) {
-			notify_openfloat_live_binary(telemetry_sequence, dt_us,
-						     &accel, &gyro, flags);
-		}
-
-		telemetry_sequence++;
-
-		k_sleep(K_USEC(SAMPLE_PERIOD_US));
 	}
 
 	return 0;
