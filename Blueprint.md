@@ -416,31 +416,39 @@ Command Characteristic
   start stream, stop stream, request shot, erase saved shot, calibrate
 ```
 
-**Implemented v1 GATT** (advertised as `OpenFloat-463D`):
+**Implemented v1 GATT** (advertised as `OpenFloat-463F` to force Windows cache clear):
 
 ```text
-Service  8f3f3b10-0f5a-4f4c-9a2d-000000000001
-Live     8f3f3b10-0f5a-4f4c-9a2d-000000000002  notify  (20-byte frames, typed)
-Control  8f3f3b10-0f5a-4f4c-9a2d-000000000003  write   (ASCII commands)
+Service          8f3f3b10-0f5a-4f4c-9a2d-000000000001 (Custom OpenFloat Service)
+Live             8f3f3b10-0f5a-4f4c-9a2d-000000000002  notify  (20-byte frames, typed)
+Control          8f3f3b10-0f5a-4f4c-9a2d-000000000003  write   (ASCII commands)
+Battery Service  0000180f-0000-1000-8000-00805f9b34fb (Standard BLE BAS)
+  Level Char     00002a19-0000-1000-8000-00805f9b34fb  read/notify (0-100%)
 ```
 
-The live characteristic carries four 20-byte frame types, demultiplexed by the
+The live characteristic carries six 20-byte frame types, demultiplexed by the
 type byte: type 1 live sample (batched 10/notification), type 2 shot event (sent
 on each detected shot), type 3 count sync (sent on subscribe so the persisted
-lifetime count displays immediately without logging a shot), and type 4 stored
-shot upload (sent one at a time until the web app acknowledges each save).
+lifetime count displays immediately without logging a shot), type 4 stored
+shot upload (sent one at a time until the web app acknowledges each save), type 5
+storage status (sent on connect/request to sync queue counts), and type 6 trace
+chunk (sent sequentially to stream buffered pre-shot float traces).
 
-The control characteristic accepts the ASCII commands `start`/`stop` (toggle live
-notifications), `zero` (acknowledged; live zeroing is still owned by the user
-button), `thresh:<g>` (shot detection threshold, clamped to 2-30 g),
-`wakesens:<g>` (wake-up trigger threshold, clamped to 0.5-8.0 g),
-`sleeptime:<s>` (sleep timeout in seconds, clamped to 5-600 s),
-`sleepsens:<g>` (sleep sensitivity movement threshold, clamped to 0.05-0.50 g),
-`shotack:<shot_id>` (acknowledge a saved type-2/type-4 shot so firmware can free
-the queued copy), `shotreset` (clear the persisted shot count and shot queue),
-and `shotset:<n>` (set the persisted shot count). The dedicated device-info,
-shot-data, and config characteristics are not implemented yet; shot events ride
-the live characteristic rather than a separate shot-event characteristic.
+The control characteristic accepts the ASCII commands:
+* `start`/`stop`: Toggle live telemetry stream notifications.
+* `zero`: Capture the current gravitational vector, compute pitch/roll offsets, store them in RRAM (`"cant_offset"`, `"pitch_offset"`), and apply them dynamically so live roll reads exactly 0.0°.
+* `thresh:<g>`: Set shot detection accelerometer threshold, clamped to 2-30 g.
+* `wakesens:<g>`: Set wake-up trigger accelerometer threshold, clamped to 0.5-8.0 g.
+* `sleeptime:<s>`: Set deep sleep timeout in seconds, clamped to 5-600 s.
+* `sleepsens:<g>`: Set active sleep accelerometer sensitivity movement threshold, clamped to 0.05-0.50 g.
+* `bufrate:<hz>`: Set on-device trace buffering rate. Values: `0` (Off), `52` (52 Hz), `104` (104 Hz). Saves to RRAM (`"openfloat/bufrate"`).
+* `bufnvs:<val>`: Toggle whether trace buffer is persisted to non-volatile RRAM. Values: `0` (Off/SRAM only), `1` (On/RRAM). Saves to RRAM (`"openfloat/bufnvs"`).
+* `tracereq:<shot_id>`: Request a chunked upload of the trace of the shot with ID `shot_id` as Type 6 notifications.
+* `shotack:<shot_id>`: Acknowledge a saved type-2/type-4 shot so firmware can free the queued copy from RRAM.
+* `shotreset`: Clear the persisted shot count and shot queue.
+* `shotset:<n>`: Set the persisted shot count.
+
+The standard Battery Service (BAS) periodically reads the battery voltage from pin `P1.14/AIN7_VBAT` using the regulator switch `vbat_pwr` (`P1.15`), scales the measurement using a $2.0$ divider multiplier, and publishes the percentage value. The dedicated device-info, shot-data, and config characteristics are not implemented yet; shot events ride the live characteristic rather than a separate shot-event characteristic.
 
 ### Shot Data Chunking
 

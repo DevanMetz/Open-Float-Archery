@@ -32,8 +32,12 @@ const ELEMENT_IDS = [
   "lastShotTimeValue", "lastShotScoreValue", "lastPeakValue",
   "lastCantValue", "lastPitchValue",
   "reviewTraceControls", "replayTraceBtn", "zoomOutBtn", "zoomInBtn",
-  "zoomValue"
+  "zoomValue",
+  "zeroBtn", "cantOffsetVal", "pitchOffsetVal", "batteryBadge", "batteryText",
+  "bufferRateSlider", "bufferRateValue", "bufferNVSToggle",
+  "streamRateSlider", "streamRateValue"
 ];
+
 
 const el = {};
 for (const id of ELEMENT_IDS) el[id] = document.getElementById(id);
@@ -70,8 +74,14 @@ const store = createStore({
   lastShotSummary: null,
   traceZoom: 1,
   replayActive: false,
-  replayProgress: 1
+  replayProgress: 1,
+  batteryLevel: null,
+  cantOffset: 0.0,
+  pitchOffset: 0.0,
+  bufferRate: 52,
+  streamRate: 1110
 });
+
 
 // Initialize database
 initDb().then(() => {
@@ -111,6 +121,24 @@ store.subscribe((state) => {
     el.replayTraceBtn.textContent = state.replayActive ? "Playing" : "Replay";
     el.replayTraceBtn.disabled = !pinReviewActive || state.replayActive;
     el.zoomValue.textContent = `${(state.traceZoom || 1).toFixed(1)}x`;
+  }
+
+  if (el.batteryBadge && el.batteryText) {
+    if (state.connected && state.batteryLevel !== null) {
+      el.batteryBadge.classList.remove("hidden");
+      el.batteryText.textContent = `${state.batteryLevel}%`;
+    } else {
+      el.batteryBadge.classList.add("hidden");
+    }
+  }
+
+  if (el.zeroBtn) {
+    el.zeroBtn.disabled = !state.connected || (adapter && adapter.name === "Demo");
+  }
+
+  if (el.cantOffsetVal && el.pitchOffsetVal) {
+    el.cantOffsetVal.textContent = (state.cantOffset || 0.0).toFixed(1);
+    el.pitchOffsetVal.textContent = (state.pitchOffset || 0.0).toFixed(1);
   }
 });
 
@@ -178,7 +206,11 @@ async function connect() {
       await adapter.sendControl(`wakesens:${wakeSensitivityGrams().toFixed(1)}`);
       await adapter.sendControl(`sleeptime:${sleepTimeoutSeconds()}`);
       await adapter.sendControl(`sleepsens:${sleepSensitivityG().toFixed(2)}`);
+      await adapter.sendControl(`bufrate:${bufferRateHz()}`);
+      await adapter.sendControl(`bufnvs:${bufferNvsEnabled()}`);
+      await adapter.sendControl(`streamrate:${streamRateDivider()}`);
     }
+
   } catch (error) {
     bus.emit("log", `Connect failed: ${error.message}`);
     adapter = null;
@@ -201,6 +233,43 @@ function sleepTimeoutSeconds() {
   return Number(el.sleepTimeoutSlider.value);
 }
 
+function bufferNvsEnabled() {
+  return el.bufferNVSToggle.checked ? 1 : 0;
+}
+
+function bufferRateHz() {
+  const val = Number(el.bufferRateSlider.value);
+  if (val === 0) return 0;
+  if (val === 1) return 52;
+  if (val === 2) return 104;
+  return 208;
+}
+
+function bufferRateLabelText(val) {
+  if (val === 0) return "Off";
+  if (val === 1) return "52 Hz (6s hold)";
+  if (val === 2) return "104 Hz (3s hold)";
+  return "208 Hz (1.5s hold)";
+}
+
+function streamRateDivider() {
+  const val = Number(el.streamRateSlider.value);
+  if (val === 0) return 20;
+  if (val === 1) return 10;
+  if (val === 2) return 5;
+  if (val === 3) return 2;
+  return 1;
+}
+
+function streamRateLabelText(val) {
+  if (val === 0) return "55 Hz";
+  if (val === 1) return "111 Hz";
+  if (val === 2) return "222 Hz";
+  if (val === 3) return "555 Hz";
+  return "1110 Hz (Max)";
+}
+
+
 async function toggleDemo() {
   if (adapter && adapter.name === "Demo") {
     await disconnect();
@@ -216,6 +285,18 @@ el.connectBtn.addEventListener("click", connect);
 el.disconnectBtn.addEventListener("click", disconnect);
 el.demoBtn.addEventListener("click", toggleDemo);
 el.saveManualBtn.addEventListener("click", () => telemetry.saveManual30sCapture());
+el.zeroBtn.addEventListener("click", () => {
+  if (adapter) {
+    adapter.sendControl("zero");
+    const roll = store.get().roll || 0;
+    const pitch = store.get().pitch || 0;
+    store.set({
+      cantOffset: roll,
+      pitchOffset: pitch
+    });
+    bus.emit("log", `Zero calibration requested. Bow level set at Cant: ${roll.toFixed(1)}°, Pitch: ${pitch.toFixed(1)}°`);
+  }
+});
 
 // Update the label live while dragging; only write to the device on release
 // to avoid flooding the control characteristic.
@@ -259,6 +340,36 @@ el.sleepSensSlider.addEventListener("change", () => {
   const command = `sleepsens:${sleepSensitivityG().toFixed(2)}`;
   if (adapter) adapter.sendControl(command);
   else bus.emit("log", "Connect over BLE to apply the sleep sensitivity.");
+});
+
+el.bufferRateSlider.addEventListener("input", () => {
+  const val = Number(el.bufferRateSlider.value);
+  el.bufferRateValue.textContent = bufferRateLabelText(val);
+});
+el.bufferRateSlider.addEventListener("change", () => {
+  const hz = bufferRateHz();
+  const command = `bufrate:${hz}`;
+  if (adapter) adapter.sendControl(command);
+  else bus.emit("log", "Connect over BLE to apply the buffer rate.");
+});
+
+el.streamRateSlider.addEventListener("input", () => {
+  const val = Number(el.streamRateSlider.value);
+  el.streamRateValue.textContent = streamRateLabelText(val);
+});
+el.streamRateSlider.addEventListener("change", () => {
+  const div = streamRateDivider();
+  const command = `streamrate:${div}`;
+  if (adapter) adapter.sendControl(command);
+  else bus.emit("log", "Connect over BLE to apply the stream rate.");
+});
+
+
+el.bufferNVSToggle.addEventListener("change", () => {
+  const val = bufferNvsEnabled();
+  const command = `bufnvs:${val}`;
+  if (adapter) adapter.sendControl(command);
+  else bus.emit("log", "Connect over BLE to apply NVS buffering.");
 });
 
 // Tab Switching Listeners

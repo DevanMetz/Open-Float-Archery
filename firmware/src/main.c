@@ -30,6 +30,8 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/sys/poweroff.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/drivers/adc.h>
+#include <zephyr/drivers/regulator.h>
 
 #define IMU_ODR_HZ 3332
 #define IMU_ACCEL_FS_G 16
@@ -174,6 +176,9 @@ static struct k_work shot_log_persist_work;
 static struct k_work wake_sens_persist_work;
 static struct k_work sleep_time_persist_work;
 static struct k_work sleep_sens_persist_work;
+static struct k_work offsets_persist_work;
+static struct k_work_delayable battery_measure_work;
+static volatile bool zero_requested;
 /* Set when a connected client subscribes, so the loop sends one count-sync
  * frame and the web app shows the persisted lifetime count immediately.
  */
@@ -245,6 +250,61 @@ struct stored_shot_log {
 static struct vec3 last_shot_accel;
 static struct stored_shot last_shot_record;
 static struct stored_shot_log stored_shot_log;
+
+#define TRACE_CAPACITY 1000
+
+struct trace_point {
+	int16_t roll_cdeg;
+	int16_t pitch_cdeg;
+};
+struct stored_trace {
+	uint16_t shot_id;
+	uint16_t count;
+	struct trace_point points[TRACE_CAPACITY];
+};
+
+static struct stored_trace stored_traces[10];
+static struct trace_point ram_trace_buffer[TRACE_CAPACITY];
+static uint16_t ram_trace_count = 0;
+static uint16_t ram_trace_write_idx = 0;
+
+static int buffer_rate_hz = 52;
+static int buffer_nvs_enabled = 1;
+static int ble_stream_divider = 1;
+static struct k_work buffer_rate_persist_work;
+static struct k_work buffer_nvs_persist_work;
+static struct k_work streamrate_persist_work;
+
+static struct k_work trace_persist_work;
+static struct k_work_delayable trace_upload_work;
+static volatile uint32_t trace_pending_mask;
+
+static bool trace_upload_in_progress;
+static int trace_upload_slot;
+static int trace_upload_chunk_idx;
+
+static void ram_trace_push(int16_t roll_cdeg, int16_t pitch_cdeg)
+{
+	ram_trace_buffer[ram_trace_write_idx].roll_cdeg = roll_cdeg;
+	ram_trace_buffer[ram_trace_write_idx].pitch_cdeg = pitch_cdeg;
+	ram_trace_write_idx = (ram_trace_write_idx + 1) % TRACE_CAPACITY;
+	if (ram_trace_count < TRACE_CAPACITY) {
+		ram_trace_count++;
+	}
+}
+
+static void ram_trace_freeze(struct stored_trace *dest)
+{
+	dest->count = ram_trace_count;
+	uint16_t read_idx = 0;
+	if (ram_trace_count == TRACE_CAPACITY) {
+		read_idx = ram_trace_write_idx;
+	}
+	for (uint16_t i = 0; i < ram_trace_count; i++) {
+		dest->points[i] = ram_trace_buffer[read_idx];
+		read_idx = (read_idx + 1) % TRACE_CAPACITY;
+	}
+}
 
 static void stored_shot_append(const struct stored_shot *shot)
 {
@@ -924,7 +984,7 @@ static void update_user_led(void)
 }
 
 /* Returns true if a new shot was detected on this call. */
-static bool detect_shot(const struct vec3 *accel, uint64_t now_us,
+static bool detect_shot(const struct vec3 *accel, const struct vec3 *gyro, uint64_t now_us,
 			float roll_deg, float pitch_deg)
 {
 	static int64_t last_shot_ms;
@@ -934,7 +994,11 @@ static bool detect_shot(const struct vec3 *accel, uint64_t now_us,
 	float thresh2 = threshold * threshold;
 	int64_t now_ms = k_uptime_get();
 
-	if (mag2 > thresh2 && (now_ms - last_shot_ms) > SHOT_REFRACTORY_MS) {
+	float gyro_mag2 = (gyro->x * gyro->x) + (gyro->y * gyro->y) + (gyro->z * gyro->z);
+	float min_gyro_rad_s = 1.5f; /* ~85 deg/s minimum rotation during recoil */
+	float min_gyro_rad_s2 = min_gyro_rad_s * min_gyro_rad_s;
+
+	if (mag2 > thresh2 && gyro_mag2 > min_gyro_rad_s2 && (now_ms - last_shot_ms) > SHOT_REFRACTORY_MS) {
 		shot_count++;
 		shot_id++;
 		last_shot_ms = now_ms;
@@ -956,6 +1020,15 @@ static bool detect_shot(const struct vec3 *accel, uint64_t now_us,
 					    SCALE_CDEG)),
 		};
 		stored_shot_append(&last_shot_record);
+		if (buffer_rate_hz > 0) {
+			int slot = shot_id % 10;
+			stored_traces[slot].shot_id = (uint16_t)shot_id;
+			ram_trace_freeze(&stored_traces[slot]);
+			if (buffer_nvs_enabled) {
+				trace_pending_mask |= BIT(slot);
+				k_work_submit(&trace_persist_work);
+			}
+		}
 		led_shot_until_ms = now_ms + LED_SHOT_PULSE_MS;
 		printk("OFSHOT,1,%u,%llu,%d,%d,%d,%d\n",
 		       shot_id,
@@ -1053,7 +1126,99 @@ static int openfloat_settings_set(const char *name, size_t len,
 		return 0;
 	}
 
+	if (settings_name_steq(name, "cant_offset", NULL)) {
+		int32_t value;
+		ssize_t rc;
+
+		if (len != sizeof(value)) {
+			return -EINVAL;
+		}
+		rc = read_cb(cb_arg, &value, sizeof(value));
+		if (rc < 0) {
+			return rc;
+		}
+		cant_offset_deg = (float)value / 1000.0f;
+		return 0;
+	}
+
+	if (settings_name_steq(name, "pitch_offset", NULL)) {
+		int32_t value;
+		ssize_t rc;
+
+		if (len != sizeof(value)) {
+			return -EINVAL;
+		}
+		rc = read_cb(cb_arg, &value, sizeof(value));
+		if (rc < 0) {
+			return rc;
+		}
+		pitch_offset_deg = (float)value / 1000.0f;
+		return 0;
+	}
+
+	if (settings_name_steq(name, "bufrate", NULL)) {
+		uint32_t value;
+		ssize_t rc;
+
+		if (len != sizeof(value)) {
+			return -EINVAL;
+		}
+		rc = read_cb(cb_arg, &value, sizeof(value));
+		if (rc < 0) {
+			return rc;
+		}
+		buffer_rate_hz = (int)value;
+		return 0;
+	}
+
+	if (settings_name_steq(name, "bufnvs", NULL)) {
+		uint32_t value;
+		ssize_t rc;
+
+		if (len != sizeof(value)) {
+			return -EINVAL;
+		}
+		rc = read_cb(cb_arg, &value, sizeof(value));
+		if (rc < 0) {
+			return rc;
+		}
+		buffer_nvs_enabled = (int)value;
+		return 0;
+	}
+
+	if (settings_name_steq(name, "streamrate", NULL)) {
+		uint32_t value;
+		ssize_t rc;
+
+		if (len != sizeof(value)) {
+			return -EINVAL;
+		}
+		rc = read_cb(cb_arg, &value, sizeof(value));
+		if (rc < 0) {
+			return rc;
+		}
+		ble_stream_divider = (int)value;
+		return 0;
+	}
+
+	if (name[0] == 't' && name[1] >= '0' && name[1] <= '9' && name[2] == '\0') {
+		int slot = name[1] - '0';
+		struct stored_trace value;
+		ssize_t rc;
+
+		if (len != sizeof(value)) {
+			return -EINVAL;
+		}
+		rc = read_cb(cb_arg, &value, sizeof(value));
+		if (rc < 0) {
+			return rc;
+		}
+		stored_traces[slot] = value;
+		return 0;
+	}
+
 	return -ENOENT;
+
 }
 
 SETTINGS_STATIC_HANDLER_DEFINE(openfloat, "openfloat", NULL,
@@ -1113,6 +1278,183 @@ static void sleep_sens_persist_work_handler(struct k_work *work)
 	if (rc) {
 		printk("# sleep sensitivity save failed: %d\n", rc);
 	}
+}
+
+static void buffer_rate_persist_work_handler(struct k_work *work)
+{
+	uint32_t value = (uint32_t)buffer_rate_hz;
+	int rc = settings_save_one("openfloat/bufrate", &value, sizeof(value));
+
+	if (rc) {
+		printk("# buffer rate save failed: %d\n", rc);
+	}
+}
+
+static void buffer_nvs_persist_work_handler(struct k_work *work)
+{
+	uint32_t value = (uint32_t)buffer_nvs_enabled;
+	int rc = settings_save_one("openfloat/bufnvs", &value, sizeof(value));
+
+	if (rc) {
+		printk("# buffer nvs save failed: %d\n", rc);
+	}
+}
+
+static void streamrate_persist_work_handler(struct k_work *work)
+{
+	uint32_t value = (uint32_t)ble_stream_divider;
+	int rc = settings_save_one("openfloat/streamrate", &value, sizeof(value));
+
+	if (rc) {
+		printk("# streamrate save failed: %d\n", rc);
+	}
+}
+
+
+static void trace_persist_work_handler(struct k_work *work)
+{
+	for (int i = 0; i < 10; i++) {
+		if (trace_pending_mask & BIT(i)) {
+			char key[32];
+			snprintf(key, sizeof(key), "openfloat/t%d", i);
+			int rc = settings_save_one(key, &stored_traces[i], sizeof(stored_traces[i]));
+			if (rc) {
+				printk("# trace save failed for slot %d: %d\n", i, rc);
+			} else {
+				trace_pending_mask &= ~BIT(i);
+			}
+		}
+	}
+}
+
+
+
+static void print_float_signed(const char *label, float val, int decimals)
+{
+	float multiplier = 1.0f;
+	for (int i = 0; i < decimals; i++) {
+		multiplier *= 10.0f;
+	}
+	int32_t scaled = (int32_t)scale_float(val, multiplier);
+	int32_t abs_val = scaled < 0 ? -scaled : scaled;
+	int32_t whole = scaled / (int32_t)multiplier;
+	int32_t frac = abs_val % (int32_t)multiplier;
+	const char *sign = (scaled < 0 && whole == 0) ? "-" : "";
+	printk("%s %s%d.%0*d\n", label, sign, whole, decimals, frac);
+}
+
+static void offsets_persist_work_handler(struct k_work *work)
+{
+	int32_t cant_val = (int32_t)scale_float(cant_offset_deg, 1000.0f);
+	int rc = settings_save_one("openfloat/cant_offset", &cant_val, sizeof(cant_val));
+	if (rc) {
+		printk("# cant_offset save failed: %d\n", rc);
+	}
+
+	int32_t pitch_val = (int32_t)scale_float(pitch_offset_deg, 1000.0f);
+	rc = settings_save_one("openfloat/pitch_offset", &pitch_val, sizeof(pitch_val));
+	if (rc) {
+		printk("# pitch_offset save failed: %d\n", rc);
+	}
+}
+
+#define BT_UUID_BAS_VAL 0x180f
+#define BT_UUID_BAS BT_UUID_DECLARE_16(BT_UUID_BAS_VAL)
+#define BT_UUID_BAS_BATTERY_LEVEL_VAL 0x2a19
+#define BT_UUID_BAS_BATTERY_LEVEL BT_UUID_DECLARE_16(BT_UUID_BAS_BATTERY_LEVEL_VAL)
+
+static uint8_t battery_level = 100;
+
+static ssize_t read_battery_level(struct bt_conn *conn,
+				  const struct bt_gatt_attr *attr,
+				  void *buf, uint16_t len, uint16_t offset)
+{
+	return bt_gatt_attr_read(conn, attr, buf, len, offset, &battery_level, sizeof(battery_level));
+}
+
+static void battery_level_ccc_changed(const struct bt_gatt_attr *attr,
+				      uint16_t value)
+{
+}
+
+BT_GATT_SERVICE_DEFINE(bas_svc,
+	BT_GATT_PRIMARY_SERVICE(BT_UUID_BAS),
+	BT_GATT_CHARACTERISTIC(BT_UUID_BAS_BATTERY_LEVEL,
+			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+			       BT_GATT_PERM_READ,
+			       read_battery_level, NULL, &battery_level),
+	BT_GATT_CCC(battery_level_ccc_changed,
+		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+);
+
+static const struct adc_dt_spec battery_adc = ADC_DT_SPEC_GET_BY_IDX(DT_PATH(zephyr_user), 0);
+static const struct device *const vbat_reg = DEVICE_DT_GET(DT_NODELABEL(vbat_pwr));
+
+static void battery_measure_work_handler(struct k_work *work)
+{
+	if (!device_is_ready(battery_adc.dev)) {
+		printk("# Battery SAADC device not ready\n");
+		k_work_reschedule(&battery_measure_work, K_SECONDS(5));
+		return;
+	}
+
+	int err = adc_channel_setup_dt(&battery_adc);
+	if (err) {
+		printk("# Battery ADC channel setup failed: %d\n", err);
+		k_work_reschedule(&battery_measure_work, K_SECONDS(5));
+		return;
+	}
+
+	if (device_is_ready(vbat_reg)) {
+		(void)regulator_enable(vbat_reg);
+	}
+
+	k_sleep(K_MSEC(5));
+
+	int16_t raw_val = 0;
+	struct adc_sequence sequence = {
+		.buffer = &raw_val,
+		.buffer_size = sizeof(raw_val),
+	};
+
+	err = adc_sequence_init_dt(&battery_adc, &sequence);
+	if (err) {
+		printk("# Battery ADC sequence init failed: %d\n", err);
+	} else {
+		err = adc_read(battery_adc.dev, &sequence);
+		if (err) {
+			printk("# Battery ADC read failed: %d\n", err);
+		} else {
+			int32_t val_mv = (int32_t)raw_val;
+			(void)adc_raw_to_millivolts_dt(&battery_adc, &val_mv);
+			uint16_t battery_mv = (uint16_t)val_mv * 2;
+
+			uint8_t pct = 100;
+			if (battery_mv <= 3400) {
+				pct = 0;
+			} else if (battery_mv >= 4150) {
+				pct = 100;
+			} else {
+				pct = (uint8_t)((battery_mv - 3400) * 100 / (4150 - 3400));
+			}
+
+			printk("# Battery measurement: raw=%d, pin_mv=%d, vbat_mv=%d, pct=%d%%\n",
+			       (int)raw_val, (int)val_mv, (int)battery_mv, (int)pct);
+
+			if (pct != battery_level) {
+				battery_level = pct;
+				if (current_conn) {
+					(void)bt_gatt_notify(current_conn, &bas_svc.attrs[2], &battery_level, sizeof(battery_level));
+				}
+			}
+		}
+	}
+
+	if (device_is_ready(vbat_reg)) {
+		(void)regulator_disable(vbat_reg);
+	}
+
+	k_work_reschedule(&battery_measure_work, K_SECONDS(10));
 }
 
 static void print_threshold_g(float threshold_g)
@@ -1298,7 +1640,7 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 				       const void *buf, uint16_t len,
 				       uint16_t offset, uint8_t flags)
 {
-	char command[16];
+	char command[24];
 
 	if (offset != 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
@@ -1312,7 +1654,14 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 	command[len] = '\0';
 
 	if (!strcmp(command, "zero")) {
-		printk("# BLE control: zero requested, press user button path still owns live zeroing\n");
+		zero_requested = true;
+		printk("# BLE control: zero calibration requested\n");
+	} else if (!strncmp(command, "thresh:", strlen("thresh:"))) {
+		ble_notify_enabled = true;
+		ble_send_count_sync = true;
+		ble_send_storage_status = true;
+		stored_shot_upload_in_progress = false;
+		stored_shot_upload_requested = true;
 	} else if (!strcmp(command, "start")) {
 		ble_notify_enabled = true;
 		ble_send_count_sync = true;
@@ -1416,6 +1765,50 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 			printk("# BLE control: sleep sensitivity set to %d.%02d g\n",
 			       hundredths / 100, hundredths % 100);
 		}
+	} else if (!strncmp(command, "bufrate:", strlen("bufrate:"))) {
+		int value = atoi(command + strlen("bufrate:"));
+		if (value == 0 || value == 52 || value == 104 || value == 208) {
+			buffer_rate_hz = value;
+			k_work_submit(&buffer_rate_persist_work);
+			printk("# BLE control: buffer rate set to %d Hz\n", buffer_rate_hz);
+		} else {
+			printk("# BLE control: invalid buffer rate command '%s'\n", command);
+		}
+	} else if (!strncmp(command, "bufnvs:", strlen("bufnvs:"))) {
+		int value = atoi(command + strlen("bufnvs:"));
+		if (value == 0 || value == 1) {
+			buffer_nvs_enabled = value;
+			k_work_submit(&buffer_nvs_persist_work);
+			printk("# BLE control: buffer NVS set to %s\n", buffer_nvs_enabled ? "ON" : "OFF");
+		} else {
+			printk("# BLE control: invalid buffer NVS command '%s'\n", command);
+		}
+	} else if (!strncmp(command, "streamrate:", strlen("streamrate:"))) {
+		int value = atoi(command + strlen("streamrate:"));
+		if (value == 1 || value == 2 || value == 5 || value == 10 || value == 20) {
+			ble_stream_divider = value;
+			k_work_submit(&streamrate_persist_work);
+			printk("# BLE control: stream rate divider set to %d\n", ble_stream_divider);
+		} else {
+			printk("# BLE control: invalid stream rate divider command '%s'\n", command);
+		}
+	}
+ else if (!strncmp(command, "tracereq:", strlen("tracereq:"))) {
+		int req_id = atoi(command + strlen("tracereq:"));
+		if (req_id >= 0 && req_id <= UINT16_MAX) {
+			int slot = req_id % 10;
+			if (stored_traces[slot].shot_id == (uint16_t)req_id && stored_traces[slot].count > 0) {
+				trace_upload_slot = slot;
+				trace_upload_chunk_idx = 0;
+				trace_upload_in_progress = true;
+				k_work_reschedule(&trace_upload_work, K_NO_WAIT);
+				printk("# BLE control: trace upload started for shot=%d slot=%d len=%d\n",
+				       req_id, slot, stored_traces[slot].count);
+			} else {
+				printk("# BLE control: trace not found for shot=%d slot=%d (stored shot_id=%d)\n",
+				       req_id, slot, stored_traces[slot].shot_id);
+			}
+		}
 	} else {
 		printk("# BLE control: unknown command '%s'\n", command);
 	}
@@ -1453,6 +1846,54 @@ BT_GATT_SERVICE_DEFINE(openfloat_svc,
 			       BT_GATT_PERM_WRITE,
 			       NULL, write_openfloat_control, NULL),
 );
+
+static void trace_upload_work_handler(struct k_work *work)
+{
+	if (!current_conn || !ble_notify_enabled || !trace_upload_in_progress) {
+		trace_upload_in_progress = false;
+		return;
+	}
+
+	struct stored_trace *trace = &stored_traces[trace_upload_slot];
+	uint16_t total_bytes = trace->count * sizeof(struct trace_point);
+	int total_chunks = (total_bytes + 10) / 11;
+
+	if (trace_upload_chunk_idx >= total_chunks) {
+		trace_upload_in_progress = false;
+		printk("# BLE trace: finished upload for shot=%d\n", trace->shot_id);
+		return;
+	}
+
+	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
+	frame[0] = 'O';
+	frame[1] = 'F';
+	frame[2] = 1;
+	frame[3] = 6; // Type 6: Trace chunk
+
+	put_u16_le(frame, 4, trace->shot_id);
+	frame[6] = (uint8_t)trace_upload_chunk_idx;
+	frame[7] = (uint8_t)total_chunks;
+
+	uint16_t offset = trace_upload_chunk_idx * 11;
+	uint16_t rem = total_bytes - offset;
+	uint8_t chunk_len = rem > 11 ? 11 : (uint8_t)rem;
+	frame[8] = chunk_len;
+
+	uint8_t *raw_bytes = (uint8_t *)trace->points;
+	memcpy(&frame[9], raw_bytes + offset, chunk_len);
+	if (chunk_len < 11) {
+		memset(&frame[9] + chunk_len, 0, 11 - chunk_len);
+	}
+
+	int err = bt_gatt_notify(current_conn, &openfloat_svc.attrs[2], frame, sizeof(frame));
+	if (err) {
+		printk("# trace chunk upload notify failed: %d, retrying chunk %d...\n", err, trace_upload_chunk_idx);
+		k_work_reschedule(&trace_upload_work, K_MSEC(50));
+	} else {
+		trace_upload_chunk_idx++;
+		k_work_reschedule(&trace_upload_work, K_MSEC(10));
+	}
+}
 
 static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -1752,6 +2193,13 @@ int main(void)
 	k_work_init(&wake_sens_persist_work, wake_sens_persist_work_handler);
 	k_work_init(&sleep_time_persist_work, sleep_time_persist_work_handler);
 	k_work_init(&sleep_sens_persist_work, sleep_sens_persist_work_handler);
+	k_work_init(&offsets_persist_work, offsets_persist_work_handler);
+	k_work_init_delayable(&battery_measure_work, battery_measure_work_handler);
+	k_work_init(&buffer_rate_persist_work, buffer_rate_persist_work_handler);
+	k_work_init(&buffer_nvs_persist_work, buffer_nvs_persist_work_handler);
+	k_work_init(&streamrate_persist_work, streamrate_persist_work_handler);
+	k_work_init(&trace_persist_work, trace_persist_work_handler);
+	k_work_init_delayable(&trace_upload_work, trace_upload_work_handler);
 	err = settings_subsys_init();
 	if (err) {
 		printk("# settings init failed: %d (shot count will not persist)\n",
@@ -1769,11 +2217,17 @@ int main(void)
 	int32_t sleep_sens_hundredths = scale_float(sleep_sensitivity_g, 100.0f);
 	printk("# sleep_sensitivity restored: %d.%02d g\n",
 	       sleep_sens_hundredths / 100, sleep_sens_hundredths % 100);
+	print_float_signed("# cant_offset restored:", cant_offset_deg, 2);
+	print_float_signed("# pitch_offset restored:", pitch_offset_deg, 2);
+	printk("# buffer_rate restored: %d Hz\n", buffer_rate_hz);
+	printk("# buffer_nvs restored: %s\n", buffer_nvs_enabled ? "ON" : "OFF");
+	printk("# streamrate restored: 1110/%d Hz\n", ble_stream_divider);
 
 	init_user_led();
 	init_user_btn();
 
 	(void)init_ble();
+	(void)k_work_reschedule(&battery_measure_work, K_NO_WAIT);
 
 	err = configure_imu();
 	if (err) {
@@ -1878,6 +2332,23 @@ int main(void)
 					    (float)OUTPUT_DT_US / 1000000.0f);
 			quat_to_euler(&q, &roll_deg, &pitch_deg, &yaw_deg);
 
+			if (buffer_rate_hz > 0) {
+				static uint32_t decimate_counter = 0;
+				uint32_t stride = 21;
+				if (buffer_rate_hz == 104) {
+					stride = 11;
+				} else if (buffer_rate_hz == 208) {
+					stride = 5;
+				}
+				decimate_counter++;
+				if (decimate_counter >= stride) {
+					decimate_counter = 0;
+					int16_t r_cdeg = clamp_i16(scale_float(roll_deg, SCALE_CDEG));
+					int16_t p_cdeg = clamp_i16(scale_float(pitch_deg, SCALE_CDEG));
+					ram_trace_push(r_cdeg, p_cdeg);
+				}
+			}
+
 			/* Check for active movement to reset inactivity timer */
 			float g_mag2 = avg_gyro.x * avg_gyro.x + avg_gyro.y * avg_gyro.y + avg_gyro.z * avg_gyro.z;
 			float a_mag = sqrtf(avg_accel.x * avg_accel.x + avg_accel.y * avg_accel.y + avg_accel.z * avg_accel.z);
@@ -1889,15 +2360,11 @@ int main(void)
 				last_activity_time_ms = k_uptime_get();
 			}
 
-			if (detect_shot(&avg_accel, uptime_us(), roll_deg,
+			if (detect_shot(&avg_accel, &avg_gyro, uptime_us(), roll_deg,
 					pitch_deg)) {
 				shot_detected = true;
 				last_activity_time_ms = k_uptime_get();
-				if (notify_openfloat_shot_event(2)) {
-					stored_shot_upload_id =
-						last_shot_record.shot_id;
-					stored_shot_upload_in_progress = true;
-				}
+				(void)notify_openfloat_shot_event(2);
 				k_work_submit(&shot_persist_work);
 				k_work_submit(&shot_log_persist_work);
 			}
@@ -1913,9 +2380,11 @@ int main(void)
 				notify_next_stored_shot();
 			}
 
-			if (user_btn_pressed()) {
+			if (user_btn_pressed() || zero_requested) {
+				zero_requested = false;
 				cant_offset_deg = roll_deg;
 				pitch_offset_deg = pitch_deg;
+				k_work_submit(&offsets_persist_work);
 				flags |= BIT(0);
 				printk("# Calibrated: cant=0 pitch=0\n");
 			}
@@ -1936,19 +2405,21 @@ int main(void)
 			    stored_shot_upload_in_progress) {
 				ble_payload_frames = 0;
 			} else {
-				offset = ble_payload_frames *
-					 OPENFLOAT_BLE_FRAME_SIZE;
-				build_openfloat_live_binary(
-					&ble_payload[offset],
-					telemetry_sequence, OUTPUT_DT_US,
-					&avg_accel, &avg_gyro, flags);
-				ble_payload_frames++;
-				if (ble_payload_frames >=
-				    OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION) {
-					notify_openfloat_live_binary(
-						ble_payload, sizeof(ble_payload),
-						ble_payload_frames);
-					ble_payload_frames = 0;
+				if ((telemetry_sequence % ble_stream_divider) == 0) {
+					offset = ble_payload_frames *
+						 OPENFLOAT_BLE_FRAME_SIZE;
+					build_openfloat_live_binary(
+						&ble_payload[offset],
+						telemetry_sequence, OUTPUT_DT_US * ble_stream_divider,
+						&avg_accel, &avg_gyro, flags);
+					ble_payload_frames++;
+					if (ble_payload_frames >=
+					    OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION) {
+						notify_openfloat_live_binary(
+							ble_payload, sizeof(ble_payload),
+							ble_payload_frames);
+						ble_payload_frames = 0;
+					}
 				}
 			}
 

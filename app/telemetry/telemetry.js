@@ -3,7 +3,8 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-export const MAX_TRACE_POINTS = 480;
+export const MAX_TRACE_POINTS = 1000;
+
 
 const ACCEL_TILT_MIN_G = 0.7;
 const ACCEL_TILT_MAX_G = 1.35;
@@ -118,10 +119,12 @@ export class TelemetryStore {
     this.store = store;
     this.trace = [];
     this.history30s = []; // Rolling 30s telemetry buffer for manual captures
+    this.pendingTraces = new Map();
     this.reset();
 
     bus.on("sample", (sample) => this.ingest(sample));
     bus.on("shot", (shot) => this.onShot(shot));
+    bus.on("trace-chunk", (chunk) => this.onTraceChunk(chunk));
     // Device-reported lifetime count (e.g. restored from NVS on connect).
     // Updates the displayed counter only; not logged as a new shot.
     bus.on("shotcount", (count) => this.store.set({ shotCount: count }));
@@ -370,12 +373,13 @@ export class TelemetryStore {
       });
 
       // 3. Save Shot Trace
-      // Capture up to 200 decimated samples from the rolling motion trace preceding the release
+      // Capture up to 1000 decimated samples from the rolling motion trace preceding the release
       const tracePayload = {
         shot_id: localShotId,
         sample_rate_hz: 52,
-        payload: JSON.parse(JSON.stringify(this.trace.slice(-200)))
+        payload: JSON.parse(JSON.stringify(this.trace.slice(-1000)))
       };
+
 
       await put("shot_traces", tracePayload);
       await put("sync_queue", {
@@ -529,5 +533,95 @@ export class TelemetryStore {
 
   getTrace() {
     return this.trace;
+  }
+
+  async onTraceChunk(chunk) {
+    if (!this.pendingTraces.has(chunk.shotId)) {
+      this.pendingTraces.set(chunk.shotId, {
+        chunks: new Map(),
+        totalChunks: chunk.totalChunks
+      });
+    }
+
+    const pending = this.pendingTraces.get(chunk.shotId);
+    pending.chunks.set(chunk.chunkIndex, chunk.payload);
+
+    this.bus.emit("log", `Received trace chunk ${pending.chunks.size}/${pending.totalChunks} for shot ID ${chunk.shotId}.`);
+
+    if (pending.chunks.size === pending.totalChunks) {
+      this.bus.emit("log", `All trace chunks received for shot ID ${chunk.shotId}. Reassembling...`);
+
+      // 1. Flatten all chunks in order
+      const bytesList = [];
+      for (let i = 0; i < pending.totalChunks; i++) {
+        const payload = pending.chunks.get(i);
+        if (payload) {
+          bytesList.push(...payload);
+        }
+      }
+
+      const rawBytes = new Uint8Array(bytesList);
+
+      // 2. Decode trace points (4 bytes each: int16 roll_cdeg, int16 pitch_cdeg in centi-degrees)
+      const trace = [];
+      const view = new DataView(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength);
+      const numPoints = Math.floor(rawBytes.byteLength / 4);
+
+      for (let i = 0; i < numPoints; i++) {
+        const offset = i * 4;
+        const roll = view.getInt16(offset, true) / 100;
+        const pitch = view.getInt16(offset + 2, true) / 100;
+        
+        // Mock ax, ay, az for target centering logic (recoil spike at the end)
+        const isLast = (i === numPoints - 1);
+        const ax = 0;
+        const ay = 0;
+        const az = isLast ? 5.0 : 1.0;
+        
+        trace.push({ ax, ay, az, roll, pitch });
+      }
+
+      // 3. Save to database
+      try {
+        const { put, getAll } = await import("../core/db.js");
+        const existingShots = await getAll("shots");
+        const shotRecord = existingShots.find(
+          (record) =>
+            record.device_id === "OpenFloat-Sensor" &&
+            record.device_shot_id === chunk.shotId
+        );
+
+        if (shotRecord) {
+          const tracePayload = {
+            shot_id: shotRecord.id,
+            sample_rate_hz: 52, // Decimated offline rate
+            payload: trace
+          };
+
+          await put("shot_traces", tracePayload);
+          await put("sync_queue", {
+            table: "shot_traces",
+            action: "CREATE",
+            targetId: shotRecord.id,
+            payload: tracePayload,
+            status: "pending"
+          });
+
+          this.bus.emit("log", `Trace for shot ID ${chunk.shotId} successfully reassembled and saved.`);
+
+          // Trigger a UI redraw if this is the currently selected shot in review mode
+          const activeState = this.store.get();
+          if (activeState.reviewMode && activeState.reviewTrace && activeState.lastShotSummary && activeState.lastShotSummary.shotId === chunk.shotId) {
+            this.store.set({ reviewTrace: trace });
+          }
+        } else {
+          this.bus.emit("log", `Failed to associate trace: shot ID ${chunk.shotId} not found in DB.`);
+        }
+      } catch (error) {
+        console.error("Failed to save reassembled trace:", error);
+      } finally {
+        this.pendingTraces.delete(chunk.shotId);
+      }
+    }
   }
 }

@@ -104,9 +104,36 @@ export function parseBinaryStorageFrame(bytes, offset = 0) {
   };
 }
 
+export function parseBinaryTraceFrame(bytes, offset = 0) {
+  if (bytes.length - offset < BINARY_FRAME_LEN) return null;
+  if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
+
+  const view = new DataView(
+    bytes.buffer,
+    bytes.byteOffset + offset,
+    BINARY_FRAME_LEN,
+  );
+  if (view.getUint8(3) !== 6) return null;
+
+  const len = view.getUint8(8);
+  const payload = new Uint8Array(
+    bytes.buffer,
+    bytes.byteOffset + offset + 9,
+    len
+  );
+
+  return {
+    shotId: view.getUint16(4, true),
+    chunkIndex: view.getUint8(6),
+    totalChunks: view.getUint8(7),
+    payload: Array.from(payload),
+  };
+}
+
 // Decode any binary frame, dispatching on the type byte.
 // Returns { kind: "sample", sample } | { kind: "shot", shot }
-//       | { kind: "count", count } | null.
+//       | { kind: "count", count } | { kind: "storage", storage }
+//       | { kind: "trace", trace } | null.
 export function decodeBinaryFrame(bytes, offset = 0) {
   if (bytes.length - offset < BINARY_FRAME_LEN) return null;
   if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
@@ -122,6 +149,10 @@ export function decodeBinaryFrame(bytes, offset = 0) {
   if (bytes[offset + 3] === 5) {
     const storage = parseBinaryStorageFrame(bytes, offset);
     return storage && { kind: "storage", storage };
+  }
+  if (bytes[offset + 3] === 6) {
+    const trace = parseBinaryTraceFrame(bytes, offset);
+    return trace && { kind: "trace", trace };
   }
   const sample = parseBinaryFrame(bytes, offset);
   return sample && { kind: "sample", sample };

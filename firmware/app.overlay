@@ -19,4 +19,8 @@
 		zephyr,console = &uart20;
 		zephyr,shell-uart = &uart20;
 	};
+
+	zephyr,user {
+		io-channels = <&adc 7>;
+	};
 };

@@ -224,15 +224,17 @@ OFRAW,1,0,77728,900,-753,654,-104,505,-525,488,3,3,0,1000000,228,223,17,0
 The firmware advertises as:
 
 ```text
-OpenFloat-463D
+OpenFloat-463F (or similar, forced increment to clear Windows cache)
 ```
 
-Custom OpenFloat GATT UUIDs:
+GATT Services:
 
 ```text
-Service: 8f3f3b10-0f5a-4f4c-9a2d-000000000001
-Live:    8f3f3b10-0f5a-4f4c-9a2d-000000000002
-Control: 8f3f3b10-0f5a-4f4c-9a2d-000000000003
+Service: 8f3f3b10-0f5a-4f4c-9a2d-000000000001 (Custom OpenFloat Service)
+Live:    8f3f3b10-0f5a-4f4c-9a2d-000000000002 (Live stream characteristic)
+Control: 8f3f3b10-0f5a-4f4c-9a2d-000000000003 (Control command characteristic)
+Battery: 0000180f-0000-1000-8000-00805f9b34fb (Standard Battery Service / BAS)
+  Level: 00002a19-0000-1000-8000-00805f9b34fb (Battery Level 0-100%)
 ```
 
 The BLE live characteristic notifies 20-byte binary frames. Live samples are
@@ -265,13 +267,16 @@ that record from RRAM-backed storage.
 The BLE control characteristic accepts ASCII commands:
 
 ```text
-start       Enable live notifications (also triggers a count-sync frame)
-stop        Disable live notifications
-zero        Acknowledge a zeroing request; user button still owns live zeroing
-thresh:<g>  Set shot detection threshold in g, clamped to 2.0-30.0
-shotreset   Reset the persisted shot count to 0
-shotset:<n> Set the persisted shot count to n (e.g. correct a miscount)
-shotack:<n> Confirm a type-2/type-4 shot was saved by the browser; frees it
+start         Enable live notifications (also triggers a count-sync frame)
+stop          Disable live notifications
+zero          Capture the current roll/pitch and save them as permanent offsets in RRAM
+thresh:<g>    Set shot detection threshold in g, clamped to 2.0-30.0
+wakesens:<g>  Set wake-up trigger accelerometer threshold in g, clamped to 0.5-8.0
+sleeptime:<s> Set deep sleep timeout in seconds, clamped to 5-600
+sleepsens:<g> Set active sleep movement accelerometer threshold in g, clamped to 0.05-0.50
+shotreset     Reset the persisted shot count to 0
+shotset:<n>   Set the persisted shot count to n (e.g. correct a miscount)
+shotack:<n>   Confirm a type-2/type-4 shot was saved by the browser; frees it
 ```
 
 The host-side test client lives in the web repo:

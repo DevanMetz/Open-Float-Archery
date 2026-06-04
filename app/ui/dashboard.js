@@ -125,21 +125,35 @@ export function mountDashboard({ store, telemetry, el }) {
         let rollCenter = 0;
         let pitchCenter = 0;
 
-        if (state.reviewMode) {
-          // Centering around release (index of max acceleration G-force magnitude)
-          let releaseIdx = 0;
-          let maxG = 0;
-          for (let i = 0; i < data.length; i++) {
-            const pt = data[i];
-            const g = Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0);
-            if (g > maxG) {
-              maxG = g;
-              releaseIdx = i;
-            }
+        let releaseIdx = 0;
+        let maxG = 0;
+        for (let i = 0; i < data.length; i++) {
+          const pt = data[i];
+          const g = Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0);
+          if (g > maxG) {
+            maxG = g;
+            releaseIdx = i;
           }
-          const refPt = data[releaseIdx] || { roll: 0, pitch: 0 };
-          rollCenter = refPt.roll || 0;
-          pitchCenter = refPt.pitch || 0;
+        }
+
+        if (state.reviewMode) {
+          // Center around the average of the hold portion (excluding release recoil)
+          let sumRoll = 0;
+          let sumPitch = 0;
+          let count = 0;
+          const holdEndIdx = Math.max(5, releaseIdx - 10);
+          for (let i = 0; i < holdEndIdx && i < data.length; i++) {
+            sumRoll += data[i].roll || 0;
+            sumPitch += data[i].pitch || 0;
+            count++;
+          }
+          if (count > 0) {
+            rollCenter = sumRoll / count;
+            pitchCenter = sumPitch / count;
+          } else {
+            rollCenter = data[0].roll || 0;
+            pitchCenter = data[0].pitch || 0;
+          }
         } else {
           // Centering around hold average in live streaming view
           let sumRoll = 0;
@@ -152,9 +166,10 @@ export function mountDashboard({ store, telemetry, el }) {
           pitchCenter = sumPitch / data.length;
         }
 
-        // Normalize scale: find the maximum deviation to ensure the path fits the target rings
+        // Normalize scale: find the maximum deviation inside the hold portion (ignoring release spike)
         let maxDev = 1.0; // Minimum 1.0 degree window to prevent infinite zoom on tiny movements
-        for (let i = 0; i < data.length; i++) {
+        const scaleEndIdx = state.reviewMode ? Math.max(5, releaseIdx - 5) : data.length;
+        for (let i = 0; i < scaleEndIdx && i < data.length; i++) {
           const pt = data[i];
           const dx = (pt.roll || 0) - rollCenter;
           const dy = (pt.pitch || 0) - pitchCenter;

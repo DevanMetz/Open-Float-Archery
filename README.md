@@ -42,6 +42,10 @@ without hardware.
   (|a| held 0.814-1.179 g).
 - CPU load during the interrupt-driven loop measured about 35% active, leaving
   about 65% idle (down from ~51% with busy-polling).
+- **On-Chip Battery Monitoring**: Exposes standard BLE Battery Service (BAS, UUID `0x180F`) and Level characteristic (`0x2A19`). Measures battery level percentage from pin `P1.14/AIN7_VBAT` (divider $2.0$) using the dynamic power switch regulator `vbat_pwr` (`P1.15`) to save power.
+- **Bow Orientation Calibration**: Supports zeroing pitch and roll calibration values via the control BLE command `zero` or browser dashboard button. Offsets are saved persistently in Settings RRAM (`"cant_offset"`, `"pitch_offset"`) and loaded automatically on boot.
+- **Configurable Wake-up & Sleep Settings**: Allows tuning wake-up sensitivity (`wakesens:<g>`), deep sleep timeout (`sleeptime:<s>`), and active sleep movement sensitivity (`sleepsens:<g>`) via BLE commands, stored in Settings RRAM.
+- **Release Recoil Signature Filtering**: Checks gyroscope dynamic magnitude squared ($\ge 1.5\text{ rad/s}$ / $85^\circ\text{/s}$ minimum recoil velocity) during acceleration peaks to filter out accidental arrow bumps, bow drops, or setting the device down.
 
 ## BLE Telemetry Test Client
 

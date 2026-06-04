@@ -180,9 +180,17 @@ export class BleAdapter extends BaseAdapter {
     this.controlQueue = Promise.resolve();
     this.acknowledgedShotIds = new Set();
     this.pendingAckShotIds = new Set();
+    this.pendingStoredShots = 0;
+    this.storedShotWatchdog = null;
+    this.currentTraceDownloadShotId = null;
+    this.traceTimer = null;
     this.unsubscribeShotSaved = bus.on("shot-saved", (shot) => {
       if (shot && shot.shotId != null) {
-        this.ackShot(shot.shotId);
+        if (shot.stored) {
+          this._startTraceDownload(shot.shotId);
+        } else {
+          this.ackShot(shot.shotId);
+        }
       }
     });
   }
@@ -207,7 +215,7 @@ export class BleAdapter extends BaseAdapter {
     // reliable of the two for discovery.
     this.device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [OPENFLOAT_SERVICE] }, { namePrefix: "OpenFloat" }],
-      optionalServices: [OPENFLOAT_SERVICE],
+      optionalServices: [OPENFLOAT_SERVICE, "battery_service"],
     });
     this.device.addEventListener("gattserverdisconnected", () => this._onDrop());
 
@@ -221,10 +229,34 @@ export class BleAdapter extends BaseAdapter {
       this.log(`BLE control characteristic not found: ${error.message}`);
     }
 
+    // Discover standard Battery Service
+    this.batteryChar = null;
+    try {
+      const basService = await server.getPrimaryService("battery_service");
+      this.batteryChar = await basService.getCharacteristic("battery_level");
+    } catch (error) {
+      this.log(`BLE Battery Service not found: ${error.message}`);
+    }
+
     this.sampleCount = 0;
     this.live.addEventListener("characteristicvaluechanged", (e) => this._onValue(e));
     await this.live.startNotifications();
     this.log("BLE notifications subscribed.");
+
+    if (this.batteryChar) {
+      this.batteryChar.addEventListener("characteristicvaluechanged", (e) => {
+        const val = e.target.value.getUint8(0);
+        this.bus.emit("battery", val);
+      });
+      await this.batteryChar.startNotifications();
+      try {
+        const initVal = await this.batteryChar.readValue();
+        this.bus.emit("battery", initVal.getUint8(0));
+      } catch (err) {
+        this.log(`Initial battery read failed: ${err.message}`);
+      }
+    }
+
     await this.sendControl("start");
     await this.sendControl("shotdump");
 
@@ -235,7 +267,7 @@ export class BleAdapter extends BaseAdapter {
     // The firmware streams only once notifications are enabled; if nothing
     // arrives shortly, nudge it with another start command.
     this.watchdog = setTimeout(() => {
-      if (this.connected && this.sampleCount === 0) {
+      if (this.connected && this.sampleCount === 0 && this.pendingStoredShots === 0 && !this.currentTraceDownloadShotId) {
         this.log("No BLE frames after 2s — re-sending start.");
         this.sendControl("start");
       }
@@ -261,15 +293,19 @@ export class BleAdapter extends BaseAdapter {
           this.log(`Sent BLE control: ${command}.`);
           return true;
         } catch (error) {
-          const message = String(error && error.message ? error.message : error);
-          if (!message.includes("GATT operation already in progress") || attempt === 2) {
+          if (attempt === 2) {
             throw error;
           }
-          await new Promise((resolve) => setTimeout(resolve, 120));
+          this.log(`BLE control write attempt ${attempt + 1} failed: ${error.message || error}. Retrying...`);
+          await new Promise((resolve) => setTimeout(resolve, 150));
         }
       }
     } catch (error) {
       this.log(`BLE control write failed: ${error.message}`);
+      const message = String(error.message || error);
+      if (message.includes("disconnected") || message.includes("not connected") || message.includes("Cannot perform GATT operations")) {
+        this._onDrop();
+      }
       return false;
     }
     return false;
@@ -285,11 +321,15 @@ export class BleAdapter extends BaseAdapter {
       const acked = await this.sendControl(`shotack:${shotId}`);
       if (acked) {
         this.acknowledgedShotIds.add(shotId);
-        await this.sendControl("shotdump");
       }
     } finally {
       this.pendingAckShotIds.delete(shotId);
     }
+  }
+
+  async requestTrace(shotId) {
+    this.log(`Requesting trace upload for shot ID ${shotId}...`);
+    await this.sendControl(`tracereq:${shotId}`);
   }
 
   _onValue(event) {
@@ -310,6 +350,7 @@ export class BleAdapter extends BaseAdapter {
         decodedCount += 1;
         if (decoded.shot.stored) {
           this.log(`Stored shot upload received: id ${decoded.shot.shotId}.`);
+          this._feedStoredShotWatchdog();
         }
         this.bus.emit("shot", decoded.shot);
         continue;
@@ -325,6 +366,18 @@ export class BleAdapter extends BaseAdapter {
           `Device stored shots pending: ${decoded.storage.pending} ` +
             `(shot count ${decoded.storage.shotCount}).`,
         );
+        this.pendingStoredShots = decoded.storage.pending;
+        if (this.pendingStoredShots > 0) {
+          this._startStoredShotWatchdog();
+        } else {
+          this._stopStoredShotWatchdog();
+        }
+      }
+      if (decoded && decoded.kind === "trace") {
+        decodedCount += 1;
+        this.bus.emit("trace-chunk", decoded.trace);
+        this._onTraceChunkReceived(decoded.trace);
+        continue;
       }
     }
 
@@ -337,11 +390,85 @@ export class BleAdapter extends BaseAdapter {
   _onDrop() {
     if (!this.connected) return;
     this.connected = false;
+    this._stopStoredShotWatchdog();
+    this._stopTraceDownloadTimer();
+    this.currentTraceDownloadShotId = null;
+    this.pendingStoredShots = 0;
     this.log("BLE disconnected.");
     this.status("", "Disconnected");
   }
 
+  _startStoredShotWatchdog() {
+    this._stopStoredShotWatchdog();
+    this.storedShotWatchdog = setInterval(() => {
+      if (this.connected && this.pendingStoredShots > 0) {
+        this.log(`Watchdog: Stored shot upload stalled (pending: ${this.pendingStoredShots}). Re-sending shotdump...`);
+        this.sendControl("shotdump");
+      } else {
+        this._stopStoredShotWatchdog();
+      }
+    }, 4000);
+  }
+
+  _stopStoredShotWatchdog() {
+    if (this.storedShotWatchdog) {
+      clearInterval(this.storedShotWatchdog);
+      this.storedShotWatchdog = null;
+    }
+  }
+
+  _feedStoredShotWatchdog() {
+    if (this.pendingStoredShots > 0) {
+      this._startStoredShotWatchdog();
+    }
+  }
+
+  _startTraceDownload(shotId) {
+    this._stopTraceDownloadTimer();
+    this.currentTraceDownloadShotId = shotId;
+    this.log(`Starting serialized trace download for shot ${shotId}...`);
+    this.requestTrace(shotId);
+    
+    // 2.5-second fallback timer if device doesn't respond or has no trace
+    this.traceTimer = setTimeout(() => {
+      this.log(`Trace download timeout for shot ${shotId}. Proceeding to ack.`);
+      this._completeTraceDownload(shotId);
+    }, 2500);
+  }
+
+  _onTraceChunkReceived(trace) {
+    if (trace.shotId === this.currentTraceDownloadShotId) {
+      this._stopTraceDownloadTimer();
+      
+      if (trace.chunkIndex === trace.totalChunks - 1) {
+        this.log(`Trace download complete for shot ${trace.shotId}.`);
+        this._completeTraceDownload(trace.shotId);
+      } else {
+        // Reset watchdog during active chunk transfer (8 seconds)
+        this.traceTimer = setTimeout(() => {
+          this.log(`Trace download stalled for shot ${trace.shotId}. Proceeding to ack.`);
+          this._completeTraceDownload(trace.shotId);
+        }, 8000);
+      }
+    }
+  }
+
+  _completeTraceDownload(shotId) {
+    this._stopTraceDownloadTimer();
+    this.currentTraceDownloadShotId = null;
+    this.ackShot(shotId);
+  }
+
+  _stopTraceDownloadTimer() {
+    if (this.traceTimer) {
+      clearTimeout(this.traceTimer);
+      this.traceTimer = null;
+    }
+  }
+
   async disconnect() {
+    this._stopStoredShotWatchdog();
+    this._stopTraceDownloadTimer();
     if (this.unsubscribeShotSaved) {
       this.unsubscribeShotSaved();
       this.unsubscribeShotSaved = null;
@@ -350,6 +477,10 @@ export class BleAdapter extends BaseAdapter {
     try {
       if (this.live) await this.live.stopNotifications();
     } catch (_) {}
+    try {
+      if (this.batteryChar) await this.batteryChar.stopNotifications();
+    } catch (_) {}
+    this.batteryChar = null;
     try {
       if (this.device && this.device.gatt.connected) this.device.gatt.disconnect();
     } catch (_) {}

@@ -114,6 +114,16 @@ h1 {
   background: var(--amber);
 }
 
+.status.battery-status {
+  color: var(--cyan);
+  border-color: rgba(53, 199, 232, 0.2);
+  background: rgba(53, 199, 232, 0.05);
+}
+
+.battery-icon {
+  font-size: 14px;
+}
+
 main {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);

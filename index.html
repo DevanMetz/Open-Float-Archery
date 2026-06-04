@@ -17,6 +17,10 @@
         </div>
       </div>
       <div class="header-status-group">
+        <div id="batteryBadge" class="status battery-status hidden" title="Battery Level">
+          <span class="battery-icon">🔋</span>
+          <span id="batteryText">--%</span>
+        </div>
         <div id="syncBadge" class="status sync-local clickable" title="Configure Cloud Sync">
           <span class="dot"></span>
           <span id="syncText">Local-Only</span>
@@ -41,6 +45,10 @@
         <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
         <button id="demoBtn">Run Practice Demo</button>
         <button id="saveManualBtn" class="accent" disabled>Save Hold Capture</button>
+        <button id="zeroBtn" class="accent" style="margin-top: 6px;" disabled>Zero Bow Calibration</button>
+        <div style="font-size: 11px; color: var(--muted); margin: 4px 0 10px 0; text-align: center;">
+          Offsets: Cant <span id="cantOffsetVal">0.0</span>°, Pitch <span id="pitchOffsetVal">0.0</span>°
+        </div>
 
         <div class="practice-card">
           <div>
@@ -72,6 +80,27 @@
           <label for="sleepSensSlider">Sleep Sensitivity - <span id="sleepSensValue">0.15</span> g</label>
           <input type="range" id="sleepSensSlider" min="0.05" max="0.50" step="0.01" value="0.15">
           <p class="note">Accelerometer movement threshold to keep the device awake. A lower value is more sensitive. Requires a Bluetooth connection.</p>
+        </div>
+
+        <div class="field">
+          <label for="bufferRateSlider">Buffer Rate - <span id="bufferRateValue">52 Hz (6s hold)</span></label>
+          <input type="range" id="bufferRateSlider" min="0" max="3" step="1" value="1">
+          <p class="note">On-device trace buffering rate. Off disables offline traces, 52 Hz buffers a 6-second hold window, 104 Hz buffers a 3-second hold window, and 208 Hz buffers a high-resolution 1.5-second hold window. Requires a Bluetooth connection.</p>
+        </div>
+
+        <div class="field">
+          <label for="streamRateSlider">Live Stream Rate - <span id="streamRateValue">1110 Hz (Max)</span></label>
+          <input type="range" id="streamRateSlider" min="0" max="4" step="1" value="4">
+          <p class="note">Averaged live telemetry update rate sent over BLE: 55 Hz, 111 Hz, 222 Hz, 555 Hz, or 1110 Hz (Max). Lower rates reduce BLE traffic. Requires a Bluetooth connection.</p>
+        </div>
+
+
+        <div class="field">
+          <label for="bufferNVSToggle">
+            <input type="checkbox" id="bufferNVSToggle" checked style="vertical-align: middle; margin-right: 6px;">
+            Persist Traces Offline (RRAM)
+          </label>
+          <p class="note">When checked, traces are saved to on-device non-volatile memory (RRAM) to survive deep sleep/power down, but introduces slight write overhead. When unchecked, traces stay in SRAM only.</p>
         </div>
 
         <p class="note">
