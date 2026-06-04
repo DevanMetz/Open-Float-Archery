@@ -41,7 +41,8 @@ export function parseBinaryFrame(bytes, offset = 0) {
   };
 }
 
-// Decode one 20-byte binary shot-event frame (type=2). Returns a Shot or null.
+// Decode one 20-byte binary shot-event frame (type=2 live, type=4 stored).
+// Returns a Shot or null.
 export function parseBinaryShotFrame(bytes, offset = 0) {
   if (bytes.length - offset < BINARY_FRAME_LEN) return null;
   if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
@@ -51,7 +52,8 @@ export function parseBinaryShotFrame(bytes, offset = 0) {
     bytes.byteOffset + offset,
     BINARY_FRAME_LEN,
   );
-  if (view.getUint8(3) !== 2) return null;
+  const type = view.getUint8(3);
+  if (type !== 2 && type !== 4) return null;
 
   return {
     shotCount: view.getUint16(4, true),
@@ -60,18 +62,66 @@ export function parseBinaryShotFrame(bytes, offset = 0) {
     ayMg: view.getInt16(10, true),
     azMg: view.getInt16(12, true),
     thresholdG: view.getUint16(14, true) / 100,
+    rollDeg: view.getInt16(16, true) / ANGLE_CDEG,
+    pitchDeg: view.getInt16(18, true) / ANGLE_CDEG,
+    stored: type === 4,
+  };
+}
+
+// Decode one 20-byte count-sync frame (type=3). Returns { count } or null.
+// Sent by the device on subscribe so the persisted lifetime count displays
+// immediately, without being logged as a new shot.
+export function parseBinaryCountFrame(bytes, offset = 0) {
+  if (bytes.length - offset < BINARY_FRAME_LEN) return null;
+  if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
+
+  const view = new DataView(
+    bytes.buffer,
+    bytes.byteOffset + offset,
+    BINARY_FRAME_LEN,
+  );
+  if (view.getUint8(3) !== 3) return null;
+
+  return { count: view.getUint16(4, true) };
+}
+
+export function parseBinaryStorageFrame(bytes, offset = 0) {
+  if (bytes.length - offset < BINARY_FRAME_LEN) return null;
+  if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
+
+  const view = new DataView(
+    bytes.buffer,
+    bytes.byteOffset + offset,
+    BINARY_FRAME_LEN,
+  );
+  if (view.getUint8(3) !== 5) return null;
+
+  return {
+    shotCount: view.getUint16(4, true),
+    pending: view.getUint16(6, true),
+    uploadShotId: view.getUint16(8, true),
+    requested: view.getUint16(10, true) === 1,
   };
 }
 
 // Decode any binary frame, dispatching on the type byte.
-// Returns { kind: "sample", sample } | { kind: "shot", shot } | null.
+// Returns { kind: "sample", sample } | { kind: "shot", shot }
+//       | { kind: "count", count } | null.
 export function decodeBinaryFrame(bytes, offset = 0) {
   if (bytes.length - offset < BINARY_FRAME_LEN) return null;
   if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
 
-  if (bytes[offset + 3] === 2) {
+  if (bytes[offset + 3] === 2 || bytes[offset + 3] === 4) {
     const shot = parseBinaryShotFrame(bytes, offset);
     return shot && { kind: "shot", shot };
+  }
+  if (bytes[offset + 3] === 3) {
+    const sync = parseBinaryCountFrame(bytes, offset);
+    return sync && { kind: "count", count: sync.count };
+  }
+  if (bytes[offset + 3] === 5) {
+    const storage = parseBinaryStorageFrame(bytes, offset);
+    return storage && { kind: "storage", storage };
   }
   const sample = parseBinaryFrame(bytes, offset);
   return sample && { kind: "sample", sample };

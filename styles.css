@@ -10,6 +10,8 @@
   --cyan: #35c7e8;
   --red: #ff5d73;
   --amber: #f3bf4c;
+  --violet: #9b8cff;
+  --ink: #061014;
 }
 
 * {
@@ -168,6 +170,12 @@ button.primary {
   border-color: var(--green);
 }
 
+button.accent {
+  background: var(--cyan);
+  color: var(--ink);
+  border-color: var(--cyan);
+}
+
 button.danger {
   border-color: rgba(255, 93, 115, 0.5);
   color: #ffd9df;
@@ -185,10 +193,141 @@ button:disabled {
   margin: 0;
 }
 
+.practice-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(53, 199, 232, 0.28);
+  border-radius: 8px;
+  background: rgba(53, 199, 232, 0.06);
+}
+
+.practice-card div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.practice-card strong {
+  font-size: 13px;
+}
+
+.practice-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.eyebrow {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 input[type="range"] {
   width: 100%;
   accent-color: var(--green);
   cursor: pointer;
+}
+
+.coach-strip {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.15fr) minmax(360px, 1fr);
+  gap: 12px;
+}
+
+.score-panel {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 16px;
+  min-height: 158px;
+}
+
+.score-ring {
+  width: 112px;
+  height: 112px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  border: 9px solid rgba(48, 227, 155, 0.2);
+  outline: 1px solid rgba(48, 227, 155, 0.45);
+  background: var(--panel-soft);
+}
+
+.score-ring span {
+  font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
+  font-size: 34px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.score-ring small {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.score-copy {
+  min-width: 0;
+}
+
+.score-copy strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 22px;
+  line-height: 1.12;
+}
+
+.score-copy p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.phase-panel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+}
+
+.phase-item {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  min-height: 158px;
+  padding: 16px;
+  border-left: 1px solid var(--line);
+}
+
+.phase-item:first-child {
+  border-left: 0;
+}
+
+.phase-item span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.phase-item strong {
+  font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
+  font-size: 28px;
+}
+
+.phase-item small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 #thresholdValue {
@@ -198,7 +337,7 @@ input[type="range"] {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -277,6 +416,55 @@ canvas {
   gap: 12px;
 }
 
+.shot-breakdown {
+  padding: 14px;
+  display: grid;
+  gap: 14px;
+}
+
+.timestamp-pill {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.breakdown-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.breakdown-grid div {
+  min-height: 86px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.breakdown-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.breakdown-grid strong {
+  display: block;
+  margin-top: 12px;
+  font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
+  font-size: 22px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -314,8 +502,13 @@ td:last-child {
     grid-template-columns: 1fr;
   }
 
+  .coach-strip {
+    grid-template-columns: 1fr;
+  }
+
   .metric-grid,
-  .readouts {
+  .readouts,
+  .breakdown-grid {
     grid-template-columns: 1fr 1fr;
   }
 }
@@ -327,9 +520,31 @@ td:last-child {
   }
 
   .metric-grid,
-  .readouts {
+  .readouts,
+  .breakdown-grid,
+  .phase-panel {
     grid-template-columns: 1fr;
   }
+
+  .score-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .score-ring {
+    width: 104px;
+    height: 104px;
+  }
+
+  .phase-item {
+    min-height: 108px;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .phase-item:first-child {
+    border-top: 0;
+  }
+
 }
 
 /* Cloud Sync & Settings Styles */
@@ -612,6 +827,10 @@ td:last-child {
   color: var(--amber);
 }
 
+.history-stat-val.score {
+  color: var(--cyan);
+}
+
 /* Trace Review Mode Overlay Banner */
 .review-overlay {
   position: absolute;
@@ -626,6 +845,7 @@ td:last-child {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   z-index: 5;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
   animation: banner-enter 0.2s cubic-bezier(0.16, 1, 0.3, 1);
@@ -640,6 +860,7 @@ td:last-child {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .review-details strong {
@@ -653,6 +874,55 @@ td:last-child {
   font-size: 11px;
   color: var(--text);
   font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-trace-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.mini-btn,
+.mini-icon-btn {
+  min-height: 30px;
+  height: 30px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.mini-btn {
+  padding: 0 12px;
+}
+
+.mini-icon-btn {
+  width: 30px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+}
+
+.zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.zoom-value {
+  min-width: 42px;
+  text-align: center;
+  color: var(--text);
+  font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 /* Chart View Toggles */
@@ -693,4 +963,18 @@ td:last-child {
   color: #071014;
 }
 
+@media (max-width: 560px) {
+  .review-overlay {
+    align-items: stretch;
+    flex-direction: column;
+  }
 
+  .review-trace-controls {
+    justify-content: space-between;
+    margin-left: 0;
+  }
+
+  .review-overlay > .mini-btn {
+    width: 100%;
+  }
+}

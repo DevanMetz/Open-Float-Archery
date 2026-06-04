@@ -63,12 +63,19 @@ async function compressPayload(data) {
   }
 }
 
+function missingColumnFromError(error) {
+  const message = error && error.message ? error.message : "";
+  const match = message.match(/Could not find the '([^']+)' column/);
+  return match ? match[1] : null;
+}
+
 export class CloudSyncAdapter {
   constructor(bus, store) {
     this.bus = bus;
     this.store = store;
     this.syncing = false;
     this.user = null;
+    this.reportedSchemaSkips = new Set();
 
     // Listen to network status changes
     window.addEventListener("online", () => {
@@ -261,13 +268,44 @@ export class CloudSyncAdapter {
         };
       }
 
-      // Perform upsert to Supabase table
-      const { error } = await sb.from(table).upsert(finalPayload);
-      if (error) {
-        // If foreign key constraint fails because the parent session has not been synced yet,
-        // we'll raise an error to block the queue, maintaining sequential ordering.
+      // Perform upsert to Supabase table. Older user schemas may not have every
+      // locally-derived metric yet, so retry after dropping unknown columns.
+      const droppedColumns = [];
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const { error } = await sb.from(table).upsert(finalPayload);
+        if (!error) {
+          if (droppedColumns.length > 0) {
+            const schemaSkipKey = `${table}:${droppedColumns.sort().join(",")}`;
+            if (!this.reportedSchemaSkips.has(schemaSkipKey)) {
+              this.reportedSchemaSkips.add(schemaSkipKey);
+              this.bus.emit(
+                "log",
+                `Cloud schema skipped unsupported ${table} field(s): ${droppedColumns.join(", ")}.`,
+              );
+            }
+          }
+          return;
+        }
+
+        const missingColumn = missingColumnFromError(error);
+        if (
+          missingColumn &&
+          Object.prototype.hasOwnProperty.call(finalPayload, missingColumn)
+        ) {
+          delete finalPayload[missingColumn];
+          droppedColumns.push(missingColumn);
+          continue;
+        }
+
+        // If foreign key constraint fails because the parent session has not
+        // been synced yet, raise an error to block the queue, maintaining
+        // sequential ordering.
         throw new Error(`Database upsert failed: ${error.message}`);
       }
+
+      throw new Error(
+        `Database upsert failed: too many unsupported columns in ${table}`,
+      );
     } else if (action === "DELETE") {
       const { error } = await sb.from(table).delete().eq("id", targetId);
       if (error) throw new Error(`Database delete failed: ${error.message}`);

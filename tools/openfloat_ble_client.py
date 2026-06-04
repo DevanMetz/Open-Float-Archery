@@ -137,6 +137,21 @@ def parse_binary_frame(frame: bytes) -> Optional[Sample]:
         gz_q4,
     ) = FRAME_STRUCT.unpack(frame)
 
+    # type 1 = live sample; type 2 = shot event; type 3 = count sync. Only live
+    # frames are samples — the others reuse the envelope with different fields,
+    # so report them and skip so they do not pollute sequence-loss tracking.
+    if frame_type == 2:
+        print(f"OFSHOT(ble) shot_count={sequence_u16} shot_id={dt_us}")
+        return None
+    if frame_type == 3:
+        print(f"OFCOUNT(ble) shot_count={sequence_u16}")
+        return None
+    if frame_type == 4:
+        print(f"OFSTORED(ble) shot_count={sequence_u16} shot_id={dt_us}")
+        return None
+    if frame_type != 1:
+        return None
+
     return Sample(
         protocol=protocol,
         frame_type=frame_type,
@@ -274,6 +289,10 @@ async def run_client(args) -> None:
     notifications = 0
     bytes_received = 0
     lost = 0
+    steady_frames = 0
+    steady_notifications = 0
+    steady_bytes_received = 0
+    steady_lost = 0
     csv_writer = None
     csv_file = None
 
@@ -301,23 +320,32 @@ async def run_client(args) -> None:
 
     def on_notify(_sender, data: bytearray) -> None:
         nonlocal frames, notifications, bytes_received, last_print, last_seq, lost
+        nonlocal steady_frames, steady_notifications, steady_bytes_received, steady_lost
 
+        now = time.monotonic()
+        in_steady_window = now - start >= args.warmup
         notifications += 1
         bytes_received += len(data)
+        if in_steady_window:
+            steady_notifications += 1
+            steady_bytes_received += len(data)
 
         if args.raw:
             print(data.hex(" "))
 
         for sample in parser.feed(bytes(data)):
             frames += 1
+            gap = 0
             if last_seq is not None:
                 seq_delta = (sample.sequence - last_seq) & 0xFFFF
                 gap = seq_delta - args.sequence_step
                 if gap > 0:
                     lost += gap
+                    if in_steady_window:
+                        steady_lost += gap
             last_seq = sample.sequence
-
-            now = time.monotonic()
+            if in_steady_window:
+                steady_frames += 1
             rate_hz = frames / max(0.001, now - start)
 
             if csv_writer:
@@ -382,6 +410,15 @@ async def run_client(args) -> None:
         f"notifications={notifications} notify_rate={notifications / max(elapsed, 0.001):.1f} Hz "
         f"bytes={bytes_received} bytes_per_s={bytes_received / max(elapsed, 0.001):.0f}"
     )
+    if args.warmup > 0:
+        steady_elapsed = max(elapsed - args.warmup, 0.001)
+        print(
+            f"Steady after warmup={args.warmup:.1f}s: "
+            f"frames={steady_frames} lost={steady_lost} elapsed={steady_elapsed:.1f}s "
+            f"rate={steady_frames / steady_elapsed:.1f} Hz "
+            f"notifications={steady_notifications} notify_rate={steady_notifications / steady_elapsed:.1f} Hz "
+            f"bytes={steady_bytes_received} bytes_per_s={steady_bytes_received / steady_elapsed:.0f}"
+        )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -391,6 +428,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name-prefix", default="OpenFloat", help="BLE name prefix to scan for.")
     parser.add_argument("--scan-timeout", type=float, default=8.0, help="BLE scan time in seconds.")
     parser.add_argument("--duration", type=float, default=0.0, help="Run time in seconds; 0 means until Ctrl+C.")
+    parser.add_argument("--warmup", type=float, default=0.0, help="Exclude this many initial seconds from steady-state stats.")
     parser.add_argument("--notify-uuid", default=OPENFLOAT_LIVE_UUID, help="Telemetry notify characteristic UUID.")
     parser.add_argument("--control-uuid", default=OPENFLOAT_CONTROL_UUID, help="Control write characteristic UUID.")
     parser.add_argument("--nus", action="store_true", help="Use Nordic UART Service UUIDs.")

@@ -5,6 +5,113 @@
 
 export const MAX_TRACE_POINTS = 480;
 
+const ACCEL_TILT_MIN_G = 0.7;
+const ACCEL_TILT_MAX_G = 1.35;
+const ORIENTATION_CORRECTION_TIME_S = 0.45;
+const MAX_ORIENTATION_DT_S = 0.05;
+const LIVE_SCORE_WINDOW = 120;
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function stdDev(values) {
+  if (values.length < 2) return 0;
+  const mean = average(values);
+  const variance = average(values.map((value) => (value - mean) ** 2));
+  return Math.sqrt(variance);
+}
+
+function scoreFromMotion({ roll = 0, pitch = 0, gyroMag = 0, accelG = 1, trace = [] }) {
+  const window = trace.slice(-LIVE_SCORE_WINDOW);
+  const rollStd = stdDev(window.map((pt) => pt.roll || 0));
+  const pitchStd = stdDev(window.map((pt) => pt.pitch || 0));
+  const accelStd = stdDev(window.map((pt) => Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0)));
+
+  const holdStability = clamp(100 - (rollStd + pitchStd) * 18 - gyroMag * 0.7, 0, 100);
+  const releaseQuality = clamp(100 - gyroMag * 1.5 - Math.abs(accelG - 1) * 10, 0, 100);
+  const followThrough = clamp(100 - accelStd * 140 - Math.abs(pitch) * 1.2, 0, 100);
+  const cantScore = clamp(100 - Math.abs(roll) * 7, 0, 100);
+  const pitchScore = clamp(100 - Math.abs(pitch) * 3, 0, 100);
+  const formScore = clamp(
+    holdStability * 0.42 +
+      releaseQuality * 0.24 +
+      followThrough * 0.18 +
+      cantScore * 0.12 +
+      pitchScore * 0.04,
+    0,
+    100,
+  );
+
+  return {
+    formScore: Math.round(formScore),
+    holdStability: Math.round(holdStability),
+    releaseQuality: Math.round(releaseQuality),
+    followThrough: Math.round(followThrough),
+  };
+}
+
+function coachForScore({ formScore, holdStability, releaseQuality, followThrough, roll }) {
+  if (formScore == null) {
+    return {
+      coachTitle: "Waiting for movement",
+      coachText: "Connect a sensor or run the demo to start reading hold stability.",
+    };
+  }
+
+  if (Math.abs(roll) > 6) {
+    return {
+      coachTitle: "Watch bow cant",
+      coachText: "Level the riser before expansion; cant drift is the biggest score limiter right now.",
+    };
+  }
+  if (holdStability < 65) {
+    return {
+      coachTitle: "Settle the hold",
+      coachText: "Movement is building before the shot. Let the float shrink before you commit.",
+    };
+  }
+  if (releaseQuality < 65) {
+    return {
+      coachTitle: "Soften the break",
+      coachText: "Release motion is sharp. Keep pulling through instead of punching the shot.",
+    };
+  }
+  if (followThrough < 65) {
+    return {
+      coachTitle: "Stay in the shot",
+      coachText: "The bow is moving quickly after release. Hold posture through impact.",
+    };
+  }
+  return {
+    coachTitle: "Strong sequence",
+    coachText: "Hold, release, and follow-through are all tracking cleanly.",
+  };
+}
+
+function wrapAngleDeg(value) {
+  let wrapped = value;
+  while (wrapped > 180) wrapped -= 360;
+  while (wrapped < -180) wrapped += 360;
+  return wrapped;
+}
+
+function blendAngleDeg(current, target, weight) {
+  return wrapAngleDeg(current + wrapAngleDeg(target - current) * weight);
+}
+
+function accelTiltDeg(ax, ay, az) {
+  return {
+    roll: Math.atan2(ay, az) * (180 / Math.PI),
+    pitch: Math.atan2(-ax, Math.hypot(ay, az)) * (180 / Math.PI),
+  };
+}
+
 export class TelemetryStore {
   constructor(bus, store) {
     this.bus = bus;
@@ -15,6 +122,9 @@ export class TelemetryStore {
 
     bus.on("sample", (sample) => this.ingest(sample));
     bus.on("shot", (shot) => this.onShot(shot));
+    // Device-reported lifetime count (e.g. restored from NVS on connect).
+    // Updates the displayed counter only; not logged as a new shot.
+    bus.on("shotcount", (count) => this.store.set({ shotCount: count }));
     bus.on("status", ({ mode, text }) =>
       store.set({
         statusMode: mode,
@@ -35,10 +145,24 @@ export class TelemetryStore {
     this.frameCount = 0;
     this.lost = 0;
     this.framesThisSecond = 0;
+    this.orientationReady = false;
+    this.filteredRoll = 0;
+    this.filteredPitch = 0;
     this.trace.length = 0;
     this.history30s.length = 0; // Reset history buffer
     this.currentSessionId = null; // Reset session on reconnect
-    this.store.set({ frameCount: 0, lost: 0, hz: 0, shotCount: 0, sample: null });
+    this.store.set({
+      frameCount: 0,
+      lost: 0,
+      hz: 0,
+      shotCount: 0,
+      sample: null,
+      formScore: null,
+      holdStability: null,
+      releaseQuality: null,
+      followThrough: null,
+      lastShotSummary: null,
+    });
   }
 
   ingest(sample) {
@@ -56,10 +180,56 @@ export class TelemetryStore {
     const ax = sample.axMg / 1000;
     const ay = sample.ayMg / 1000;
     const az = sample.azMg / 1000;
+    const accelG = Math.hypot(sample.axMg, sample.ayMg, sample.azMg) / 1000;
 
-    // Calculate pitch and roll based on gravity projection
-    const roll = sample.rollDeg !== undefined ? sample.rollDeg : Math.atan2(ay, az) * (180 / Math.PI);
-    const pitch = sample.pitchDeg !== undefined ? sample.pitchDeg : Math.atan2(-ax, Math.hypot(ay, az)) * (180 / Math.PI);
+    const { roll: accelRoll, pitch: accelPitch } = accelTiltDeg(ax, ay, az);
+    let roll;
+    let pitch;
+
+    if (sample.rollDeg !== undefined && sample.pitchDeg !== undefined) {
+      roll = sample.rollDeg;
+      pitch = sample.pitchDeg;
+      this.filteredRoll = roll;
+      this.filteredPitch = pitch;
+      this.orientationReady = true;
+    } else {
+      const accelLooksLikeGravity =
+        accelG >= ACCEL_TILT_MIN_G && accelG <= ACCEL_TILT_MAX_G;
+      const dtS = Math.min(
+        Math.max((sample.dtUs || 1000) / 1000000, 0),
+        MAX_ORIENTATION_DT_S,
+      );
+
+      if (!this.orientationReady) {
+        this.filteredRoll = accelLooksLikeGravity ? accelRoll : 0;
+        this.filteredPitch = accelLooksLikeGravity ? accelPitch : 0;
+        this.orientationReady = true;
+      } else {
+        const gyroRoll = this.filteredRoll + (sample.gxDps || 0) * dtS;
+        const gyroPitch = this.filteredPitch + (sample.gyDps || 0) * dtS;
+
+        if (accelLooksLikeGravity) {
+          const correctionWeight =
+            1 - Math.exp(-dtS / ORIENTATION_CORRECTION_TIME_S);
+          this.filteredRoll = blendAngleDeg(
+            gyroRoll,
+            accelRoll,
+            correctionWeight,
+          );
+          this.filteredPitch = blendAngleDeg(
+            gyroPitch,
+            accelPitch,
+            correctionWeight,
+          );
+        } else {
+          this.filteredRoll = wrapAngleDeg(gyroRoll);
+          this.filteredPitch = wrapAngleDeg(gyroPitch);
+        }
+      }
+
+      roll = this.filteredRoll;
+      pitch = this.filteredPitch;
+    }
 
     this.trace.push({
       ax,
@@ -83,8 +253,9 @@ export class TelemetryStore {
     });
     if (this.history30s.length > 1600) this.history30s.shift();
 
-    const accelG = Math.hypot(sample.axMg, sample.ayMg, sample.azMg) / 1000;
     const gyroMag = Math.hypot(sample.gxDps, sample.gyDps, sample.gzDps);
+    const score = scoreFromMotion({ roll, pitch, gyroMag, accelG, trace: this.trace });
+    const coaching = coachForScore({ ...score, roll });
 
     this.store.set({
       sample,
@@ -95,20 +266,56 @@ export class TelemetryStore {
       shotCount:
         sample.shotCount != null ? sample.shotCount : this.store.get().shotCount,
       roll,
-      pitch
+      pitch,
+      ...score,
+      ...coaching,
     });
   }
 
   async onShot(shot) {
     const peakG = Math.hypot(shot.axMg, shot.ayMg, shot.azMg) / 1000;
-    this.bus.emit(
-      "log",
-      `Shot #${shot.shotCount} (id ${shot.shotId}) peak ~${peakG.toFixed(1)} g`,
-    );
     this.store.set({ shotCount: shot.shotCount, lastShot: shot });
 
     try {
-      const { put, generateUUID } = await import("../core/db.js");
+      const { put, getAll, generateUUID } = await import("../core/db.js");
+
+      if (shot.shotId != null) {
+        const existingShots = await getAll("shots");
+        const existingShot = existingShots.find(
+          (record) =>
+            record.device_id === "OpenFloat-Sensor" &&
+            record.device_shot_id === shot.shotId,
+        );
+
+        if (existingShot) {
+          this.bus.emit(
+            "log",
+            `Shot #${shot.shotCount} (id ${shot.shotId}) already saved; acknowledging duplicate upload.`,
+          );
+          this.store.set({
+            shotCount: shot.shotCount,
+            lastShotSummary: {
+              timestamp: existingShot.timestamp,
+              score: existingShot.shot_score,
+              peakG: existingShot.peak_g,
+              cant: existingShot.cant_angle_deg,
+              pitch: existingShot.pitch_angle_deg,
+            },
+          });
+          this.bus.emit("shot-saved", {
+            shotId: shot.shotId,
+            stored: !!shot.stored,
+            localShotId: existingShot.id,
+            duplicate: true,
+          });
+          return;
+        }
+      }
+
+      this.bus.emit(
+        "log",
+        `Shot #${shot.shotCount} (id ${shot.shotId}) peak ~${peakG.toFixed(1)} g`,
+      );
 
       // 1. Ensure an active session exists
       if (!this.currentSessionId) {
@@ -141,12 +348,15 @@ export class TelemetryStore {
         id: localShotId,
         session_id: this.currentSessionId,
         device_id: "OpenFloat-Sensor",
+        device_shot_id: shot.shotId,
+        stored_upload: !!shot.stored,
         timestamp: new Date().toISOString(),
         peak_g: peakG,
         cant_angle_deg: Number((shot.rollDeg !== undefined ? shot.rollDeg : computedRoll).toFixed(1)),
         pitch_angle_deg: Number((shot.pitchDeg !== undefined ? shot.pitchDeg : computedPitch).toFixed(1)),
         roll_angle_deg: Number((shot.rollDeg !== undefined ? shot.rollDeg : computedRoll).toFixed(1)),
         stability_score: Number((100 - Math.min(100, Math.hypot(shot.gxDps || 0, shot.gyDps || 0, shot.gzDps || 0))).toFixed(1)),
+        shot_score: this.store.get().formScore || 0,
         packet_loss_count: this.lost
       };
 
@@ -177,6 +387,20 @@ export class TelemetryStore {
       });
 
       this.bus.emit("log", `Shot saved to local IndexedDB & queued for sync.`);
+      this.store.set({
+        lastShotSummary: {
+          timestamp: shotRecord.timestamp,
+          score: shotRecord.shot_score,
+          peakG: shotRecord.peak_g,
+          cant: shotRecord.cant_angle_deg,
+          pitch: shotRecord.pitch_angle_deg,
+        },
+      });
+      this.bus.emit("shot-saved", {
+        shotId: shot.shotId,
+        stored: !!shot.stored,
+        localShotId,
+      });
 
       // 4. Trigger cloud sync manager if wired
       if (this.syncAdapter) {
@@ -254,6 +478,7 @@ export class TelemetryStore {
         pitch_angle_deg: 0,
         roll_angle_deg: 0,
         stability_score: avgStability,
+        shot_score: this.store.get().formScore || avgStability,
         packet_loss_count: this.lost
       };
 
@@ -283,6 +508,15 @@ export class TelemetryStore {
       });
 
       this.bus.emit("log", `Manual 30s capture saved successfully (ID: ${manualShotId.slice(0, 8)}).`);
+      this.store.set({
+        lastShotSummary: {
+          timestamp: shotRecord.timestamp,
+          score: shotRecord.shot_score,
+          peakG: shotRecord.peak_g,
+          cant: shotRecord.cant_angle_deg,
+          pitch: shotRecord.pitch_angle_deg,
+        },
+      });
 
       if (this.syncAdapter) {
         this.syncAdapter.triggerSync();

@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenFloat Live Telemetry</title>
-  <link rel="stylesheet" href="styles.css">
+  <title>OpenFloat Shot Trainer</title>
+  <link rel="stylesheet" href="styles.css?v=shot-store-7">
 </head>
 <body>
   <div class="app">
@@ -12,8 +12,8 @@
       <div class="brand">
         <div class="mark">OF</div>
         <div>
-          <h1>OpenFloat Live Telemetry</h1>
-          <p class="subtitle">Live dashboard for the bow-mounted nRF54L15 sensor module</p>
+          <h1>OpenFloat Shot Trainer</h1>
+          <p class="subtitle">Real-time bow movement, release quality, and practice history</p>
         </div>
       </div>
       <div class="header-status-group">
@@ -37,15 +37,41 @@
           </select>
         </div>
 
-        <button id="connectBtn" class="primary">Connect Live Sensor</button>
+        <button id="connectBtn" class="primary">Connect Sensor</button>
         <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
-        <button id="demoBtn">Run Demo Stream</button>
-        <button id="saveManualBtn" disabled style="background: var(--cyan); border-color: var(--cyan); color: #071014; margin-top: 6px;">Save 30s Capture</button>
+        <button id="demoBtn">Run Practice Demo</button>
+        <button id="saveManualBtn" class="accent" disabled>Save Hold Capture</button>
+
+        <div class="practice-card">
+          <div>
+            <span class="eyebrow">Practice Mode</span>
+            <strong>Blank Bale</strong>
+          </div>
+          <p>Focuses scoring on steadiness, bow cant, and release motion.</p>
+        </div>
 
         <div class="field">
-          <label for="thresholdSlider">Shot Threshold &mdash; <span id="thresholdValue">12.0</span> g</label>
+          <label for="thresholdSlider">Release Threshold - <span id="thresholdValue">12.0</span> g</label>
           <input type="range" id="thresholdSlider" min="2" max="30" step="0.5" value="12">
           <p class="note">On-device detection threshold, sent to the firmware over BLE. Requires a Bluetooth connection.</p>
+        </div>
+
+        <div class="field">
+          <label for="wakeSlider">Wake-up Sensitivity - <span id="wakeValue">2.0</span> g</label>
+          <input type="range" id="wakeSlider" min="0.5" max="8.0" step="0.1" value="2.0">
+          <p class="note">Trigger threshold to wake the sensor from deep sleep. A lower value is more sensitive. Requires a Bluetooth connection.</p>
+        </div>
+
+        <div class="field">
+          <label for="sleepTimeoutSlider">Sleep Timeout - <span id="sleepTimeoutValue">10</span> s</label>
+          <input type="range" id="sleepTimeoutSlider" min="5" max="600" step="5" value="10">
+          <p class="note">Idle duration in seconds before entering deep sleep when disconnected. Requires a Bluetooth connection.</p>
+        </div>
+
+        <div class="field">
+          <label for="sleepSensSlider">Sleep Sensitivity - <span id="sleepSensValue">0.15</span> g</label>
+          <input type="range" id="sleepSensSlider" min="0.05" max="0.50" step="0.01" value="0.15">
+          <p class="note">Accelerometer movement threshold to keep the device awake. A lower value is more sensitive. Requires a Bluetooth connection.</p>
         </div>
 
         <p class="note">
@@ -70,6 +96,38 @@
       </aside>
 
       <section class="dashboard">
+        <section class="coach-strip">
+          <div class="score-panel panel">
+            <div class="score-ring" aria-label="Current form score">
+              <span id="formScoreValue">--</span>
+              <small>Form Score</small>
+            </div>
+            <div class="score-copy">
+              <span class="eyebrow">Live Feedback</span>
+              <strong id="coachTitle">Waiting for movement</strong>
+              <p id="coachText">Connect a sensor or run the demo to start reading hold stability.</p>
+            </div>
+          </div>
+
+          <div class="panel phase-panel">
+            <div class="phase-item">
+              <span>Hold</span>
+              <strong id="holdStabilityValue">--</strong>
+              <small>steady aim</small>
+            </div>
+            <div class="phase-item">
+              <span>Release</span>
+              <strong id="releaseQualityValue">--</strong>
+              <small>break quality</small>
+            </div>
+            <div class="phase-item">
+              <span>Follow</span>
+              <strong id="followThroughValue">--</strong>
+              <small>after-shot motion</small>
+            </div>
+          </div>
+        </section>
+
         <div class="metric-grid">
           <div class="panel metric">
             <span>Stream Rate</span>
@@ -91,14 +149,19 @@
             <strong id="shotCountValue">0</strong>
             <small>this session</small>
           </div>
+          <div class="panel metric">
+            <span>Bow Cant</span>
+            <strong id="cantValue">0.0</strong>
+            <small>degrees</small>
+          </div>
         </div>
 
         <div class="panel chart-panel">
           <div class="panel-head">
-            <h2 id="chartTitle">Live Motion Trace</h2>
+            <h2 id="chartTitle">Shot Sequence Trace</h2>
             <div class="chart-toggles">
-              <button id="viewTraceBtn" class="toggle-btn active">Line Chart</button>
-              <button id="viewTargetBtn" class="toggle-btn">Aiming Target</button>
+              <button id="viewTraceBtn" class="toggle-btn active">Motion</button>
+              <button id="viewTargetBtn" class="toggle-btn">Pin Float</button>
             </div>
           </div>
           <div id="reviewBanner" class="review-overlay hidden">
@@ -106,9 +169,42 @@
               <strong>Trace Review Mode</strong>
               <span id="reviewInfo">--</span>
             </div>
-            <button id="exitReviewBtn" class="primary" style="min-height: 30px; height: 30px; font-size: 11px; font-weight: 700; padding: 0 12px; border-radius: 6px;">Exit Review</button>
+            <div id="reviewTraceControls" class="review-trace-controls hidden" aria-label="Pin float replay controls">
+              <button id="replayTraceBtn" class="mini-btn">Replay</button>
+              <div class="zoom-controls" aria-label="Trace zoom controls">
+                <button id="zoomOutBtn" class="mini-icon-btn" title="Zoom out">-</button>
+                <span id="zoomValue" class="zoom-value">1.0x</span>
+                <button id="zoomInBtn" class="mini-icon-btn" title="Zoom in">+</button>
+              </div>
+            </div>
+            <button id="exitReviewBtn" class="primary mini-btn">Exit Review</button>
           </div>
           <canvas id="traceCanvas"></canvas>
+        </div>
+
+        <div class="panel shot-breakdown">
+          <div class="panel-head">
+            <h2>Last Shot Breakdown</h2>
+            <span id="lastShotTimeValue" class="timestamp-pill">No shots yet</span>
+          </div>
+          <div class="breakdown-grid">
+            <div>
+              <span>Score</span>
+              <strong id="lastShotScoreValue">--</strong>
+            </div>
+            <div>
+              <span>Peak Force</span>
+              <strong id="lastPeakValue">--</strong>
+            </div>
+            <div>
+              <span>Cant</span>
+              <strong id="lastCantValue">--</strong>
+            </div>
+            <div>
+              <span>Pitch</span>
+              <strong id="lastPitchValue">--</strong>
+            </div>
+          </div>
         </div>
 
         <div class="readouts">
@@ -179,6 +275,6 @@
     </div>
   </div>
 
-  <script type="module" src="app/main.js"></script>
+  <script type="module" src="app/main.js?v=shot-store-7"></script>
 </body>
 </html>

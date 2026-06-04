@@ -2,11 +2,13 @@
 // own the transport lifecycle (connect / disconnect / demo).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore } from "./telemetry/telemetry.js";
-import { createAdapter } from "./device/adapters.js";
-import { mountDashboard, mountLog } from "./ui/dashboard.js";
+import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-7";
+import { createAdapter } from "./device/adapters.js?v=shot-store-7";
+import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-7";
 import { initDb, getAll, get } from "./core/db.js";
-import { CloudSyncAdapter } from "./telemetry/sync.js";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-7";
+
+const APP_BUILD = "shot-store-7";
 
 const ELEMENT_IDS = [
   "statusBadge", "statusText", "transportSelect",
@@ -21,7 +23,16 @@ const ELEMENT_IDS = [
   "chartTitle", "reviewBanner", "reviewInfo", "exitReviewBtn",
   "showLogTabBtn", "showHistoryTabBtn", "shotHistoryTab", "historyList",
   "thresholdSlider", "thresholdValue",
-  "viewTraceBtn", "viewTargetBtn"
+  "wakeSlider", "wakeValue",
+  "sleepTimeoutSlider", "sleepTimeoutValue",
+  "sleepSensSlider", "sleepSensValue",
+  "viewTraceBtn", "viewTargetBtn",
+  "formScoreValue", "coachTitle", "coachText", "holdStabilityValue",
+  "releaseQualityValue", "followThroughValue", "cantValue",
+  "lastShotTimeValue", "lastShotScoreValue", "lastPeakValue",
+  "lastCantValue", "lastPitchValue",
+  "reviewTraceControls", "replayTraceBtn", "zoomOutBtn", "zoomInBtn",
+  "zoomValue"
 ];
 
 const el = {};
@@ -38,6 +49,7 @@ const store = createStore({
   accelG: 0,
   gyroMag: 0,
   shotCount: 0,
+  wakeSensitivity: 2.0,
   sample: null,
   syncStatus: "local",
   syncText: "Local-Only",
@@ -46,7 +58,19 @@ const store = createStore({
   reviewMode: false,
   reviewTrace: null,
   reviewInfo: "",
-  chartView: "line"
+  chartView: "line",
+  formScore: null,
+  holdStability: null,
+  releaseQuality: null,
+  followThrough: null,
+  coachTitle: "Waiting for movement",
+  coachText: "Connect a sensor or run the demo to start reading hold stability.",
+  roll: 0,
+  pitch: 0,
+  lastShotSummary: null,
+  traceZoom: 1,
+  replayActive: false,
+  replayProgress: 1
 });
 
 // Initialize database
@@ -79,6 +103,14 @@ store.subscribe((state) => {
   if (el.viewTraceBtn && el.viewTargetBtn) {
     el.viewTraceBtn.classList.toggle("active", state.chartView === "line");
     el.viewTargetBtn.classList.toggle("active", state.chartView === "target");
+  }
+
+  if (el.reviewTraceControls && el.replayTraceBtn && el.zoomValue) {
+    const pinReviewActive = state.reviewMode && state.chartView === "target";
+    el.reviewTraceControls.classList.toggle("hidden", !pinReviewActive);
+    el.replayTraceBtn.textContent = state.replayActive ? "Playing" : "Replay";
+    el.replayTraceBtn.disabled = !pinReviewActive || state.replayActive;
+    el.zoomValue.textContent = `${(state.traceZoom || 1).toFixed(1)}x`;
   }
 });
 
@@ -143,6 +175,9 @@ async function connect() {
     // device matches the slider.
     if (transport() === "ble") {
       await adapter.sendControl(`thresh:${thresholdGrams().toFixed(1)}`);
+      await adapter.sendControl(`wakesens:${wakeSensitivityGrams().toFixed(1)}`);
+      await adapter.sendControl(`sleeptime:${sleepTimeoutSeconds()}`);
+      await adapter.sendControl(`sleepsens:${sleepSensitivityG().toFixed(2)}`);
     }
   } catch (error) {
     bus.emit("log", `Connect failed: ${error.message}`);
@@ -152,6 +187,18 @@ async function connect() {
 
 function thresholdGrams() {
   return Number(el.thresholdSlider.value);
+}
+
+function wakeSensitivityGrams() {
+  return Number(el.wakeSlider.value);
+}
+
+function sleepSensitivityG() {
+  return Number(el.sleepSensSlider.value);
+}
+
+function sleepTimeoutSeconds() {
+  return Number(el.sleepTimeoutSlider.value);
 }
 
 async function toggleDemo() {
@@ -181,6 +228,39 @@ el.thresholdSlider.addEventListener("change", () => {
   else bus.emit("log", "Connect over BLE to apply the shot threshold.");
 });
 
+// Update the label live while dragging; only write to the device on release
+// to avoid flooding the control characteristic.
+el.wakeSlider.addEventListener("input", () => {
+  el.wakeValue.textContent = wakeSensitivityGrams().toFixed(1);
+});
+el.wakeSlider.addEventListener("change", () => {
+  const command = `wakesens:${wakeSensitivityGrams().toFixed(1)}`;
+  if (adapter) adapter.sendControl(command);
+  else bus.emit("log", "Connect over BLE to apply the wake sensitivity.");
+});
+
+// Update the label live while dragging; only write to the device on release
+// to avoid flooding the control characteristic.
+el.sleepTimeoutSlider.addEventListener("input", () => {
+  el.sleepTimeoutValue.textContent = sleepTimeoutSeconds();
+});
+el.sleepTimeoutSlider.addEventListener("change", () => {
+  const command = `sleeptime:${sleepTimeoutSeconds()}`;
+  if (adapter) adapter.sendControl(command);
+  else bus.emit("log", "Connect over BLE to apply the sleep timeout.");
+});
+
+// Update the label live while dragging; only write to the device on release
+// to avoid flooding the control characteristic.
+el.sleepSensSlider.addEventListener("input", () => {
+  el.sleepSensValue.textContent = sleepSensitivityG().toFixed(2);
+});
+el.sleepSensSlider.addEventListener("change", () => {
+  const command = `sleepsens:${sleepSensitivityG().toFixed(2)}`;
+  if (adapter) adapter.sendControl(command);
+  else bus.emit("log", "Connect over BLE to apply the sleep sensitivity.");
+});
+
 // Tab Switching Listeners
 el.showLogTabBtn.addEventListener("click", () => {
   el.showLogTabBtn.classList.add("active");
@@ -199,11 +279,43 @@ el.showHistoryTabBtn.addEventListener("click", () => {
 
 // Chart View Toggle Event Listeners
 el.viewTraceBtn.addEventListener("click", () => {
-  store.set({ chartView: "line" });
+  store.set({ chartView: "line", replayActive: false, replayProgress: 1 });
 });
 
 el.viewTargetBtn.addEventListener("click", () => {
   store.set({ chartView: "target" });
+});
+
+el.replayTraceBtn.addEventListener("click", () => {
+  const state = store.get();
+  if (!state.reviewMode || state.chartView !== "target" || state.replayActive) return;
+
+  const durationMs = 1800;
+  const startedAt = performance.now();
+  store.set({ replayActive: true, replayProgress: 0 });
+
+  function tick(now) {
+    const current = store.get();
+    if (!current.reviewMode || current.chartView !== "target") return;
+    const progress = Math.min(1, (now - startedAt) / durationMs);
+    store.set({
+      replayProgress: progress,
+      replayActive: progress < 1,
+    });
+    if (progress < 1) requestAnimationFrame(tick);
+  }
+
+  requestAnimationFrame(tick);
+});
+
+el.zoomOutBtn.addEventListener("click", () => {
+  const nextZoom = Math.max(0.4, Number(((store.get().traceZoom || 1) - 0.2).toFixed(1)));
+  store.set({ traceZoom: nextZoom });
+});
+
+el.zoomInBtn.addEventListener("click", () => {
+  const nextZoom = Math.min(3, Number(((store.get().traceZoom || 1) + 0.2).toFixed(1)));
+  store.set({ traceZoom: nextZoom });
 });
 
 // Query local database for shots and render them
@@ -226,7 +338,8 @@ async function loadShotHistoryList() {
       item.className = "history-item";
 
       const timestampStr = new Date(shot.timestamp).toLocaleString();
-      const title = shot.peak_g > 15 ? "Arrows Release" : "Stability Capture";
+      const title = shot.peak_g > 15 ? "Arrow Release" : "Hold Capture";
+      const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
 
       item.innerHTML = `
         <div class="history-meta">
@@ -234,6 +347,10 @@ async function loadShotHistoryList() {
           <div class="history-subtitle">${timestampStr}</div>
         </div>
         <div class="history-metrics">
+          <div class="history-stat">
+            <span class="history-stat-label">Score</span>
+            <span class="history-stat-val score">${score}</span>
+          </div>
           <div class="history-stat">
             <span class="history-stat-label">Stability</span>
             <span class="history-stat-val stability">${shot.stability_score}%</span>
@@ -265,12 +382,24 @@ async function reviewShotTrace(shot) {
     }
 
     const timeStr = new Date(shot.timestamp).toLocaleTimeString();
-    const info = `Peak Force: ${shot.peak_g.toFixed(1)}g | Stability: ${shot.stability_score}% | Captured: ${timeStr}`;
+    const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
+    const info = `Score: ${score} | Peak Force: ${shot.peak_g.toFixed(1)}g | Stability: ${shot.stability_score}% | Captured: ${timeStr}`;
 
     store.set({
       reviewMode: true,
       reviewTrace: trace.payload,
-      reviewInfo: info
+      reviewInfo: info,
+      chartView: "target",
+      replayActive: false,
+      replayProgress: 1,
+      traceZoom: 1,
+      lastShotSummary: {
+        timestamp: shot.timestamp,
+        score,
+        peakG: shot.peak_g,
+        cant: shot.cant_angle_deg || shot.roll_angle_deg || 0,
+        pitch: shot.pitch_angle_deg || 0,
+      },
     });
 
     bus.emit("log", `Entering review mode for shot ${shot.id.slice(0, 8)}...`);
@@ -285,10 +414,12 @@ el.exitReviewBtn.addEventListener("click", () => {
   store.set({
     reviewMode: false,
     reviewTrace: null,
-    reviewInfo: ""
+    reviewInfo: "",
+    replayActive: false,
+    replayProgress: 1,
+    traceZoom: 1,
   });
   bus.emit("log", "Exited review mode. Returned to live telemetry stream.");
 });
 
-bus.emit("log", "Ready. Pick a transport and connect, or run the demo stream.");
-
+bus.emit("log", `Ready (${APP_BUILD}). Pick a transport and connect, or run the demo stream.`);

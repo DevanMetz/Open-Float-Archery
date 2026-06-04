@@ -25,7 +25,7 @@ export function mountDashboard({ store, telemetry, el }) {
         el.reviewInfo.textContent = s.reviewInfo || "";
       } else {
         el.reviewBanner.classList.add("hidden");
-        el.chartTitle.textContent = "Live Motion Trace";
+        el.chartTitle.textContent = "Shot Sequence Trace";
       }
     }
 
@@ -35,6 +35,29 @@ export function mountDashboard({ store, telemetry, el }) {
     el.accelMagValue.textContent = (s.accelG || 0).toFixed(2);
     el.gyroMagValue.textContent = (s.gyroMag || 0).toFixed(0);
     el.shotCountValue.textContent = String(s.shotCount || 0);
+    el.cantValue.textContent = `${(s.roll || 0).toFixed(1)}`;
+
+    el.formScoreValue.textContent = s.formScore == null ? "--" : String(s.formScore);
+    el.holdStabilityValue.textContent = s.holdStability == null ? "--" : `${s.holdStability}%`;
+    el.releaseQualityValue.textContent = s.releaseQuality == null ? "--" : `${s.releaseQuality}%`;
+    el.followThroughValue.textContent = s.followThrough == null ? "--" : `${s.followThrough}%`;
+    el.coachTitle.textContent = s.coachTitle || "Waiting for movement";
+    el.coachText.textContent = s.coachText || "Connect a sensor or run the demo to start reading hold stability.";
+
+    const last = s.lastShotSummary;
+    if (last) {
+      el.lastShotTimeValue.textContent = new Date(last.timestamp).toLocaleTimeString();
+      el.lastShotScoreValue.textContent = last.score ? String(Math.round(last.score)) : "--";
+      el.lastPeakValue.textContent = `${last.peakG.toFixed(1)} g`;
+      el.lastCantValue.textContent = `${last.cant.toFixed(1)} deg`;
+      el.lastPitchValue.textContent = `${last.pitch.toFixed(1)} deg`;
+    } else {
+      el.lastShotTimeValue.textContent = "No shots yet";
+      el.lastShotScoreValue.textContent = "--";
+      el.lastPeakValue.textContent = "--";
+      el.lastCantValue.textContent = "--";
+      el.lastPitchValue.textContent = "--";
+    }
 
     const f = s.sample;
     if (f) {
@@ -95,6 +118,10 @@ export function mountDashboard({ store, telemetry, el }) {
       }
 
       if (data.length >= 2) {
+        const replayProgress = state.reviewMode ? Math.max(0, Math.min(1, state.replayProgress ?? 1)) : 1;
+        const replayCount = Math.max(2, Math.ceil(data.length * replayProgress));
+        const visibleData = state.reviewMode ? data.slice(0, replayCount) : data;
+        const targetZoom = state.reviewMode ? state.traceZoom || 1 : 1;
         let rollCenter = 0;
         let pitchCenter = 0;
 
@@ -138,12 +165,12 @@ export function mountDashboard({ store, telemetry, el }) {
         }
 
         // Map the maximum deviation exactly to the outer ring of the target face (maxRadius)
-        const scale = maxRadius / maxDev;
+        const scale = (maxRadius / maxDev) * targetZoom;
         ctx.lineWidth = 2.5;
 
-        for (let i = 1; i < data.length; i++) {
-          const pt1 = data[i - 1];
-          const pt2 = data[i];
+        for (let i = 1; i < visibleData.length; i++) {
+          const pt1 = visibleData[i - 1];
+          const pt2 = visibleData[i];
 
           const x1 = cx + ((pt1.roll || 0) - rollCenter) * scale;
           const y1 = cy - ((pt1.pitch || 0) - pitchCenter) * scale;
@@ -173,17 +200,25 @@ export function mountDashboard({ store, telemetry, el }) {
         }
 
         // Draw current pin dot or release position marker
-        const finalPt = data[data.length - 1];
+        const finalPt = visibleData[visibleData.length - 1];
         const fx = cx + ((finalPt.roll || 0) - rollCenter) * scale;
         const fy = cy - ((finalPt.pitch || 0) - pitchCenter) * scale;
 
-        ctx.fillStyle = state.reviewMode ? "#FF5D73" : "#30E39B"; // Red release point, Green live pin
+        ctx.fillStyle = state.reviewMode && replayProgress >= 1 ? "#FF5D73" : "#30E39B";
         ctx.beginPath();
         ctx.arc(fx, fy, 5, 0, 2 * Math.PI);
         ctx.fill();
         ctx.strokeStyle = "#FFFFFF";
         ctx.lineWidth = 1.5;
         ctx.stroke();
+
+        if (state.reviewMode) {
+          ctx.fillStyle = "rgba(230, 244, 239, 0.78)";
+          ctx.font = "700 11px ui-monospace, Consolas, monospace";
+          ctx.textAlign = "right";
+          ctx.textBaseline = "bottom";
+          ctx.fillText(`zoom ${targetZoom.toFixed(1)}x`, w - 12, h - 12);
+        }
       }
     } else {
       ctx.strokeStyle = "rgba(142, 166, 160, 0.22)";
@@ -202,6 +237,7 @@ export function mountDashboard({ store, telemetry, el }) {
       drawSeries(ctx, data, "ax", cssVar("--green"), w, h);
       drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h);
       drawSeries(ctx, data, "az", cssVar("--amber"), w, h);
+      drawSequenceMarkers(ctx, data, w, h, state.reviewMode);
     }
 
     requestAnimationFrame(draw);
@@ -227,6 +263,41 @@ function drawSeries(ctx, data, key, color, w, h) {
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+}
+
+function drawSequenceMarkers(ctx, data, w, h, reviewMode) {
+  if (data.length < 20) return;
+
+  const markerColor = "rgba(230, 244, 239, 0.44)";
+  const labels = reviewMode
+    ? [
+        { x: 0.2, text: "hold" },
+        { x: 0.62, text: "release" },
+        { x: 0.84, text: "follow" },
+      ]
+    : [
+        { x: 0.33, text: "hold" },
+        { x: 0.67, text: "float" },
+      ];
+
+  ctx.save();
+  ctx.font = "700 10px ui-monospace, Consolas, monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  for (const marker of labels) {
+    const x = marker.x * w;
+    ctx.strokeStyle = markerColor;
+    ctx.setLineDash([4, 7]);
+    ctx.beginPath();
+    ctx.moveTo(x, 10);
+    ctx.lineTo(x, h - 10);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(230, 244, 239, 0.72)";
+    ctx.fillText(marker.text, x, 12);
+  }
+  ctx.restore();
 }
 
 export function mountLog(bus, logEl) {

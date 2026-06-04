@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { BINARY_FRAME_LEN, decodeBinaryFrame, TextLineParser } from "../protocol/frame.js";
+import { BINARY_FRAME_LEN, decodeBinaryFrame, TextLineParser } from "../protocol/frame.js?v=shot-store-7";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
@@ -175,6 +175,18 @@ export class SerialAdapter extends BaseAdapter {
 
 // Web Bluetooth: the firmware notifies batched 20-byte binary frames.
 export class BleAdapter extends BaseAdapter {
+  constructor(bus) {
+    super(bus);
+    this.controlQueue = Promise.resolve();
+    this.acknowledgedShotIds = new Set();
+    this.pendingAckShotIds = new Set();
+    this.unsubscribeShotSaved = bus.on("shot-saved", (shot) => {
+      if (shot && shot.shotId != null) {
+        this.ackShot(shot.shotId);
+      }
+    });
+  }
+
   get name() {
     return "Bluetooth";
   }
@@ -214,6 +226,7 @@ export class BleAdapter extends BaseAdapter {
     await this.live.startNotifications();
     this.log("BLE notifications subscribed.");
     await this.sendControl("start");
+    await this.sendControl("shotdump");
 
     this.connected = true;
     this.status("live", `BLE ${this.device.name || ""}`.trim());
@@ -230,17 +243,52 @@ export class BleAdapter extends BaseAdapter {
   }
 
   async sendControl(command) {
+    this.controlQueue = this.controlQueue
+      .catch(() => {})
+      .then(() => this.writeControl(command));
+    return this.controlQueue;
+  }
+
+  async writeControl(command) {
     if (!this.control) {
       this.log("No control characteristic available.");
       return false;
     }
     try {
-      await this.control.writeValue(new TextEncoder().encode(command));
-      this.log(`Sent BLE control: ${command}.`);
-      return true;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await this.control.writeValue(new TextEncoder().encode(command));
+          this.log(`Sent BLE control: ${command}.`);
+          return true;
+        } catch (error) {
+          const message = String(error && error.message ? error.message : error);
+          if (!message.includes("GATT operation already in progress") || attempt === 2) {
+            throw error;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+      }
     } catch (error) {
       this.log(`BLE control write failed: ${error.message}`);
       return false;
+    }
+    return false;
+  }
+
+  async ackShot(shotId) {
+    if (this.acknowledgedShotIds.has(shotId) || this.pendingAckShotIds.has(shotId)) {
+      return;
+    }
+
+    this.pendingAckShotIds.add(shotId);
+    try {
+      const acked = await this.sendControl(`shotack:${shotId}`);
+      if (acked) {
+        this.acknowledgedShotIds.add(shotId);
+        await this.sendControl("shotdump");
+      }
+    } finally {
+      this.pendingAckShotIds.delete(shotId);
     }
   }
 
@@ -260,7 +308,23 @@ export class BleAdapter extends BaseAdapter {
       }
       if (decoded && decoded.kind === "shot") {
         decodedCount += 1;
+        if (decoded.shot.stored) {
+          this.log(`Stored shot upload received: id ${decoded.shot.shotId}.`);
+        }
         this.bus.emit("shot", decoded.shot);
+        continue;
+      }
+      if (decoded && decoded.kind === "count") {
+        decodedCount += 1;
+        this.bus.emit("shotcount", decoded.count);
+        continue;
+      }
+      if (decoded && decoded.kind === "storage") {
+        decodedCount += 1;
+        this.log(
+          `Device stored shots pending: ${decoded.storage.pending} ` +
+            `(shot count ${decoded.storage.shotCount}).`,
+        );
       }
     }
 
@@ -278,6 +342,10 @@ export class BleAdapter extends BaseAdapter {
   }
 
   async disconnect() {
+    if (this.unsubscribeShotSaved) {
+      this.unsubscribeShotSaved();
+      this.unsubscribeShotSaved = null;
+    }
     clearTimeout(this.watchdog);
     try {
       if (this.live) await this.live.stopNotifications();
