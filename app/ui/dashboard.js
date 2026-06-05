@@ -976,9 +976,6 @@ export function mountDashboard({ store, telemetry, el }) {
     el.statusBadge.className = `status clickable ${s.statusMode || ""}`.trim();
     el.statusBadge.title = s.connected ? "Disconnect Sensor" : "Connect Sensor";
     el.statusText.textContent = s.statusText;
-    el.connectBtn.disabled = s.connected;
-    el.disconnectBtn.disabled = !s.connected;
-    el.saveManualBtn.disabled = !s.connected;
 
     // Toggle Review Mode layout components reactively
     if (el.reviewBanner && el.reviewInfo && el.chartTitle) {

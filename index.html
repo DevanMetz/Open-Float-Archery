@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-82">
+  <link rel="stylesheet" href="styles.css?v=shot-store-86">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="apple-touch-icon" href="icon.svg">
@@ -233,168 +233,195 @@
       <!-- 3. Sensor Settings View (Hidden by default) -->
       <div id="tabSettings" class="tab-view hidden-view">
         <section class="settings-workspace">
-          <!-- Card A: Connection & Calibration -->
-          <div class="panel settings-card">
-            <h3>Connection &amp; Calibration</h3>
-            <div class="field" style="margin-top: 10px;">
-              <label for="transportSelect">Transport</label>
-              <select id="transportSelect">
-                <option value="ble" selected>Bluetooth (BLE)</option>
-              </select>
-            </div>
-            <div class="settings-actions-group" style="display: grid; gap: 8px; margin-top: 12px;">
-              <button id="connectBtn" class="primary">Connect Sensor</button>
-              <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
-              <button id="demoBtn">Run Practice Demo</button>
-              <button id="saveManualBtn" class="accent" disabled>Save Hold Capture</button>
-            </div>
-            <div style="font-size: 11px; color: var(--muted); margin: 8px 0 0 0; text-align: center;">
-              Offsets: Cant <span id="cantOffsetVal">0.0</span>°, Pitch <span id="pitchOffsetVal">0.0</span>°
-            </div>
-          </div>
-
-          <!-- Card B: Telemetry & Buffer Settings -->
-          <div class="panel settings-card">
-            <h3>Telemetry &amp; Buffer</h3>
-            <div class="field" style="margin-top: 10px;">
-              <label for="thresholdSlider">Release Threshold - <span id="thresholdValue">12.0</span> g</label>
-              <input type="range" id="thresholdSlider" min="2" max="30" step="0.5" value="12">
-              <p class="note">Impulse threshold for bow release detection, set in BLE firmware.</p>
-            </div>
-            <div class="field" style="margin-top: 10px;">
-              <label for="followThroughSlider">Follow-Through - <span id="followThroughValueMs">1.5</span> s</label>
-              <input type="range" id="followThroughSlider" min="0" max="3000" step="100" value="1500">
-              <p class="note">Post-release recording delay before freezing trace.</p>
-            </div>
-            <div class="field" style="margin-top: 10px;">
-              <label for="bufferRateSlider">Trace Buffer Rate - <span id="bufferRateValue">Device 52 Hz / Web 208 Hz</span></label>
-              <input type="range" id="bufferRateSlider" min="0" max="3" step="1" value="1">
-              <p class="note">Same capture setting for firmware recovery and browser shot review; the browser stores a higher-rate local trace.</p>
-            </div>
-            <div class="field" style="margin-top: 10px;">
-              <label for="streamRateSlider">Live Stream Rate - <span id="streamRateValue">1110 Hz (Max)</span></label>
-              <input type="range" id="streamRateSlider" min="0" max="4" step="1" value="4">
-              <p class="note">Telemetry frame transmission rate over BLE.</p>
-            </div>
-            <div class="field" style="margin-top: 12px;">
-              <label for="bufferNVSToggle" style="display: inline-flex; align-items: center; cursor: pointer;">
-                <input type="checkbox" id="bufferNVSToggle" checked style="vertical-align: middle; margin-right: 8px;">
-                Persist Traces Offline (RRAM)
-              </label>
-              <p class="note">Saves traces to non-volatile flash so they survive deep sleep power down.</p>
-            </div>
-          </div>
-
-          <!-- Card Mount: Module Orientation -->
-          <div class="panel settings-card mount-orientation-card">
-            <h3>Module Mount Orientation</h3>
-            <div class="field" style="margin-top: 10px;">
-              <label for="mountOrientationSelect">XIAO position on bow</label>
-              <select id="mountOrientationSelect">
-                <option value="firmware-x-90" selected>Current firmware mount</option>
-                <option value="firmware-x-90-flipped">Current mount, inverted sign</option>
-                <option value="face-out-usb-up">Face out, USB up</option>
-                <option value="face-out-usb-down">Face out, USB down</option>
-                <option value="face-out-usb-left">Face out, USB left</option>
-                <option value="face-out-usb-right">Face out, USB right</option>
-                <option value="custom">Custom rotated mount</option>
-              </select>
-              <p id="mountOrientationDescription" class="note">Preview the selected board mounting direction before updating firmware axis mapping.</p>
-            </div>
-            <canvas id="mountOrientationCanvas" aria-label="Bow and XIAO module mount orientation preview"></canvas>
-            <div class="mount-view-controls">
-              <div class="field">
-                <label for="mountViewRollSlider">View roll - <span id="mountViewRollValue">0</span> deg</label>
-                <input type="range" id="mountViewRollSlider" min="-180" max="180" step="1" value="0">
-              </div>
-            </div>
-            <div class="mount-position-controls" aria-label="Move XIAO module preview along bow axes">
-              <div class="field">
-                <label for="mountPositionXSlider">Bow X - <span id="mountPositionXValue">0.00</span></label>
-                <input type="range" id="mountPositionXSlider" min="-0.8" max="0.8" step="0.01" value="0">
-              </div>
-              <div class="field">
-                <label for="mountPositionYSlider">Bow Y - <span id="mountPositionYValue">0.00</span></label>
-                <input type="range" id="mountPositionYSlider" min="-1.2" max="1.2" step="0.01" value="0">
-              </div>
-              <div class="field">
-                <label for="mountPositionZSlider">Bow Z - <span id="mountPositionZValue">0.00</span></label>
-                <input type="range" id="mountPositionZSlider" min="-0.8" max="0.8" step="0.01" value="0">
-              </div>
-            </div>
-            <div class="mount-rotate-controls" aria-label="Rotate IMU module in 90 degree steps">
-              <button id="mountRotateXBtn" type="button">Rotate 90 deg Bow X</button>
-              <button id="mountRotateYBtn" type="button">Rotate 90 deg Bow Y</button>
-              <button id="mountRotateZBtn" type="button">Rotate 90 deg Bow Z</button>
-              <button id="mountResetBtn" type="button">Reset Preset</button>
-            </div>
-            <div class="mount-axis-grid" aria-label="Firmware axis mapping">
-              <span>Bow X <strong id="mountAxisXValue">IMU X</strong></span>
-              <span>Bow Y <strong id="mountAxisYValue">-IMU Z</strong></span>
-              <span>Bow Z <strong id="mountAxisZValue">IMU Y</strong></span>
-            </div>
-            <p id="mountFirmwareNote" class="note">
-              Firmware-computed BLE/serial angles need the same mount mapping compiled into the device.
-            </p>
-          </div>
-
-          <!-- Card Model: Blender model alignment -->
-          <div class="panel settings-card model-alignment-card">
-            <h3>3D Model Alignment</h3>
-            <p class="note">
-              Adjust only the imported bow model. Use this when the sensor data is right but the Blender bow leans, rolls, or pitches the wrong way.
-            </p>
-            <div class="model-rotate-controls" aria-label="Rotate Blender bow model in 90 degree steps">
-              <button id="modelRotateXBtn" type="button">Rotate 90 deg Model X</button>
-              <button id="modelRotateYBtn" type="button">Rotate 90 deg Model Y</button>
-              <button id="modelRotateZBtn" type="button">Rotate 90 deg Model Z</button>
-              <button id="modelResetBtn" type="button">Reset Model</button>
-            </div>
-            <div class="model-toggle-grid">
-              <label for="modelInvertRollToggle">
-                <input type="checkbox" id="modelInvertRollToggle">
-                Invert live cant / roll
-              </label>
-              <label for="modelInvertPitchToggle">
-                <input type="checkbox" id="modelInvertPitchToggle">
-                Invert live pitch
-              </label>
-              <label for="modelSwapRollPitchToggle">
-                <input type="checkbox" id="modelSwapRollPitchToggle">
-                Swap live cant / pitch
-              </label>
-            </div>
-            <div class="model-axis-grid" aria-label="Blender model alignment">
-              <span>Model X <strong id="modelAxisXValue">0 deg</strong></span>
-              <span>Model Y <strong id="modelAxisYValue">0 deg</strong></span>
-              <span>Model Z <strong id="modelAxisZValue">0 deg</strong></span>
-            </div>
-          </div>
-
-          <!-- Card C: Sensor Power Settings -->
-          <div class="panel settings-card">
+          <!-- Card C: Sensor Power Settings (full width, top) -->
+          <div class="panel settings-card settings-card-wide">
             <h3>Power Management</h3>
-            <div class="field" style="margin-top: 10px;">
-              <label for="wakeSlider">Wake-up Sensitivity - <span id="wakeValue">2.0</span> g</label>
-              <input type="range" id="wakeSlider" min="0.5" max="8.0" step="0.1" value="2.0">
-              <p class="note">Acceleration threshold needed to wake the chip from deep sleep.</p>
+            <div class="settings-field-grid">
+              <div class="field">
+                <label for="wakeSlider">Wake-up Sensitivity - <span id="wakeValue">2.0</span> g</label>
+                <input type="range" id="wakeSlider" min="0.5" max="8.0" step="0.1" value="2.0">
+                <p class="note">Acceleration threshold needed to wake the chip from deep sleep.</p>
+              </div>
+              <div class="field">
+                <label for="sleepTimeoutSlider">Sleep Timeout - <span id="sleepTimeoutValue">300</span> s</label>
+                <input type="range" id="sleepTimeoutSlider" min="5" max="600" step="5" value="300">
+                <p class="note">Idle duration before sleep when disconnected.</p>
+              </div>
+              <div class="field">
+                <label for="sleepSensSlider">Sleep Sensitivity - <span id="sleepSensValue">0.15</span> g</label>
+                <input type="range" id="sleepSensSlider" min="0.05" max="0.50" step="0.01" value="0.15">
+                <p class="note">Movement threshold to keep device awake while idle.</p>
+              </div>
+              <div class="field">
+                <label for="sleepEnableToggle" style="display: inline-flex; align-items: center; cursor: pointer;">
+                  <input type="checkbox" id="sleepEnableToggle" checked style="vertical-align: middle; margin-right: 8px;">
+                  Enable Device Auto-Sleep
+                </label>
+                <p class="note">If disabled, the device remains awake indefinitely until powered off.</p>
+              </div>
             </div>
-            <div class="field" style="margin-top: 10px;">
-              <label for="sleepTimeoutSlider">Sleep Timeout - <span id="sleepTimeoutValue">300</span> s</label>
-              <input type="range" id="sleepTimeoutSlider" min="5" max="600" step="5" value="300">
-              <p class="note">Idle duration before sleep when disconnected.</p>
+          </div>
+
+          <!-- Card B: Telemetry & Buffer Settings (full width) -->
+          <div class="panel settings-card settings-card-wide">
+            <h3>Telemetry &amp; Buffer</h3>
+            <div class="settings-field-grid">
+              <div class="field">
+                <label for="thresholdSlider">Release Threshold - <span id="thresholdValue">12.0</span> g</label>
+                <input type="range" id="thresholdSlider" min="2" max="30" step="0.5" value="12">
+                <p class="note">Impulse threshold for bow release detection, set in BLE firmware.</p>
+              </div>
+              <div class="field">
+                <label for="followThroughSlider">Follow-Through - <span id="followThroughValueMs">1.5</span> s</label>
+                <input type="range" id="followThroughSlider" min="0" max="3000" step="100" value="1500">
+                <p class="note">Post-release recording delay before freezing trace.</p>
+              </div>
+              <div class="field">
+                <label for="bufferRateSlider">Trace Buffer Rate - <span id="bufferRateValue">Device 52 Hz / Web 208 Hz</span></label>
+                <input type="range" id="bufferRateSlider" min="0" max="3" step="1" value="1">
+                <p class="note">Same capture setting for firmware recovery and browser shot review; the browser stores a higher-rate local trace.</p>
+              </div>
+              <div class="field">
+                <label for="streamRateSlider">Live Stream Rate - <span id="streamRateValue">1110 Hz (Max)</span></label>
+                <input type="range" id="streamRateSlider" min="0" max="4" step="1" value="4">
+                <p class="note">Telemetry frame transmission rate over BLE.</p>
+              </div>
+              <div class="field">
+                <label for="bufferNVSToggle" style="display: inline-flex; align-items: center; cursor: pointer;">
+                  <input type="checkbox" id="bufferNVSToggle" checked style="vertical-align: middle; margin-right: 8px;">
+                  Persist Traces Offline (RRAM)
+                </label>
+                <p class="note">Saves traces to non-volatile flash so they survive deep sleep power down.</p>
+              </div>
             </div>
-            <div class="field" style="margin-top: 10px;">
-              <label for="sleepSensSlider">Sleep Sensitivity - <span id="sleepSensValue">0.15</span> g</label>
-              <input type="range" id="sleepSensSlider" min="0.05" max="0.50" step="0.01" value="0.15">
-              <p class="note">Movement threshold to keep device awake while idle.</p>
-            </div>
-            <div class="field" style="margin-top: 12px;">
-              <label for="sleepEnableToggle" style="display: inline-flex; align-items: center; cursor: pointer;">
-                <input type="checkbox" id="sleepEnableToggle" checked style="vertical-align: middle; margin-right: 8px;">
-                Enable Device Auto-Sleep
-              </label>
-              <p class="note">If disabled, the device remains awake indefinitely until powered off.</p>
+          </div>
+
+          <!-- Card Alignment: Sensor Mount + 3D Model Display (combined) -->
+          <div class="panel settings-card alignment-card">
+            <h3>Sensor &amp; 3D Alignment</h3>
+            <div class="alignment-body">
+              <p class="note alignment-intro">
+                Drag the preview to orbit. Two independent things live here:
+                <strong class="ink-sensor">where the sensor sits</strong> (changes the
+                data the firmware reports) and
+                <strong class="ink-model">how the 3D bow looks</strong> (display only).
+                Adjust each in its own section below.
+              </p>
+
+              <!-- Shared 3D preview for both sections -->
+              <canvas id="mountOrientationCanvas" aria-label="Bow and XIAO module 3D alignment preview"></canvas>
+
+              <!-- 1. Sensor Mount (changes the data) -->
+              <details class="alignment-section alignment-sensor" open>
+                <summary class="alignment-head">
+                  <span class="alignment-step">1</span>
+                  <div class="alignment-head-text">
+                    <h4>Sensor Mount <span class="alignment-tag tag-data">changes data</span></h4>
+                  </div>
+                  <span class="alignment-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="alignment-section-body">
+                <p class="note">Where the XIAO board is physically mounted. This sets which IMU axis points up, forward, and sideways so cant, pitch, and yaw read correctly. Pick the matching preset, then rebuild firmware with the same axis mapping.</p>
+
+                <div class="field">
+                  <label for="mountOrientationSelect">XIAO position on bow</label>
+                  <select id="mountOrientationSelect">
+                    <option value="firmware-x-90" selected>Current firmware mount</option>
+                    <option value="firmware-x-90-flipped">Current mount, inverted sign</option>
+                    <option value="face-out-usb-up">Face out, USB up</option>
+                    <option value="face-out-usb-down">Face out, USB down</option>
+                    <option value="face-out-usb-left">Face out, USB left</option>
+                    <option value="face-out-usb-right">Face out, USB right</option>
+                    <option value="custom">Custom rotated mount</option>
+                  </select>
+                  <p id="mountOrientationDescription" class="note">Preview the selected board mounting direction before updating firmware axis mapping.</p>
+                </div>
+
+                <div class="alignment-sub-label">Fine-tune the mount in 90° steps</div>
+                <div class="mount-rotate-controls" aria-label="Rotate IMU module in 90 degree steps">
+                  <button id="mountRotateXBtn" type="button">Rotate 90° Bow X</button>
+                  <button id="mountRotateYBtn" type="button">Rotate 90° Bow Y</button>
+                  <button id="mountRotateZBtn" type="button">Rotate 90° Bow Z</button>
+                  <button id="mountResetBtn" type="button">Reset Preset</button>
+                </div>
+
+                <div class="alignment-sub-label">Resulting firmware axis mapping</div>
+                <div class="mount-axis-grid" aria-label="Firmware axis mapping">
+                  <span>Bow X <strong id="mountAxisXValue">IMU X</strong></span>
+                  <span>Bow Y <strong id="mountAxisYValue">-IMU Z</strong></span>
+                  <span>Bow Z <strong id="mountAxisZValue">IMU Y</strong></span>
+                </div>
+                <p id="mountFirmwareNote" class="note">
+                  Firmware-computed BLE/serial angles need the same mount mapping compiled into the device.
+                </p>
+
+                <div class="alignment-preview-only">
+                  <p class="note"><span class="alignment-preview-tag">Preview only</span> these just move the 3D view above — they do not change data or firmware.</p>
+                  <div class="mount-view-controls">
+                    <div class="field">
+                      <label for="mountViewRollSlider">View roll - <span id="mountViewRollValue">0</span> deg</label>
+                      <input type="range" id="mountViewRollSlider" min="-180" max="180" step="1" value="0">
+                    </div>
+                  </div>
+                  <div class="mount-position-controls" aria-label="Move XIAO module preview along bow axes">
+                    <div class="field">
+                      <label for="mountPositionXSlider">Bow X - <span id="mountPositionXValue">0.00</span></label>
+                      <input type="range" id="mountPositionXSlider" min="-0.8" max="0.8" step="0.01" value="0">
+                    </div>
+                    <div class="field">
+                      <label for="mountPositionYSlider">Bow Y - <span id="mountPositionYValue">0.00</span></label>
+                      <input type="range" id="mountPositionYSlider" min="-1.2" max="1.2" step="0.01" value="0">
+                    </div>
+                    <div class="field">
+                      <label for="mountPositionZSlider">Bow Z - <span id="mountPositionZValue">0.00</span></label>
+                      <input type="range" id="mountPositionZSlider" min="-0.8" max="0.8" step="0.01" value="0">
+                    </div>
+                  </div>
+                </div>
+                </div>
+              </details>
+
+              <!-- 2. 3D Model Display (visual only) -->
+              <details class="alignment-section alignment-model" open>
+                <summary class="alignment-head">
+                  <span class="alignment-step">2</span>
+                  <div class="alignment-head-text">
+                    <h4>3D Model Display <span class="alignment-tag tag-visual">display only</span></h4>
+                  </div>
+                  <span class="alignment-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="alignment-section-body">
+                <p class="note">Adjust only the on-screen bow model. Use this when the sensor data is right but the model leans, rolls, or pitches the wrong way. This never changes saved data.</p>
+
+                <div class="alignment-sub-label">Rotate the model in 90° steps</div>
+                <div class="model-rotate-controls" aria-label="Rotate Blender bow model in 90 degree steps">
+                  <button id="modelRotateXBtn" type="button">Rotate 90° Model X</button>
+                  <button id="modelRotateYBtn" type="button">Rotate 90° Model Y</button>
+                  <button id="modelRotateZBtn" type="button">Rotate 90° Model Z</button>
+                  <button id="modelResetBtn" type="button">Reset Model</button>
+                </div>
+                <div class="model-toggle-grid">
+                  <label for="modelInvertRollToggle">
+                    <input type="checkbox" id="modelInvertRollToggle">
+                    Invert live cant / roll
+                  </label>
+                  <label for="modelInvertPitchToggle">
+                    <input type="checkbox" id="modelInvertPitchToggle">
+                    Invert live pitch
+                  </label>
+                  <label for="modelSwapRollPitchToggle">
+                    <input type="checkbox" id="modelSwapRollPitchToggle">
+                    Swap live cant / pitch
+                  </label>
+                </div>
+                <div class="alignment-sub-label">Current model rotation</div>
+                <div class="model-axis-grid" aria-label="Blender model alignment">
+                  <span>Model X <strong id="modelAxisXValue">0 deg</strong></span>
+                  <span>Model Y <strong id="modelAxisYValue">0 deg</strong></span>
+                  <span>Model Z <strong id="modelAxisZValue">0 deg</strong></span>
+                </div>
+                </div>
+              </details>
             </div>
           </div>
 
@@ -501,6 +528,6 @@
     </div>
   </div>
 
-  <script type="module" src="app/main.js?v=shot-store-82"></script>
+  <script type="module" src="app/main.js?v=shot-store-86"></script>
 </body>
 </html>

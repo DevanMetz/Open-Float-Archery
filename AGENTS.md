@@ -32,7 +32,7 @@ python -m http.server 4178
 # then open http://localhost:4178/
 ```
 
-`.claude/launch.json` defines this server for the Launch preview. Web Serial / Web Bluetooth need Chrome or Edge; the "Run Demo Stream" button works in any browser with no hardware.
+`.claude/launch.json` defines this server for the Launch preview. The dashboard connects over Web Bluetooth (BLE) from the header status badge, which needs Chrome or Edge and a BLE sensor.
 
 ## Development Guidelines
 

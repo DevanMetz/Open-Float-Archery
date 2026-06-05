@@ -34,11 +34,13 @@ hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
   - **BLE**: a custom GATT service notifying compact 28-byte binary frames (including on-device quaternions).
     Live-sample frames are batched seven per 196-byte notification; shot-event and
     count-sync frames are sent as standalone notifications.
-- Browser dashboard: `index.html` supports Web Serial, Web Bluetooth, and a
-  demo stream. BLE live frames carry the firmware Madgwick quaternion, so the
-  browser derives roll, pitch, and yaw directly from the on-device 3D
-  orientation estimate. If a transport omits those angles, the browser falls
-  back to local gyro/accelerometer tracking.
+- Browser dashboard: `index.html` connects over Web Bluetooth (BLE) from the
+  header status badge. (The serial `OFRAW` decoder and demo adapter remain in
+  `app/device` but are no longer surfaced in the dashboard UI; the serial
+  decoder still backs `tools/openfloat_ble_client.py`.) BLE live frames carry
+  the firmware Madgwick quaternion, so the browser derives roll, pitch, and yaw
+  directly from the on-device 3D orientation estimate. If a transport omits
+  those angles, the browser falls back to local gyro/accelerometer tracking.
 - Dashboard calibration/review views include a calibrated digital bubble level,
   a Three.js bow orientation visualizer, and phase-colored Pin Float trace
   replay centered on the shot-detection point, with a 1-sigma float ellipse,
@@ -523,7 +525,9 @@ UI
   - live dashboard (inline stream rate & shot counter metrics, dynamic target
     trace, inline Record button, and a stored-shot "Uploading N" indicator)
   - shot review (aiming hold, release, follow-through phases)
-  - calibration & alignment settings (axis swapping, orientation override)
+  - settings workspace: full-width Power Management and Telemetry & Buffer
+    cards, plus a combined collapsible Sensor & 3D Alignment section (sensor
+    mount axis mapping and 3D model display) sharing one 3D preview
   - calibrated glassmorphic spirit bubble level (custom range & tolerance sweet-spot sliders)
   - low-pass filtered (EMA) bubble visualizer for smooth and responsive tracking
   - real-time recent shots grid list (syncing with device shot events & manual recordings)
@@ -536,9 +540,10 @@ UI
 ```
 
 **Implemented v1:** `index.html` loads ES modules split under `app/` (core,
-device, protocol, telemetry, ui) and supports **Web Serial, Web Bluetooth, and a
-demo stream**. Web Serial opens the device's USB VCOM, asserts DTR/RTS, and
-decodes `OFRAW` text with firmware-computed Madgwick Euler angles. Web Bluetooth
+device, protocol, telemetry, ui) and connects over **Web Bluetooth (BLE)** from
+the header status badge. (The serial `OFRAW` decoder and demo adapter remain in
+`app/device` but are no longer surfaced in the dashboard UI; the serial decoder
+still backs `tools/openfloat_ble_client.py`.) Web Bluetooth
 decodes the 28-byte binary frames (live samples batched in 196-byte
 notifications, plus shot-event, count-sync, storage-status, stored-shot, and
 trace-chunk frames); those BLE frames carry the on-board Madgwick filter

@@ -1,9 +1,9 @@
 // App entry point: build the shared bus + store, wire telemetry and UI, and
-// own the transport lifecycle (connect / disconnect / demo).
+// own the transport lifecycle (connect / disconnect).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-82";
-import { createAdapter } from "./device/adapters.js?v=shot-store-82";
+import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-86";
+import { createAdapter } from "./device/adapters.js?v=shot-store-86";
 import {
   cloneMountAxes,
   mountDashboard,
@@ -12,28 +12,26 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/dashboard.js?v=shot-store-82";
+} from "./ui/dashboard.js?v=shot-store-86";
 import {
   drawEmptyTargetPreview,
   drawTraceTargetPreview,
   watchTracePreviewResize,
-} from "./ui/trace-preview.js?v=shot-store-82";
-import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS, exportAllData, importAllData } from "./core/db.js?v=shot-store-82";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-82";
+} from "./ui/trace-preview.js?v=shot-store-86";
+import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS, exportAllData, importAllData } from "./core/db.js?v=shot-store-86";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-86";
 
-const APP_BUILD = "shot-store-82";
+const APP_BUILD = "shot-store-86";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
-  "statusBadge", "statusText", "transportSelect",
-  "connectBtn", "disconnectBtn", "demoBtn",
+  "statusBadge", "statusText",
   "protocolValue", "typeValue", "sourceValue", "seqValue", "lossValue",
   "dtValue", "hzValue", "frameCountValue",
   "shotCountValue", "uploadStatusItem", "uploadCountValue", "eventLog", "traceCanvas",
   "orientationCanvas", "orientationRollValue", "orientationPitchValue", "orientationYawValue",
   "syncBadge", "syncText", "cloudModal", "closeCloudModalBtn",
   "sbUrlInput", "sbKeyInput", "saveCloudSettingsBtn", "clearCloudSettingsBtn",
-  "saveManualBtn",
   "chartTitle", "reviewBanner", "reviewInfo", "reviewCompareSelect",
   "reviewCompareField", "reviewCompareLegend", "exitReviewBtn",
   "navDashboardBtn", "navHistoryBtn", "navSettingsBtn",
@@ -50,7 +48,7 @@ const ELEMENT_IDS = [
   "levelCard", "levelBubble", "levelAlertText",
   "reviewScrubBar", "replayTraceBtn", "speedDownBtn", "speedUpBtn",
   "speedValue", "traceScrubSlider", "traceScrubValue", "tracePhaseRail",
-  "zeroBtn", "zeroYawBtn", "cantOffsetVal", "pitchOffsetVal", "batteryBadge", "batteryText",
+  "zeroBtn", "zeroYawBtn", "batteryBadge", "batteryText",
   "mountOrientationSelect", "mountOrientationCanvas", "mountOrientationDescription",
   "mountViewRollSlider", "mountViewRollValue",
   "mountPositionXSlider", "mountPositionYSlider", "mountPositionZSlider",
@@ -142,7 +140,7 @@ const store = createStore({
   releaseQuality: null,
   followThrough: null,
   coachTitle: "Waiting for movement",
-  coachText: "Connect a sensor or run the demo to start reading hold stability.",
+  coachText: "Connect a sensor to start reading hold stability.",
   roll: 0,
   pitch: 0,
   yaw: 0,
@@ -190,7 +188,7 @@ function saveSettingsToCache() {
       followThrough: el.followThroughSlider.value,
       streamRate: el.streamRateSlider.value,
       bufferNVS: el.bufferNVSToggle.checked,
-      transport: el.transportSelect.value,
+      transport: "ble",
       cantOffset: store.get().cantOffset,
       levelRange: store.get().levelRange,
       levelTolerance: store.get().levelTolerance,
@@ -250,9 +248,6 @@ function initSettingsFromCache() {
     }
     if (cached.bufferNVS !== undefined) {
       el.bufferNVSToggle.checked = !!cached.bufferNVS;
-    }
-    if (cached.transport !== undefined) {
-      el.transportSelect.value = cached.transport;
     }
     if (cached.mountOrientation !== undefined && el.mountOrientationSelect) {
       el.mountOrientationSelect.value = cachedMountOrientation;
@@ -383,10 +378,6 @@ store.subscribe((state) => {
     el.zeroYawBtn.disabled = !state.connected || (adapter && adapter.name === "Demo");
   }
 
-  if (el.cantOffsetVal && el.pitchOffsetVal) {
-    el.cantOffsetVal.textContent = (state.cantOffset || 0.0).toFixed(1);
-    el.pitchOffsetVal.textContent = (state.pitchOffset || 0.0).toFixed(1);
-  }
 
   if (el.recordToggleBtn) {
     const connected = state.connected;
@@ -460,7 +451,8 @@ el.clearCloudSettingsBtn.addEventListener("click", async () => {
 let adapter = null;
 
 function transport() {
-  return el.transportSelect.value;
+  // Only Bluetooth (BLE) transport is supported.
+  return "ble";
 }
 
 async function disconnect() {
@@ -641,19 +633,6 @@ function tracePhaseSegments(trace) {
   };
 }
 
-async function toggleDemo() {
-  if (adapter && adapter.name === "Demo") {
-    await disconnect();
-    return;
-  }
-  await disconnect();
-  telemetry.reset();
-  adapter = createAdapter("demo", bus);
-  await adapter.connect();
-}
-
-el.connectBtn.addEventListener("click", connect);
-el.disconnectBtn.addEventListener("click", disconnect);
 el.statusBadge.addEventListener("click", async () => {
   if (store.get().connected) {
     await disconnect();
@@ -661,8 +640,6 @@ el.statusBadge.addEventListener("click", async () => {
     await connect();
   }
 });
-el.demoBtn.addEventListener("click", toggleDemo);
-el.saveManualBtn.addEventListener("click", () => telemetry.saveManual30sCapture());
 el.recordToggleBtn.addEventListener("click", async () => {
   if (store.get().manualRecordingActive) {
     // Currently recording -> stop and save. Stay on the dashboard.
@@ -829,10 +806,6 @@ el.sleepEnableToggle.addEventListener("change", () => {
   const command = `autosleep:${val}`;
   if (adapter) adapter.sendControl(command);
   else bus.emit("log", "Connect over BLE to apply auto-sleep settings.");
-  saveSettingsToCache();
-});
-
-el.transportSelect.addEventListener("change", () => {
   saveSettingsToCache();
 });
 
@@ -2189,4 +2162,4 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-bus.emit("log", `Ready (${APP_BUILD}). Pick a transport and connect, or run the demo stream.`);
+bus.emit("log", `Ready (${APP_BUILD}). Click the status badge to connect a sensor.`);

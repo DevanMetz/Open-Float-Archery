@@ -3,7 +3,7 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-import { put, getAll, generateUUID } from "../core/db.js?v=shot-store-82";
+import { put, getAll, generateUUID } from "../core/db.js?v=shot-store-86";
 
 export const MAX_TRACE_POINTS = 1000;
 

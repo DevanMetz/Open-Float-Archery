@@ -2098,9 +2098,198 @@ canvas,
   min-height: 40px;
 }
 
-.mount-orientation-card,
-.model-alignment-card {
+/* Full-width settings cards with a responsive field grid
+   (Telemetry & Buffer, Power Management). */
+.settings-card-wide {
+  grid-column: 1 / -1;
+}
+
+.settings-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.settings-field-grid .field {
+  margin-top: 0;
+}
+
+/* Combined sensor-mount + 3D-model alignment card */
+.alignment-card {
+  grid-column: 1 / -1;
   gap: 14px;
+}
+
+.alignment-body {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.alignment-intro {
+  margin: 0;
+}
+
+.ink-sensor {
+  color: var(--cyan);
+}
+
+.ink-model {
+  color: var(--violet);
+}
+
+.alignment-section {
+  /* Keep block display so <details> native open/close hides the body.
+     Setting flex/grid on the <details> element disables that toggle. */
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 10px;
+  background: var(--panel-soft);
+}
+
+.alignment-sensor {
+  border-left-color: var(--cyan);
+}
+
+.alignment-model {
+  border-left-color: var(--violet);
+}
+
+.alignment-section > summary.alignment-head {
+  list-style: none;
+  cursor: pointer;
+}
+
+.alignment-section > summary.alignment-head::-webkit-details-marker {
+  display: none;
+}
+
+.alignment-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.alignment-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* Explicitly hide the body when collapsed (reliable across engines). */
+.alignment-section:not([open]) > .alignment-section-body {
+  display: none;
+}
+
+.alignment-chevron {
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.2s ease;
+  margin-right: 4px;
+}
+
+.alignment-section[open] > summary .alignment-chevron {
+  transform: rotate(-135deg);
+}
+
+.alignment-step {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.alignment-sensor .alignment-step {
+  background: var(--cyan);
+}
+
+.alignment-model .alignment-step {
+  background: var(--violet);
+}
+
+.alignment-head-text h4 {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.alignment-head-text .note {
+  margin: 0;
+}
+
+.alignment-tag {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.tag-data {
+  color: var(--cyan);
+  border-color: rgba(53, 199, 232, 0.45);
+  background: rgba(53, 199, 232, 0.12);
+}
+
+.tag-visual {
+  color: var(--violet);
+  border-color: rgba(155, 140, 255, 0.45);
+  background: rgba(155, 140, 255, 0.12);
+}
+
+.alignment-sub-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.alignment-preview-only {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: rgba(6, 16, 20, 0.35);
+}
+
+.alignment-preview-only .note {
+  margin: 0;
+}
+
+.alignment-preview-tag {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(243, 191, 76, 0.45);
+  background: rgba(243, 191, 76, 0.12);
+  margin-right: 6px;
 }
 
 #mountOrientationCanvas {

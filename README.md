@@ -5,8 +5,8 @@ for bow-mounted IMU telemetry on the Seeed XIAO nRF54L15 Sense.
 
 ## Open the Web App
 
-Serve the repo root over localhost so native ES modules, Web Serial, and Web
-Bluetooth are available:
+Serve the repo root over localhost so native ES modules and Web Bluetooth are
+available:
 
 ```powershell
 python -m http.server 4178
@@ -18,8 +18,8 @@ Then open:
 http://localhost:4178/
 ```
 
-Use Chrome or Edge for Web Serial and Web Bluetooth. The demo stream works
-without hardware.
+Use Chrome or Edge for Web Bluetooth. A BLE sensor is required to stream live
+telemetry; connect it from the status badge in the header.
 
 ## Repository Layout
 
@@ -99,6 +99,7 @@ without hardware.
 - **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
+- **Consolidated Settings**: Full-width Power Management and Telemetry & Buffer cards sit at the top, followed by a combined, collapsible **Sensor & 3D Alignment** card that pairs the sensor mount axis mapping (which changes the data) with the 3D model display (visual only) under one shared 3D preview. Connecting and zeroing live on the header badge and dashboard, so a separate connection card is no longer needed.
 - **Offline PWA Support**: Registers a service worker to cache application assets (markup, styling, scripts, and the 3D model GLB), enabling full offline operation at remote archery ranges.
 - **Local Data Backup & Restore**: A Settings card exports every locally stored shot, trace, session override, and bow profile to a single JSON file, and imports one back (merging by key). Fully local — no account needed — so field-test data is portable between devices and easy to back up.
 - **Optional Supabase Sync**: The Cloud modal accepts a Supabase URL and anon key
