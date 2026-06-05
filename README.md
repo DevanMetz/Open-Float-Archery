@@ -100,6 +100,7 @@ without hardware.
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
 - **Offline PWA Support**: Registers a service worker to cache application assets (markup, styling, scripts, and the 3D model GLB), enabling full offline operation at remote archery ranges.
+- **Local Data Backup & Restore**: A Settings card exports every locally stored shot, trace, session override, and bow profile to a single JSON file, and imports one back (merging by key). Fully local — no account needed — so field-test data is portable between devices and easy to back up.
 - **Optional Supabase Sync**: The Cloud modal accepts a Supabase URL and anon key
   for self-hosted sync. Local IndexedDB writes remain the source of truth and are
   queued before upload; leaving cloud settings blank keeps the app local-only.

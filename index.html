@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-81">
+  <link rel="stylesheet" href="styles.css?v=shot-store-82">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="apple-touch-icon" href="icon.svg">
@@ -432,6 +432,20 @@
             </div>
           </div>
 
+          <!-- Card Data: Local Backup & Restore -->
+          <div class="panel settings-card">
+            <h3>Data Backup &amp; Restore</h3>
+            <p class="note" style="margin-top: 10px;">
+              Export every locally stored shot, trace, session, and bow profile to a single JSON file, or import one back. Fully local &mdash; no account needed. Useful for moving field-test data between devices or keeping a backup.
+            </p>
+            <div class="settings-actions-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
+              <button id="exportDataBtn" class="primary">Export Data</button>
+              <button id="importDataBtn" class="accent">Import Data</button>
+            </div>
+            <p id="dataBackupStatus" class="note" style="margin-top: 8px; min-height: 14px;"></p>
+            <input type="file" id="importDataInput" accept="application/json,.json" hidden>
+          </div>
+
           <!-- Card D: Diagnostics & Live Terminal -->
           <div class="panel settings-card diagnostics-panel">
             <h3>Diagnostics &amp; Log</h3>
@@ -487,6 +501,6 @@
     </div>
   </div>
 
-  <script type="module" src="app/main.js?v=shot-store-81"></script>
+  <script type="module" src="app/main.js?v=shot-store-82"></script>
 </body>
 </html>

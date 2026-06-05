@@ -2,8 +2,8 @@
 // own the transport lifecycle (connect / disconnect / demo).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-81";
-import { createAdapter } from "./device/adapters.js?v=shot-store-81";
+import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-82";
+import { createAdapter } from "./device/adapters.js?v=shot-store-82";
 import {
   cloneMountAxes,
   mountDashboard,
@@ -12,16 +12,16 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/dashboard.js?v=shot-store-81";
+} from "./ui/dashboard.js?v=shot-store-82";
 import {
   drawEmptyTargetPreview,
   drawTraceTargetPreview,
   watchTracePreviewResize,
-} from "./ui/trace-preview.js?v=shot-store-81";
-import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS } from "./core/db.js";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-81";
+} from "./ui/trace-preview.js?v=shot-store-82";
+import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS, exportAllData, importAllData } from "./core/db.js?v=shot-store-82";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-82";
 
-const APP_BUILD = "shot-store-81";
+const APP_BUILD = "shot-store-82";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -67,6 +67,7 @@ const ELEMENT_IDS = [
   "bowProfileSelect", "bowModelInput", "drawWeightInput", "stabilizerSetupInput", "bowNotesInput",
   "saveBowProfileBtn", "deleteBowProfileBtn", "newBowProfileBtn",
   "recentShotsPanel", "recentShotsList",
+  "exportDataBtn", "importDataBtn", "importDataInput", "dataBackupStatus",
   "toggleLevelTuneBtn", "levelTuneSection", "levelRangeSlider",
   "levelRangeValue", "levelToleranceSlider", "levelToleranceValue"
 ];
@@ -1013,6 +1014,82 @@ if (el.navDashboardBtn && el.navHistoryBtn && el.navSettingsBtn) {
   el.navDashboardBtn.addEventListener("click", () => selectViewTab("tabDashboard"));
   el.navHistoryBtn.addEventListener("click", () => selectViewTab("tabHistory"));
   el.navSettingsBtn.addEventListener("click", () => selectViewTab("tabSettings"));
+}
+
+// --- Local data backup / restore -----------------------------------------
+function setDataBackupStatus(message, isError = false) {
+  if (!el.dataBackupStatus) return;
+  el.dataBackupStatus.textContent = message;
+  el.dataBackupStatus.style.color = isError ? "var(--red)" : "var(--muted)";
+}
+
+// Accepts a per-store count map ({ shots: 12, ... }).
+function summarizeCounts(counts) {
+  const shots = counts.shots || 0;
+  const traces = counts.shot_traces || 0;
+  const profiles = counts.bow_profiles || 0;
+  return `${shots} shot${shots === 1 ? "" : "s"}, ${traces} trace${traces === 1 ? "" : "s"}, ${profiles} bow profile${profiles === 1 ? "" : "s"}`;
+}
+
+async function handleExportData() {
+  try {
+    setDataBackupStatus("Preparing export...");
+    const payload = await exportAllData();
+    const exportCounts = Object.fromEntries(
+      Object.entries(payload.stores).map(([name, rows]) => [name, rows.length]),
+    );
+    const summary = summarizeCounts(exportCounts);
+    const json = JSON.stringify(payload);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `openfloat-backup-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setDataBackupStatus(`Exported ${summary}.`);
+    bus.emit("log", `Data export: ${summary}.`);
+  } catch (error) {
+    setDataBackupStatus(`Export failed: ${error.message}`, true);
+    bus.emit("log", `Data export failed: ${error.message}`);
+  }
+}
+
+async function handleImportFile(file) {
+  try {
+    setDataBackupStatus("Reading file...");
+    const text = await file.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch (_) {
+      throw new Error("file is not valid JSON.");
+    }
+    const counts = await importAllData(payload, { merge: true });
+    const summary = summarizeCounts(counts);
+    setDataBackupStatus(`Imported ${summary}.`);
+    bus.emit("log", `Data import: ${summary}.`);
+    // Refresh the views that read straight from IndexedDB.
+    await loadBowProfiles();
+    await loadShotHistoryList();
+    await loadRecentShotsList();
+  } catch (error) {
+    setDataBackupStatus(`Import failed: ${error.message}`, true);
+    bus.emit("log", `Data import failed: ${error.message}`);
+  }
+}
+
+if (el.exportDataBtn) el.exportDataBtn.addEventListener("click", handleExportData);
+if (el.importDataBtn && el.importDataInput) {
+  el.importDataBtn.addEventListener("click", () => el.importDataInput.click());
+  el.importDataInput.addEventListener("change", (event) => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = ""; // allow re-importing the same file
+    if (file) handleImportFile(file);
+  });
 }
 
 // Chart View Toggle Event Listeners

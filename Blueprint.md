@@ -764,11 +764,13 @@ not begun. See the Implementation Status section near the top for detail.
 - Add threshold configuration. (Runtime BLE command `thresh:<g>` implemented.)
 - Add sample-rate and range configuration. (Not yet runtime-configurable.)
 
-### Phase 6: Local-First Persistence  [partial]
+### Phase 6: Local-First Persistence  [done]
 
 - Save shots, traces, bow profiles, timestamp-derived session overrides, and
   sync queue tasks to IndexedDB.
-- Add import/export for open-source data portability.
+- Add import/export for open-source data portability. (Settings → Data Backup &
+  Restore exports every object store to a single JSON file and imports one back,
+  merging by key. Fully local, no account required.)
 
 ### Phase 7: Optional Cloud Sync  [partial]
 

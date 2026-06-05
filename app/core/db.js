@@ -144,6 +144,84 @@ export async function updateSyncTaskStatus(taskId, status) {
   });
 }
 
+// --- Data portability (local backup / restore) ---------------------------
+// The export bundles every object store so a field-test capture can be moved
+// between browsers or machines, or kept as a backup, without any cloud account.
+
+export const EXPORT_FORMAT = "openfloat-export";
+export const EXPORT_VERSION = 1;
+
+// Read every object store into a single JSON-serializable envelope.
+export async function exportAllData() {
+  const db = await initDb();
+  const storeNames = Array.from(db.objectStoreNames);
+  const stores = {};
+
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(storeNames, "readonly");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+    for (const name of storeNames) {
+      const req = tx.objectStore(name).getAll();
+      req.onsuccess = () => {
+        stores[name] = req.result;
+      };
+    }
+  });
+
+  return {
+    format: EXPORT_FORMAT,
+    version: EXPORT_VERSION,
+    dbVersion: DB_VERSION,
+    exportedAt: new Date().toISOString(),
+    stores,
+  };
+}
+
+// Restore an exported envelope. By default records are merged into the existing
+// database (put by key, so a re-import overwrites matching records but keeps
+// everything else). Pass { merge: false } to clear each store before restoring.
+// Returns a per-store count of restored records.
+export async function importAllData(payload, { merge = true } = {}) {
+  if (!payload || payload.format !== EXPORT_FORMAT || !payload.stores) {
+    throw new Error("Unrecognized OpenFloat export file.");
+  }
+
+  const db = await initDb();
+  const validStores = new Set(Array.from(db.objectStoreNames));
+  const incoming = Object.keys(payload.stores).filter((name) => validStores.has(name));
+  if (!incoming.length) {
+    throw new Error("Export file contains no known data stores.");
+  }
+
+  const counts = {};
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(incoming, "readwrite");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+
+    for (const name of incoming) {
+      const store = tx.objectStore(name);
+      if (!merge) store.clear();
+      const records = Array.isArray(payload.stores[name]) ? payload.stores[name] : [];
+      counts[name] = records.length;
+      for (const record of records) {
+        // sync_queue uses an auto-incrementing key; let it assign a fresh id
+        // when the record lacks one, otherwise preserve the exported key.
+        if (store.autoIncrement && (record.id === undefined || record.id === null)) {
+          store.add(record);
+        } else {
+          store.put(record);
+        }
+      }
+    }
+  });
+
+  return counts;
+}
+
 // Group shots into practice sessions purely from their timestamps. Any gap
 // larger than `gapMs` between consecutive shots starts a new session. Each group
 // is anchored by its earliest shot's id (stable as new shots are appended), so
