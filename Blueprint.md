@@ -31,14 +31,18 @@ hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
 - Two telemetry transports carrying the same data:
   - **USB / Web Serial**: human-readable `OFRAW` text lines at ~11 Hz
     (every 100th output frame) plus `#` comment/banner lines and `OFSHOT` events.
-  - **BLE**: a custom GATT service notifying compact 20-byte binary frames.
-    Live-sample frames are batched ten per 200-byte notification; shot-event and
+  - **BLE**: a custom GATT service notifying compact 28-byte binary frames (including on-device quaternions).
+    Live-sample frames are batched seven per 196-byte notification; shot-event and
     count-sync frames are sent as standalone notifications.
 - Browser dashboard: `index.html` supports Web Serial, Web Bluetooth, and a
-  demo stream. BLE live frames do not include firmware Euler angles, so the
-  browser derives display roll/pitch with a small gyro/accelerometer
-  complementary filter and ignores accelerometer tilt correction outside
-  roughly 0.7-1.35 g to avoid square-wave jumps from transient FIFO outliers.
+  demo stream. BLE live frames carry the firmware Madgwick quaternion, so the
+  browser derives roll, pitch, and yaw directly from the on-device 3D
+  orientation estimate. If a transport omits those angles, the browser falls
+  back to local gyro/accelerometer tracking.
+- Dashboard calibration/review views include a calibrated digital bubble level,
+  a Three.js bow orientation visualizer, phase-colored Pin Float trace replay,
+  a 1-sigma float ellipse, release reticle, and a seconds-based trace scrubber
+  with phase indicators.
 - Button-triggered zeroing of cant and pitch offsets.
 
 Verified test clients: `tools/openfloat_ble_client.py` (BLE + serial decoder)
@@ -287,9 +291,9 @@ The browser converts fixed-point values into physical units using scale factors 
 ### Implemented v1 Live Frame
 
 The CRC-footed packet above is the longer-term target. The current firmware
-ships a **fixed 20-byte** frame whose meaning is selected by the type byte.
-Live-sample frames (type 1) are batched ten per BLE notification (a **200-byte
-payload**); text serial emits `OFRAW` lines at a lower diagnostic rate instead:
+   ships a **fixed 28-byte** frame (carrying on-board quaternions) whose meaning is selected
+   by the type byte. Live-sample frames (type 1) are batched seven per BLE notification
+   (a **196-byte payload**); text serial emits `OFRAW` lines instead:
 
 ```text
 offset 0  magic[2]      "OF"
@@ -299,15 +303,16 @@ offset 4  sequence u16   little-endian, wraps at 65536
 offset 6  dt_us u16      group window (~900 us = SAMPLES_PER_OUTPUT / ODR)
 offset 8  accel_mg int16[3]   milli-g, scale 1 mg/LSB
 offset 14 gyro int16[3]       deg/s in Q4 fixed point (LSB = 1/16 deg/s)
+offset 20 quat int16[4]       quaternion (qw, qx, qy, qz) scaled by 10000 (LSB = 1/10000)
 ```
 
 Each type-1 frame is the average of `SAMPLES_PER_OUTPUT` (3) raw IMU samples, so
 `dt_us` is the fixed group window rather than a per-sample delta. There is **no
 CRC and no flags field** in the frame; sequence is `u16`, not `u32`.
 
-The same 20-byte envelope carries other frame types, demultiplexed by the type
+The same 28-byte envelope carries other frame types, demultiplexed by the type
 byte (see section 8): **type 2** live shot events (shot_count u16 @4, shot_id
-u16 @6, accel_mg int16[3] @8, threshold_cg u16 @14, roll/pitch cdeg @16/@18)
+u16 @6, accel_mg int16[3] @8, threshold_cg u16 @14, roll/pitch/yaw cdeg @16/@18/@20, padded to 28 bytes)
 sent on each detected shot, **type 3** count-sync (same shot_count/shot_id
 fields) sent on subscribe, and **type 4** stored-shot upload frames with the
 same payload as type 2.
@@ -359,7 +364,7 @@ flags: uint16
 initial **12 g** threshold with an **800 ms** refractory window. The threshold is
 runtime-configurable over BLE with `thresh:<g>` and is clamped to 2-30 g. A
 detected shot increments a shot counter, pulses the user LED, emits a serial
-event, and notifies a 20-byte BLE shot-event frame (type 2) to the browser:
+event, and notifies a 28-byte BLE shot-event frame (type 2) to the browser:
 
 ```text
 OFSHOT,proto,shot_id,uptime_us,ax_mg,ay_mg,az_mg,shot_count
@@ -378,6 +383,9 @@ The firmware also keeps the newest 100 compact shot records in
 type-4 frames. The web app writes each shot to IndexedDB and only then sends
 `shotack:<shot_id>`, at which point firmware removes that shot from
 RRAM-backed storage. `shotreset` also clears the stored-shot queue.
+Buffered traces freeze after a configurable post-release follow-through delay
+(default 1.5 s, stored as `openfloat/followms`) so the saved window contains
+both the pre-shot hold and the recovery after the release impulse.
 
 The high-pass filtering, post-trigger vibration verification, and the structured
 multi-field shot-event payload (peak_g, timestamps, sample windows) are still to
@@ -420,29 +428,31 @@ Command Characteristic
 
 ```text
 Service          8f3f3b10-0f5a-4f4c-9a2d-000000000001 (Custom OpenFloat Service)
-Live             8f3f3b10-0f5a-4f4c-9a2d-000000000002  notify  (20-byte frames, typed)
+Live             8f3f3b10-0f5a-4f4c-9a2d-000000000002  notify  (28-byte frames, typed)
 Control          8f3f3b10-0f5a-4f4c-9a2d-000000000003  write   (ASCII commands)
 Battery Service  0000180f-0000-1000-8000-00805f9b34fb (Standard BLE BAS)
   Level Char     00002a19-0000-1000-8000-00805f9b34fb  read/notify (0-100%)
 ```
 
-The live characteristic carries six 20-byte frame types, demultiplexed by the
-type byte: type 1 live sample (batched 10/notification), type 2 shot event (sent
+The live characteristic carries six 28-byte frame types, demultiplexed by the
+type byte: type 1 live sample (batched 7/notification), type 2 shot event (sent
 on each detected shot), type 3 count sync (sent on subscribe so the persisted
 lifetime count displays immediately without logging a shot), type 4 stored
 shot upload (sent one at a time until the web app acknowledges each save), type 5
 storage status (sent on connect/request to sync queue counts), and type 6 trace
-chunk (sent sequentially to stream buffered pre-shot float traces).
+chunk (sent sequentially to stream buffered shot traces with pre-shot hold and
+post-release follow-through).
 
 The control characteristic accepts the ASCII commands:
 * `start`/`stop`: Toggle live telemetry stream notifications.
 * `zero`: Capture the current gravitational vector, compute pitch/roll offsets, store them in RRAM (`"cant_offset"`, `"pitch_offset"`), and apply them dynamically so live roll reads exactly 0.0°.
 * `thresh:<g>`: Set shot detection accelerometer threshold, clamped to 2-30 g.
 * `wakesens:<g>`: Set wake-up trigger accelerometer threshold, clamped to 0.5-8.0 g.
-* `sleeptime:<s>`: Set deep sleep timeout in seconds, clamped to 5-600 s.
+* `sleeptime:<s>`: Set deep sleep timeout in seconds, clamped to 5-600 s. Fresh firmware defaults to 300 s unless an older persisted setting overrides it.
 * `sleepsens:<g>`: Set active sleep accelerometer sensitivity movement threshold, clamped to 0.05-0.50 g.
-* `bufrate:<hz>`: Set on-device trace buffering rate. Values: `0` (Off), `52` (52 Hz), `104` (104 Hz). Saves to RRAM (`"openfloat/bufrate"`).
+* `bufrate:<hz>`: Set on-device trace buffering rate. Values: `0` (Off), `52` (52 Hz), `104` (104 Hz), `208` (208 Hz). Saves to RRAM (`"openfloat/bufrate"`).
 * `bufnvs:<val>`: Toggle whether trace buffer is persisted to non-volatile RRAM. Values: `0` (Off/SRAM only), `1` (On/RRAM). Saves to RRAM (`"openfloat/bufnvs"`).
+* `followms:<ms>`: Set the post-release follow-through delay before freezing a shot trace, clamped to 0-3000 ms. Saves to RRAM (`"openfloat/followms"`).
 * `tracereq:<shot_id>`: Request a chunked upload of the trace of the shot with ID `shot_id` as Type 6 notifications.
 * `shotack:<shot_id>`: Acknowledge a saved type-2/type-4 shot so firmware can free the queued copy from RRAM.
 * `shotreset`: Clear the persisted shot count and shot queue.
@@ -502,10 +512,14 @@ CloudSyncAdapter
   - never required for live telemetry
 
 UI
-  - live dashboard
-  - shot review
-  - calibration
-  - device setup
+  - live dashboard (inline stream rate & shot counter metrics, dynamic target trace)
+  - shot review (aiming hold, release, follow-through phases)
+  - calibration & alignment settings (axis swapping, orientation override)
+  - calibrated glassmorphic spirit bubble level (custom range & tolerance sweet-spot sliders)
+  - low-pass filtered (EMA) bubble visualizer for smooth and responsive tracking
+  - real-time recent shots grid list (syncing with device shot events & manual recordings)
+  - phase-colored trace replay with seconds scrubber
+  - device setup & hardware configuration
   - cloud account and sync status
 ```
 
@@ -513,11 +527,16 @@ UI
 device, protocol, telemetry, ui) and supports **Web Serial, Web Bluetooth, and a
 demo stream**. Web Serial opens the device's USB VCOM, asserts DTR/RTS, and
 decodes `OFRAW` text with firmware-computed Madgwick Euler angles. Web Bluetooth
-decodes the 20-byte binary frames (live samples batched in 200-byte
+decodes the 28-byte binary frames (live samples batched in 196-byte
 notifications, plus shot-event and count-sync frames); those BLE frames carry
-accel/gyro only, so the browser derives display roll/pitch with a complementary
-filter. Orientation is computed **on the device** (Madgwick), so the
-AnalyticsEngine consumes ready-made cant/pitch/roll/quaternion for serial.
+the on-board Madgwick filter quaternion, allowing the browser to extract and
+convert it to Euler angles directly, aligning it with the serial stream.
+Additionally, a Progressive Web App (PWA) service worker (`service-worker.js`)
+is registered to cache all core markup, styling, modules, and 3D GLTF assets,
+ensuring the application is fully functional offline at remote archery ranges.
+
+### Real-time UI & Database Updates
+The Recent Shots list is reactive. When a connection is active (serial or BLE) and the device detects a shot, the adapter parses and relays the event onto the global `EventBus` as a `"shot"` event. The `TelemetryStore` listens to this event, ensures a session is active, performs session-scoped duplicate checking, writes the shot to IndexedDB, and emits a `"shot-saved"` event. The dashboard UI listens to `"shot-saved"` and instantly updates the Recent Shots grid, allowing the user to click the new shot and review its aiming float path immediately. Manual captures also trigger `"shot-saved"` upon save.
 
 ## 11. Browser Data Parsing
 
@@ -611,6 +630,9 @@ shots
   roll_angle_deg
   stability_score
   shot_score
+  hold_stability
+  release_quality
+  follow_through
   stored_upload
   packet_loss_count
   raw_trace_ref
@@ -635,7 +657,10 @@ For existing Supabase projects, add the newer shot fields with:
 alter table public.shots
   add column if not exists device_shot_id integer,
   add column if not exists shot_score numeric,
-  add column if not exists stored_upload boolean default false;
+  add column if not exists stored_upload boolean default false,
+  add column if not exists hold_stability numeric,
+  add column if not exists release_quality numeric,
+  add column if not exists follow_through numeric;
 
 create unique index if not exists shots_device_shot_id_unique
   on public.shots (device_id, device_shot_id)
@@ -683,11 +708,11 @@ not begun. See the Implementation Status section near the top for detail.
 
 ### Phase 3: Full-Rate BLE Live Stream  [partial]
 
-- Implement packed binary live packets. (20-byte v1 frames; firmware batches 10
-  distinct averaged frames into 200-byte notifications, read via INT1 watermark.)
+- Implement packed binary live packets. (28-byte v1 frames containing quaternions; firmware batches 7
+  distinct averaged frames into 196-byte notifications, read via INT1 watermark.)
 - Tune BLE connection interval and MTU. (212-byte L2CAP TX MTU, 217-byte ACL
-  TX/RX buffers, and 7.5 ms preferred interval are in use; 200-byte BLE
-  payloads verified on Windows/Bleak at about 113 notifications/s with zero
+  TX/RX buffers, and 7.5 ms preferred interval are in use; 196-byte BLE
+  payloads verified on Windows/Bleak at about 161 notifications/s with zero
   sequence loss.)
 - Detect packet loss in the browser and Python client. (Both use the sequence
   field from the v1 binary frame.)
@@ -696,8 +721,10 @@ not begun. See the Implementation Status section near the top for detail.
 
 - Implement impulse detection. (12 g threshold + 800 ms refractory, `OFSHOT`
   serial events + LED pulse.)
-- Capture pre-shot and post-shot windows. (Rolling buffer not yet implemented.)
-- Allow browser replay requests. (Not yet.)
+- Capture pre-shot and post-shot windows. (Rolling buffer and configurable
+  delayed trace freeze are implemented.)
+- Allow browser replay requests. (Trace upload and browser review are
+  implemented for stored shots.)
 
 ### Phase 5: Calibration and Config  [partial]
 

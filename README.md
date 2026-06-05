@@ -35,7 +35,13 @@ without hardware.
 - Firmware keeps the newest 100 compact shot records in nonvolatile storage and
   uploads them to the browser on reconnect. The web app acknowledges each shot
   only after IndexedDB save, then firmware frees that stored slot.
-- BLE notifications batch ten 20-byte frames into about 200 bytes each.
+- Buffered shot traces now freeze after a configurable follow-through delay
+  (default 1.5 s, set over BLE with `followms:<ms>`) so stored traces include
+  both pre-shot hold and post-release recovery.
+- Fresh firmware defaults disconnected deep sleep to 300 s. Existing persisted
+  settings can override it; update devices with `sleeptime:<s>` or the dashboard
+  sleep slider.
+- BLE notifications batch seven 28-byte frames (containing on-board quaternions) into 196-byte notifications.
 - Latest Windows/Bleak validation received 28,670 sequential frames with zero
   sequence loss over 25.5 s; warm-up-excluded rate was about 1129 Hz, with
   0 FIFO overruns, 0 resyncs, 0 outlier frames, and 100% distinct frames
@@ -46,6 +52,22 @@ without hardware.
 - **Bow Orientation Calibration**: Supports zeroing pitch and roll calibration values via the control BLE command `zero` or browser dashboard button. Offsets are saved persistently in Settings RRAM (`"cant_offset"`, `"pitch_offset"`) and loaded automatically on boot.
 - **Configurable Wake-up & Sleep Settings**: Allows tuning wake-up sensitivity (`wakesens:<g>`), deep sleep timeout (`sleeptime:<s>`), and active sleep movement sensitivity (`sleepsens:<g>`) via BLE commands, stored in Settings RRAM.
 - **Release Recoil Signature Filtering**: Checks gyroscope dynamic magnitude squared ($\ge 1.5\text{ rad/s}$ / $85^\circ\text{/s}$ minimum recoil velocity) during acceleration peaks to filter out accidental arrow bumps, bow drops, or setting the device down.
+
+## Current Browser Dashboard Status
+
+- Live calibration views include a calibrated digital bubble level and a 3D bow
+  orientation visualizer. Both apply the current zero offsets before rendering,
+  so a properly zeroed bow appears level.
+- **On-Device Orientation Processing**: Consumes high-rate Madgwick filter quaternions directly from BLE notifications, avoiding client-side complementary filter lag.
+- Pin Float shot review shows phase-colored traces: green aiming hold,
+  amber/red release break, and gray follow-through.
+- The shot review canvas also renders a 1-sigma float ellipse, release reticle,
+  animated replay marker, and a seconds-based scrubber with phase indicators.
+- **Bow Profile Manager & Session Tracker**: Organize and save stabilizer configurations, draw weights, and notes under custom bow profiles. Group practice shots under named, collapsible sessions (e.g. location/date) to track progress over time.
+- **Manual Long-Trace Recording**: A dedicated tab for starting, stopping, naming, and saving custom-length telemetry captures of arbitrary duration. Bypasses the default shot-trigger limits to capture full ends or holding drills.
+- **Bow Stability Comparison & Analysis Dashboard**: A dedicated tab to compare different equipment setups or track progression over time on the same setup. Features side-by-side average metrics and synchronized replaying / scrubbing of overlaid target float paths and time-aligned stability curves.
+- **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
+- **Offline PWA Support**: Registers a service worker to cache application assets (markup, styling, scripts, and the 3D model GLB), enabling full offline operation at remote archery ranges.
 
 ## BLE Telemetry Test Client
 
@@ -66,6 +88,17 @@ used during bring-up. If the script cannot import `bleak`, run commands with:
 
 ```powershell
 $env:PYTHONPATH='C:\tmp\openfloat-pydeps'
+```
+
+On Windows, the client keeps the scanned BLE device object for name/prefix
+matches before connecting, which is more reliable than reconnecting by address
+alone. If an older persisted sleep timeout is still short, reset the module and
+use a short scan timeout immediately after reset.
+
+Verify delayed trace freeze behavior without hardware:
+
+```powershell
+python tools\verify_follow_through_trace.py
 ```
 
 Scan for an OpenFloat BLE peripheral and print decoded telemetry:
@@ -103,7 +136,10 @@ metadata columns in the Supabase SQL editor:
 alter table public.shots
   add column if not exists device_shot_id integer,
   add column if not exists shot_score numeric,
-  add column if not exists stored_upload boolean default false;
+  add column if not exists stored_upload boolean default false,
+  add column if not exists hold_stability numeric,
+  add column if not exists release_quality numeric,
+  add column if not exists follow_through numeric;
 
 create unique index if not exists shots_device_shot_id_unique
   on public.shots (device_id, device_shot_id)
@@ -111,3 +147,24 @@ create unique index if not exists shots_device_shot_id_unique
 
 notify pgrst, 'reload schema';
 ```
+
+## Safety
+
+OpenFloat Archery is an experimental, hobby/educational telemetry project, not a
+safety device. Do not rely on it for any safety-critical decision. Always follow
+normal archery range safety rules. Mount the sensor securely so it cannot become
+a projectile or interfere with the bow; an improperly mounted accessory can fail
+under release shock. You are responsible for the safe use of your equipment.
+
+## License and Attribution
+
+This project is licensed under the MIT License (see `LICENSE`); firmware sources
+additionally carry `Apache-2.0` SPDX headers. Third-party software, algorithms,
+and platform components are credited in `THIRD_PARTY_NOTICES.md`. If you
+redistribute or build on this project, preserve upstream copyright and license
+headers and keep the notices file accurate.
+
+OpenFloat Archery is an independent, open-source project. It is not affiliated
+with, endorsed by, or derived from any commercial archery-electronics product or
+its maker, and all third-party product and company names are the property of
+their respective owners.

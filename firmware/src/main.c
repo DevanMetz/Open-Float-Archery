@@ -48,10 +48,11 @@
 #define OUTPUT_DT_US ((uint32_t)((SAMPLES_PER_OUTPUT * 1000000UL) / IMU_ODR_HZ))
 #define SERIAL_PRINT_DIVIDER 100
 #define BLE_NOTIFY_DIVIDER 1
-#define OPENFLOAT_BLE_FRAME_SIZE 20
-#define OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION 10
+#define OPENFLOAT_BLE_FRAME_SIZE 28
+#define OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION 7
 #define OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE \
 	(OPENFLOAT_BLE_FRAME_SIZE * OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION)
+#define TRACE_CHUNK_PAYLOAD_SIZE (OPENFLOAT_BLE_FRAME_SIZE - 9)
 #define OPENFLOAT_CONN_INTERVAL_MIN 6  /* 7.5 ms */
 #define OPENFLOAT_CONN_INTERVAL_MAX 6  /* 7.5 ms */
 #define OPENFLOAT_CONN_LATENCY 0
@@ -153,7 +154,7 @@ static const struct gpio_dt_spec user_btn =
 static const struct device *const stream_uart =
 	DEVICE_DT_GET(DT_NODELABEL(xiao_serial));
 
-static uint32_t disconnected_sleep_timeout_ms = 10000;
+static uint32_t disconnected_sleep_timeout_ms = 300000;
 #define CONNECTED_SLEEP_TIMEOUT_MS 600000
 
 static float cant_offset_deg;
@@ -186,6 +187,7 @@ static bool ble_send_count_sync;
 static bool ble_send_storage_status;
 static bool stored_shot_upload_in_progress;
 static bool stored_shot_upload_requested;
+static bool last_shot_queued_for_storage;
 static uint16_t stored_shot_upload_id;
 static uint8_t fifo_drain_raw[LSM6DSL_FIFO_DRAIN_MAX_WORDS * sizeof(uint16_t)];
 /*
@@ -199,6 +201,7 @@ static const uint8_t openfloat_flash_tail_pad[32]
 	};
 static struct bt_conn *current_conn;
 static bool ble_notify_enabled;
+static struct k_work adv_start_work;
 static void tune_ble_link_work_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(tune_ble_link_work, tune_ble_link_work_handler);
 
@@ -239,6 +242,7 @@ struct stored_shot {
 	uint16_t threshold_cg;
 	int16_t roll_cdeg;
 	int16_t pitch_cdeg;
+	int16_t yaw_cdeg;
 };
 
 struct stored_shot_log {
@@ -256,6 +260,7 @@ static struct stored_shot_log stored_shot_log;
 struct trace_point {
 	int16_t roll_cdeg;
 	int16_t pitch_cdeg;
+	int16_t yaw_cdeg;
 };
 struct stored_trace {
 	uint16_t shot_id;
@@ -271,22 +276,33 @@ static uint16_t ram_trace_write_idx = 0;
 static int buffer_rate_hz = 52;
 static int buffer_nvs_enabled = 1;
 static int ble_stream_divider = 1;
+static int auto_sleep_enabled = 1;
+static struct k_work auto_sleep_persist_work;
+static uint32_t follow_through_ms = 1500;
 static struct k_work buffer_rate_persist_work;
 static struct k_work buffer_nvs_persist_work;
 static struct k_work streamrate_persist_work;
+static struct k_work follow_through_persist_work;
 
 static struct k_work trace_persist_work;
+static struct k_work_delayable trace_freeze_work;
 static struct k_work_delayable trace_upload_work;
 static volatile uint32_t trace_pending_mask;
+
+static bool trace_freeze_pending;
+static uint16_t trace_freeze_shot_id;
+static int trace_freeze_slot;
 
 static bool trace_upload_in_progress;
 static int trace_upload_slot;
 static int trace_upload_chunk_idx;
 
-static void ram_trace_push(int16_t roll_cdeg, int16_t pitch_cdeg)
+static void ram_trace_push(int16_t roll_cdeg, int16_t pitch_cdeg,
+			   int16_t yaw_cdeg)
 {
 	ram_trace_buffer[ram_trace_write_idx].roll_cdeg = roll_cdeg;
 	ram_trace_buffer[ram_trace_write_idx].pitch_cdeg = pitch_cdeg;
+	ram_trace_buffer[ram_trace_write_idx].yaw_cdeg = yaw_cdeg;
 	ram_trace_write_idx = (ram_trace_write_idx + 1) % TRACE_CAPACITY;
 	if (ram_trace_count < TRACE_CAPACITY) {
 		ram_trace_count++;
@@ -304,6 +320,45 @@ static void ram_trace_freeze(struct stored_trace *dest)
 		dest->points[i] = ram_trace_buffer[read_idx];
 		read_idx = (read_idx + 1) % TRACE_CAPACITY;
 	}
+}
+
+static void trace_freeze_pending_slot(void)
+{
+	if (!trace_freeze_pending) {
+		return;
+	}
+
+	stored_traces[trace_freeze_slot].shot_id = trace_freeze_shot_id;
+	ram_trace_freeze(&stored_traces[trace_freeze_slot]);
+	if (buffer_nvs_enabled) {
+		trace_pending_mask |= BIT(trace_freeze_slot);
+		k_work_submit(&trace_persist_work);
+	}
+
+	printk("# trace frozen: shot=%u slot=%d count=%u follow_ms=%u\n",
+	       trace_freeze_shot_id, trace_freeze_slot,
+	       stored_traces[trace_freeze_slot].count, follow_through_ms);
+	trace_freeze_pending = false;
+}
+
+static void trace_freeze_work_handler(struct k_work *work)
+{
+	trace_freeze_pending_slot();
+}
+
+static void schedule_trace_freeze(uint16_t shot_id_value)
+{
+	if (trace_freeze_pending) {
+		(void)k_work_cancel_delayable(&trace_freeze_work);
+		trace_freeze_pending_slot();
+	}
+
+	trace_freeze_shot_id = shot_id_value;
+	trace_freeze_slot = shot_id_value % 10;
+	trace_freeze_pending = true;
+	stored_traces[trace_freeze_slot].shot_id = shot_id_value;
+	stored_traces[trace_freeze_slot].count = 0;
+	k_work_reschedule(&trace_freeze_work, K_MSEC(follow_through_ms));
 }
 
 static void stored_shot_append(const struct stored_shot *shot)
@@ -985,7 +1040,7 @@ static void update_user_led(void)
 
 /* Returns true if a new shot was detected on this call. */
 static bool detect_shot(const struct vec3 *accel, const struct vec3 *gyro, uint64_t now_us,
-			float roll_deg, float pitch_deg)
+			float roll_deg, float pitch_deg, float yaw_deg)
 {
 	static int64_t last_shot_ms;
 	float mag2 = (accel->x * accel->x) + (accel->y * accel->y) +
@@ -1003,6 +1058,7 @@ static bool detect_shot(const struct vec3 *accel, const struct vec3 *gyro, uint6
 		shot_id++;
 		last_shot_ms = now_ms;
 		last_shot_accel = *accel;
+		last_shot_queued_for_storage = false;
 		last_shot_record = (struct stored_shot){
 			.shot_count = (uint16_t)shot_count,
 			.shot_id = (uint16_t)shot_id,
@@ -1018,15 +1074,13 @@ static bool detect_shot(const struct vec3 *accel, const struct vec3 *gyro, uint6
 			.pitch_cdeg = clamp_i16(
 				scale_float(pitch_deg - pitch_offset_deg,
 					    SCALE_CDEG)),
+			.yaw_cdeg = clamp_i16(scale_float(yaw_deg, SCALE_CDEG)),
 		};
-		stored_shot_append(&last_shot_record);
-		if (buffer_rate_hz > 0) {
-			int slot = shot_id % 10;
-			stored_traces[slot].shot_id = (uint16_t)shot_id;
-			ram_trace_freeze(&stored_traces[slot]);
-			if (buffer_nvs_enabled) {
-				trace_pending_mask |= BIT(slot);
-				k_work_submit(&trace_persist_work);
+		if (!ble_notify_enabled) {
+			stored_shot_append(&last_shot_record);
+			last_shot_queued_for_storage = true;
+			if (buffer_rate_hz > 0) {
+				schedule_trace_freeze((uint16_t)shot_id);
 			}
 		}
 		led_shot_until_ms = now_ms + LED_SHOT_PULSE_MS;
@@ -1186,6 +1240,21 @@ static int openfloat_settings_set(const char *name, size_t len,
 		return 0;
 	}
 
+	if (settings_name_steq(name, "autosleep", NULL)) {
+		uint32_t value;
+		ssize_t rc;
+
+		if (len != sizeof(value)) {
+			return -EINVAL;
+		}
+		rc = read_cb(cb_arg, &value, sizeof(value));
+		if (rc < 0) {
+			return rc;
+		}
+		auto_sleep_enabled = (int)value;
+		return 0;
+	}
+
 	if (settings_name_steq(name, "streamrate", NULL)) {
 		uint32_t value;
 		ssize_t rc;
@@ -1198,6 +1267,24 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return rc;
 		}
 		ble_stream_divider = (int)value;
+		return 0;
+	}
+
+	if (settings_name_steq(name, "followms", NULL)) {
+		uint32_t value;
+		ssize_t rc;
+
+		if (len != sizeof(value)) {
+			return -EINVAL;
+		}
+		rc = read_cb(cb_arg, &value, sizeof(value));
+		if (rc < 0) {
+			return rc;
+		}
+		if (value > 3000) {
+			value = 3000;
+		}
+		follow_through_ms = value;
 		return 0;
 	}
 
@@ -1300,6 +1387,16 @@ static void buffer_nvs_persist_work_handler(struct k_work *work)
 	}
 }
 
+static void auto_sleep_persist_work_handler(struct k_work *work)
+{
+	uint32_t value = (uint32_t)auto_sleep_enabled;
+	int rc = settings_save_one("openfloat/autosleep", &value, sizeof(value));
+
+	if (rc) {
+		printk("# auto sleep save failed: %d\n", rc);
+	}
+}
+
 static void streamrate_persist_work_handler(struct k_work *work)
 {
 	uint32_t value = (uint32_t)ble_stream_divider;
@@ -1307,6 +1404,16 @@ static void streamrate_persist_work_handler(struct k_work *work)
 
 	if (rc) {
 		printk("# streamrate save failed: %d\n", rc);
+	}
+}
+
+static void follow_through_persist_work_handler(struct k_work *work)
+{
+	uint32_t value = follow_through_ms;
+	int rc = settings_save_one("openfloat/followms", &value, sizeof(value));
+
+	if (rc) {
+		printk("# follow-through save failed: %d\n", rc);
 	}
 }
 
@@ -1443,9 +1550,7 @@ static void battery_measure_work_handler(struct k_work *work)
 
 			if (pct != battery_level) {
 				battery_level = pct;
-				if (current_conn) {
-					(void)bt_gatt_notify(current_conn, &bas_svc.attrs[2], &battery_level, sizeof(battery_level));
-				}
+				(void)bt_gatt_notify(NULL, &bas_svc.attrs[2], &battery_level, sizeof(battery_level));
 			}
 		}
 	}
@@ -1539,8 +1644,10 @@ static void build_openfloat_live_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 					uint32_t dt_us,
 					const struct vec3 *accel,
 					const struct vec3 *gyro,
+					const struct quat *q,
 					uint16_t flags)
 {
+	memset(frame, 0, OPENFLOAT_BLE_FRAME_SIZE);
 	frame[0] = 'O';
 	frame[1] = 'F';
 	frame[2] = 1; /* protocol version */
@@ -1553,10 +1660,14 @@ static void build_openfloat_live_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 	put_u16_le(frame, 14, (uint16_t)clamp_i16(scale_float(gyro->x, SCALE_GYRO_DPS_Q4)));
 	put_u16_le(frame, 16, (uint16_t)clamp_i16(scale_float(gyro->y, SCALE_GYRO_DPS_Q4)));
 	put_u16_le(frame, 18, (uint16_t)clamp_i16(scale_float(gyro->z, SCALE_GYRO_DPS_Q4)));
+	put_u16_le(frame, 20, (uint16_t)clamp_i16(scale_float(q->w, 10000.0f)));
+	put_u16_le(frame, 22, (uint16_t)clamp_i16(scale_float(q->x, 10000.0f)));
+	put_u16_le(frame, 24, (uint16_t)clamp_i16(scale_float(q->y, 10000.0f)));
+	put_u16_le(frame, 26, (uint16_t)clamp_i16(scale_float(q->z, 10000.0f)));
 }
 
 /*
- * Build a 20-byte shot frame in the same envelope as the live frame. type 2 is
+ * Build a shot frame in the same envelope as the live frame. type 2 is
  * a real shot event (the browser logs it); type 3 is a count-sync sent on
  * subscribe so the persisted lifetime count displays without logging a shot.
  * Layout matches parseBinaryShotFrame() in app/protocol/frame.js.
@@ -1564,6 +1675,7 @@ static void build_openfloat_live_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 static void build_openfloat_shot_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 					uint8_t type)
 {
+	memset(frame, 0, OPENFLOAT_BLE_FRAME_SIZE);
 	uint16_t threshold_cg =
 		(uint16_t)scale_float(shot_accel_threshold_mps2 / MPS2_PER_G,
 				      100.0f);
@@ -1585,12 +1697,15 @@ static void build_openfloat_shot_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 		   type == 2 ? (uint16_t)last_shot_record.roll_cdeg : 0);
 	put_u16_le(frame, 18,
 		   type == 2 ? (uint16_t)last_shot_record.pitch_cdeg : 0);
+	put_u16_le(frame, 20,
+		   type == 2 ? (uint16_t)last_shot_record.yaw_cdeg : 0);
 }
 
 static void build_openfloat_stored_shot_binary(
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 	const struct stored_shot *shot)
 {
+	memset(frame, 0, OPENFLOAT_BLE_FRAME_SIZE);
 	frame[0] = 'O';
 	frame[1] = 'F';
 	frame[2] = 1; /* protocol version */
@@ -1603,11 +1718,13 @@ static void build_openfloat_stored_shot_binary(
 	put_u16_le(frame, 14, shot->threshold_cg);
 	put_u16_le(frame, 16, (uint16_t)shot->roll_cdeg);
 	put_u16_le(frame, 18, (uint16_t)shot->pitch_cdeg);
+	put_u16_le(frame, 20, (uint16_t)shot->yaw_cdeg);
 }
 
 static void build_openfloat_storage_status_binary(
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE])
 {
+	memset(frame, 0, OPENFLOAT_BLE_FRAME_SIZE);
 	frame[0] = 'O';
 	frame[1] = 'F';
 	frame[2] = 1; /* protocol version */
@@ -1627,11 +1744,12 @@ static void __maybe_unused write_openfloat_live_binary(uint32_t sequence,
 						       uint32_t dt_us,
 						       const struct vec3 *accel,
 						       const struct vec3 *gyro,
+						       const struct quat *q,
 						       uint16_t flags)
 {
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
 
-	build_openfloat_live_binary(frame, sequence, dt_us, accel, gyro, flags);
+	build_openfloat_live_binary(frame, sequence, dt_us, accel, gyro, q, flags);
 	uart_write_bytes(frame, sizeof(frame));
 }
 
@@ -1783,6 +1901,15 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		} else {
 			printk("# BLE control: invalid buffer NVS command '%s'\n", command);
 		}
+	} else if (!strncmp(command, "autosleep:", strlen("autosleep:"))) {
+		int value = atoi(command + strlen("autosleep:"));
+		if (value == 0 || value == 1) {
+			auto_sleep_enabled = value;
+			k_work_submit(&auto_sleep_persist_work);
+			printk("# BLE control: auto sleep set to %s\n", auto_sleep_enabled ? "ON" : "OFF");
+		} else {
+			printk("# BLE control: invalid auto sleep command '%s'\n", command);
+		}
 	} else if (!strncmp(command, "streamrate:", strlen("streamrate:"))) {
 		int value = atoi(command + strlen("streamrate:"));
 		if (value == 1 || value == 2 || value == 5 || value == 10 || value == 20) {
@@ -1792,8 +1919,19 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		} else {
 			printk("# BLE control: invalid stream rate divider command '%s'\n", command);
 		}
-	}
- else if (!strncmp(command, "tracereq:", strlen("tracereq:"))) {
+	} else if (!strncmp(command, "followms:", strlen("followms:"))) {
+		int value = atoi(command + strlen("followms:"));
+		if (value < 0) {
+			value = 0;
+		}
+		if (value > 3000) {
+			value = 3000;
+		}
+		follow_through_ms = (uint32_t)value;
+		k_work_submit(&follow_through_persist_work);
+		printk("# BLE control: follow-through trace window set to %u ms\n",
+		       follow_through_ms);
+	} else if (!strncmp(command, "tracereq:", strlen("tracereq:"))) {
 		int req_id = atoi(command + strlen("tracereq:"));
 		if (req_id >= 0 && req_id <= UINT16_MAX) {
 			int slot = req_id % 10;
@@ -1849,14 +1987,14 @@ BT_GATT_SERVICE_DEFINE(openfloat_svc,
 
 static void trace_upload_work_handler(struct k_work *work)
 {
-	if (!current_conn || !ble_notify_enabled || !trace_upload_in_progress) {
+	if (!ble_notify_enabled || !trace_upload_in_progress) {
 		trace_upload_in_progress = false;
 		return;
 	}
 
 	struct stored_trace *trace = &stored_traces[trace_upload_slot];
 	uint16_t total_bytes = trace->count * sizeof(struct trace_point);
-	int total_chunks = (total_bytes + 10) / 11;
+	int total_chunks = (total_bytes + (TRACE_CHUNK_PAYLOAD_SIZE - 1)) / TRACE_CHUNK_PAYLOAD_SIZE;
 
 	if (trace_upload_chunk_idx >= total_chunks) {
 		trace_upload_in_progress = false;
@@ -1865,6 +2003,7 @@ static void trace_upload_work_handler(struct k_work *work)
 	}
 
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
+	memset(frame, 0, sizeof(frame));
 	frame[0] = 'O';
 	frame[1] = 'F';
 	frame[2] = 1;
@@ -1874,18 +2013,18 @@ static void trace_upload_work_handler(struct k_work *work)
 	frame[6] = (uint8_t)trace_upload_chunk_idx;
 	frame[7] = (uint8_t)total_chunks;
 
-	uint16_t offset = trace_upload_chunk_idx * 11;
+	uint16_t offset = trace_upload_chunk_idx * TRACE_CHUNK_PAYLOAD_SIZE;
 	uint16_t rem = total_bytes - offset;
-	uint8_t chunk_len = rem > 11 ? 11 : (uint8_t)rem;
+	uint8_t chunk_len = rem > TRACE_CHUNK_PAYLOAD_SIZE ? TRACE_CHUNK_PAYLOAD_SIZE : (uint8_t)rem;
 	frame[8] = chunk_len;
 
 	uint8_t *raw_bytes = (uint8_t *)trace->points;
 	memcpy(&frame[9], raw_bytes + offset, chunk_len);
-	if (chunk_len < 11) {
-		memset(&frame[9] + chunk_len, 0, 11 - chunk_len);
+	if (chunk_len < TRACE_CHUNK_PAYLOAD_SIZE) {
+		memset(&frame[9] + chunk_len, 0, TRACE_CHUNK_PAYLOAD_SIZE - chunk_len);
 	}
 
-	int err = bt_gatt_notify(current_conn, &openfloat_svc.attrs[2], frame, sizeof(frame));
+	int err = bt_gatt_notify(NULL, &openfloat_svc.attrs[2], frame, sizeof(frame));
 	if (err) {
 		printk("# trace chunk upload notify failed: %d, retrying chunk %d...\n", err, trace_upload_chunk_idx);
 		k_work_reschedule(&trace_upload_work, K_MSEC(50));
@@ -1919,6 +2058,11 @@ static int start_ble_advertising(void)
 
 	printk("# BLE advertising: %s\n", CONFIG_BT_DEVICE_NAME);
 	return 0;
+}
+
+static void adv_start_work_handler(struct k_work *work)
+{
+	(void)start_ble_advertising();
 }
 
 static void tune_ble_link_work_handler(struct k_work *work)
@@ -1966,19 +2110,19 @@ static void tune_ble_link_work_handler(struct k_work *work)
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
-		printk("# BLE connection failed: %u %s\n", err,
-		       bt_hci_err_to_str(err));
+		printk("# BLE connection failed: %u\n", err);
 		return;
 	}
 
 	current_conn = bt_conn_ref(conn);
 	printk("# BLE connected\n");
+	last_activity_time_ms = k_uptime_get();
 	(void)k_work_reschedule(&tune_ble_link_work, K_MSEC(500));
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
-	printk("# BLE disconnected: %u %s\n", reason, bt_hci_err_to_str(reason));
+	printk("# BLE disconnected: reason %u\n", reason);
 	ble_notify_enabled = false;
 	stored_shot_upload_in_progress = false;
 	stored_shot_upload_requested = false;
@@ -1989,7 +2133,8 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 		current_conn = NULL;
 	}
 
-	(void)start_ble_advertising();
+	last_activity_time_ms = k_uptime_get();
+	k_work_submit(&adv_start_work);
 }
 
 static void le_param_updated(struct bt_conn *conn, uint16_t interval,
@@ -2039,11 +2184,11 @@ static void notify_openfloat_live_binary(const uint8_t *payload, size_t len,
 {
 	int err;
 
-	if (!current_conn || !ble_notify_enabled) {
+	if (!ble_notify_enabled) {
 		return;
 	}
 
-	err = bt_gatt_notify(current_conn, &openfloat_svc.attrs[2],
+	err = bt_gatt_notify(NULL, &openfloat_svc.attrs[2],
 			     payload, len);
 	if (err) {
 		ble_dropped_samples += frame_count;
@@ -2051,7 +2196,7 @@ static void notify_openfloat_live_binary(const uint8_t *payload, size_t len,
 }
 
 /*
- * Notify a single 20-byte shot frame on the live characteristic. type 2 is a
+ * Notify a single shot frame on the live characteristic. type 2 is a
  * real shot event; type 3 is a count-sync. The browser demultiplexes on the
  * type byte, so this rides the same characteristic the client already
  * subscribes to for live samples.
@@ -2061,12 +2206,12 @@ static bool notify_openfloat_shot_event(uint8_t type)
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
 	int err;
 
-	if (!current_conn || !ble_notify_enabled) {
+	if (!ble_notify_enabled) {
 		return false;
 	}
 
 	build_openfloat_shot_binary(frame, type);
-	err = bt_gatt_notify(current_conn, &openfloat_svc.attrs[2], frame,
+	err = bt_gatt_notify(NULL, &openfloat_svc.attrs[2], frame,
 			     sizeof(frame));
 	return err == 0;
 }
@@ -2077,7 +2222,7 @@ static void notify_next_stored_shot(void)
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
 	int err;
 
-	if (!current_conn || !ble_notify_enabled ||
+	if (!ble_notify_enabled ||
 	    stored_shot_upload_in_progress || !stored_shot_upload_requested) {
 		return;
 	}
@@ -2089,7 +2234,7 @@ static void notify_next_stored_shot(void)
 	}
 
 	build_openfloat_stored_shot_binary(frame, shot);
-	err = bt_gatt_notify(current_conn, &openfloat_svc.attrs[2], frame,
+	err = bt_gatt_notify(NULL, &openfloat_svc.attrs[2], frame,
 			     sizeof(frame));
 	if (err) {
 		printk("# stored shot upload notify failed: %d pending=%u\n",
@@ -2107,12 +2252,12 @@ static void notify_storage_status(void)
 {
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
 
-	if (!current_conn || !ble_notify_enabled) {
+	if (!ble_notify_enabled) {
 		return;
 	}
 
 	build_openfloat_storage_status_binary(frame);
-	(void)bt_gatt_notify(current_conn, &openfloat_svc.attrs[2], frame,
+	(void)bt_gatt_notify(NULL, &openfloat_svc.attrs[2], frame,
 			     sizeof(frame));
 }
 
@@ -2184,7 +2329,8 @@ int main(void)
 	printk("# ui: user LED status, user button calibration\n");
 	printk("# ble: %s, batch %d averaged frames per notification\n",
 	       CONFIG_BT_DEVICE_NAME, OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION);
-	printk("# BLE live frame: 20 bytes each, batched payload %d bytes, magic[2]='OF', proto u8, type u8, seq u16, dt_us u16, accel_mg int16[3], gyro_dps_q4 int16[3]\n",
+	printk("# BLE live frame: %d bytes each, batched payload %d bytes, magic[2]='OF', proto u8, type u8, seq u16, dt_us u16, accel_mg int16[3], gyro_dps_q4 int16[3], quat_q14 int16[4]\n",
+	       OPENFLOAT_BLE_FRAME_SIZE,
 	       OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE);
 	printk("# format: OFSHOT,proto,shot_id,uptime_us,ax_mg,ay_mg,az_mg,shot_count\n");
 
@@ -2197,9 +2343,13 @@ int main(void)
 	k_work_init_delayable(&battery_measure_work, battery_measure_work_handler);
 	k_work_init(&buffer_rate_persist_work, buffer_rate_persist_work_handler);
 	k_work_init(&buffer_nvs_persist_work, buffer_nvs_persist_work_handler);
+	k_work_init(&auto_sleep_persist_work, auto_sleep_persist_work_handler);
 	k_work_init(&streamrate_persist_work, streamrate_persist_work_handler);
+	k_work_init(&follow_through_persist_work, follow_through_persist_work_handler);
 	k_work_init(&trace_persist_work, trace_persist_work_handler);
+	k_work_init_delayable(&trace_freeze_work, trace_freeze_work_handler);
 	k_work_init_delayable(&trace_upload_work, trace_upload_work_handler);
+	k_work_init(&adv_start_work, adv_start_work_handler);
 	err = settings_subsys_init();
 	if (err) {
 		printk("# settings init failed: %d (shot count will not persist)\n",
@@ -2221,7 +2371,9 @@ int main(void)
 	print_float_signed("# pitch_offset restored:", pitch_offset_deg, 2);
 	printk("# buffer_rate restored: %d Hz\n", buffer_rate_hz);
 	printk("# buffer_nvs restored: %s\n", buffer_nvs_enabled ? "ON" : "OFF");
+	printk("# auto_sleep restored: %s\n", auto_sleep_enabled ? "ON" : "OFF");
 	printk("# streamrate restored: 1110/%d Hz\n", ble_stream_divider);
+	printk("# follow_through restored: %u ms\n", follow_through_ms);
 
 	init_user_led();
 	init_user_btn();
@@ -2345,7 +2497,8 @@ int main(void)
 					decimate_counter = 0;
 					int16_t r_cdeg = clamp_i16(scale_float(roll_deg, SCALE_CDEG));
 					int16_t p_cdeg = clamp_i16(scale_float(pitch_deg, SCALE_CDEG));
-					ram_trace_push(r_cdeg, p_cdeg);
+					int16_t y_cdeg = clamp_i16(scale_float(yaw_deg, SCALE_CDEG));
+					ram_trace_push(r_cdeg, p_cdeg, y_cdeg);
 				}
 			}
 
@@ -2361,12 +2514,14 @@ int main(void)
 			}
 
 			if (detect_shot(&avg_accel, &avg_gyro, uptime_us(), roll_deg,
-					pitch_deg)) {
+					pitch_deg, yaw_deg)) {
 				shot_detected = true;
 				last_activity_time_ms = k_uptime_get();
 				(void)notify_openfloat_shot_event(2);
 				k_work_submit(&shot_persist_work);
-				k_work_submit(&shot_log_persist_work);
+				if (last_shot_queued_for_storage) {
+					k_work_submit(&shot_log_persist_work);
+				}
 			}
 			if (ble_send_count_sync) {
 				ble_send_count_sync = false;
@@ -2401,25 +2556,20 @@ int main(void)
 							  pitch_deg, yaw_deg);
 			}
 
-			if (stored_shot_upload_requested ||
-			    stored_shot_upload_in_progress) {
-				ble_payload_frames = 0;
-			} else {
-				if ((telemetry_sequence % ble_stream_divider) == 0) {
-					offset = ble_payload_frames *
-						 OPENFLOAT_BLE_FRAME_SIZE;
-					build_openfloat_live_binary(
-						&ble_payload[offset],
-						telemetry_sequence, OUTPUT_DT_US * ble_stream_divider,
-						&avg_accel, &avg_gyro, flags);
-					ble_payload_frames++;
-					if (ble_payload_frames >=
-					    OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION) {
-						notify_openfloat_live_binary(
-							ble_payload, sizeof(ble_payload),
-							ble_payload_frames);
-						ble_payload_frames = 0;
-					}
+			if ((telemetry_sequence % ble_stream_divider) == 0) {
+				offset = ble_payload_frames *
+					 OPENFLOAT_BLE_FRAME_SIZE;
+				build_openfloat_live_binary(
+					&ble_payload[offset],
+					telemetry_sequence, OUTPUT_DT_US * ble_stream_divider,
+					&avg_accel, &avg_gyro, &q, flags);
+				ble_payload_frames++;
+				if (ble_payload_frames >=
+				    OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION) {
+					notify_openfloat_live_binary(
+						ble_payload, sizeof(ble_payload),
+						ble_payload_frames);
+					ble_payload_frames = 0;
 				}
 			}
 
@@ -2434,13 +2584,15 @@ int main(void)
 		bool should_sleep = false;
 
 
-		if (current_conn == NULL) {
-			if (inactive_dur > disconnected_sleep_timeout_ms) {
-				should_sleep = true;
-			}
-		} else {
-			if (inactive_dur > CONNECTED_SLEEP_TIMEOUT_MS) {
-				should_sleep = true;
+		if (auto_sleep_enabled) {
+			if (current_conn == NULL) {
+				if (inactive_dur > disconnected_sleep_timeout_ms) {
+					should_sleep = true;
+				}
+			} else {
+				if (inactive_dur > CONNECTED_SLEEP_TIMEOUT_MS) {
+					should_sleep = true;
+				}
 			}
 		}
 

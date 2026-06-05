@@ -27,8 +27,8 @@ NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
-FRAME_SIZE = 20
-FRAME_STRUCT = struct.Struct("<2sBBHHhhhhhh")
+FRAME_SIZE = 28
+FRAME_STRUCT = struct.Struct("<2sBBHHhhhhhhhhhh")
 
 
 @dataclass
@@ -44,6 +44,10 @@ class Sample:
     gx_dps: float
     gy_dps: float
     gz_dps: float
+    qw: float
+    qx: float
+    qy: float
+    qz: float
     flags: int
     checksum_ok: bool
     shot_count: Optional[int] = None
@@ -135,6 +139,10 @@ def parse_binary_frame(frame: bytes) -> Optional[Sample]:
         gx_q4,
         gy_q4,
         gz_q4,
+        qw_q10k,
+        qx_q10k,
+        qy_q10k,
+        qz_q10k,
     ) = FRAME_STRUCT.unpack(frame)
 
     # type 1 = live sample; type 2 = shot event; type 3 = count sync. Only live
@@ -164,6 +172,10 @@ def parse_binary_frame(frame: bytes) -> Optional[Sample]:
         gx_dps=gx_q4 / 16.0,
         gy_dps=gy_q4 / 16.0,
         gz_dps=gz_q4 / 16.0,
+        qw=qw_q10k / 10000.0,
+        qx=qx_q10k / 10000.0,
+        qy=qy_q10k / 10000.0,
+        qz=qz_q10k / 10000.0,
         flags=0,
         checksum_ok=True,
     )
@@ -190,6 +202,10 @@ def parse_ofraw_line(line: str) -> Optional[Sample]:
             gx_dps=int(parts[8]) / 1000.0,
             gy_dps=int(parts[9]) / 1000.0,
             gz_dps=int(parts[10]) / 1000.0,
+            qw=float(parts[14]) / 1000000.0,
+            qx=float(parts[15]) / 1000000.0,
+            qy=float(parts[16]) / 1000000.0,
+            qz=float(parts[17]) / 1000000.0,
             flags=0,
             checksum_ok=True,
             shot_count=int(parts[18]),
@@ -229,10 +245,10 @@ async def find_device(args):
         name = device.name or ""
         if args.name and name == args.name:
             print(f"Found {name} at {device.address}")
-            return device.address
+            return device
         if args.name_prefix and name.startswith(args.name_prefix):
             print(f"Found {name} at {device.address}")
-            return device.address
+            return device
 
     print("No matching BLE device found.")
     print("Visible devices:")

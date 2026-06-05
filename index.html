@@ -4,7 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-7">
+  <link rel="stylesheet" href="styles.css?v=shot-store-57">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <meta name="theme-color" content="#061014">
 </head>
 <body>
   <div class="app">
@@ -16,6 +20,26 @@
           <p class="subtitle">Real-time bow movement, release quality, and practice history</p>
         </div>
       </div>
+
+      <!-- Tab Navigation Bar -->
+      <nav class="tab-navigation" aria-label="Main App Navigation">
+        <button id="navDashboardBtn" class="nav-tab active">
+          <span class="nav-icon">📈</span> Dashboard
+        </button>
+        <button id="navRecordBtn" class="nav-tab">
+          <span class="nav-icon">🔴</span> Record
+        </button>
+        <button id="navHistoryBtn" class="nav-tab">
+          <span class="nav-icon">🎯</span> Saved Shots
+        </button>
+        <button id="navAnalysisBtn" class="nav-tab">
+          <span class="nav-icon">📊</span> Analysis
+        </button>
+        <button id="navSettingsBtn" class="nav-tab">
+          <span class="nav-icon">⚙️</span> Settings
+        </button>
+      </nav>
+
       <div class="header-status-group">
         <div id="batteryBadge" class="status battery-status hidden" title="Battery Level">
           <span class="battery-icon">🔋</span>
@@ -25,255 +49,597 @@
           <span class="dot"></span>
           <span id="syncText">Local-Only</span>
         </div>
-        <div id="statusBadge" class="status">
+        <div id="statusBadge" class="status clickable" title="Connect Sensor">
           <span class="dot"></span>
           <span id="statusText">Disconnected</span>
         </div>
       </div>
     </header>
 
-    <main>
-      <aside class="panel controls">
-        <div class="field">
-          <label for="transportSelect">Transport</label>
-          <select id="transportSelect">
-            <option value="ble" selected>Bluetooth (BLE)</option>
-          </select>
-        </div>
+    <!-- Mobile Compatibility Banner -->
+    <div id="mobileAlertBanner" class="mobile-alert-banner hidden">
+      <span class="warning-icon">⚠️</span>
+      <div class="alert-content">
+        <strong>Browser Notice</strong>
+        <p id="mobileAlertText">Web Bluetooth / Serial is not supported in this browser.</p>
+      </div>
+      <button id="closeMobileAlertBtn" class="close-alert-btn">&times;</button>
+    </div>
 
-        <button id="connectBtn" class="primary">Connect Sensor</button>
-        <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
-        <button id="demoBtn">Run Practice Demo</button>
-        <button id="saveManualBtn" class="accent" disabled>Save Hold Capture</button>
-        <button id="zeroBtn" class="accent" style="margin-top: 6px;" disabled>Zero Bow Calibration</button>
-        <div style="font-size: 11px; color: var(--muted); margin: 4px 0 10px 0; text-align: center;">
-          Offsets: Cant <span id="cantOffsetVal">0.0</span>°, Pitch <span id="pitchOffsetVal">0.0</span>°
-        </div>
-
-        <div class="practice-card">
-          <div>
-            <span class="eyebrow">Practice Mode</span>
-            <strong>Blank Bale</strong>
-          </div>
-          <p>Focuses scoring on steadiness, bow cant, and release motion.</p>
-        </div>
-
-        <div class="field">
-          <label for="thresholdSlider">Release Threshold - <span id="thresholdValue">12.0</span> g</label>
-          <input type="range" id="thresholdSlider" min="2" max="30" step="0.5" value="12">
-          <p class="note">On-device detection threshold, sent to the firmware over BLE. Requires a Bluetooth connection.</p>
-        </div>
-
-        <div class="field">
-          <label for="wakeSlider">Wake-up Sensitivity - <span id="wakeValue">2.0</span> g</label>
-          <input type="range" id="wakeSlider" min="0.5" max="8.0" step="0.1" value="2.0">
-          <p class="note">Trigger threshold to wake the sensor from deep sleep. A lower value is more sensitive. Requires a Bluetooth connection.</p>
-        </div>
-
-        <div class="field">
-          <label for="sleepTimeoutSlider">Sleep Timeout - <span id="sleepTimeoutValue">10</span> s</label>
-          <input type="range" id="sleepTimeoutSlider" min="5" max="600" step="5" value="10">
-          <p class="note">Idle duration in seconds before entering deep sleep when disconnected. Requires a Bluetooth connection.</p>
-        </div>
-
-        <div class="field">
-          <label for="sleepSensSlider">Sleep Sensitivity - <span id="sleepSensValue">0.15</span> g</label>
-          <input type="range" id="sleepSensSlider" min="0.05" max="0.50" step="0.01" value="0.15">
-          <p class="note">Accelerometer movement threshold to keep the device awake. A lower value is more sensitive. Requires a Bluetooth connection.</p>
-        </div>
-
-        <div class="field">
-          <label for="bufferRateSlider">Buffer Rate - <span id="bufferRateValue">52 Hz (6s hold)</span></label>
-          <input type="range" id="bufferRateSlider" min="0" max="3" step="1" value="1">
-          <p class="note">On-device trace buffering rate. Off disables offline traces, 52 Hz buffers a 6-second hold window, 104 Hz buffers a 3-second hold window, and 208 Hz buffers a high-resolution 1.5-second hold window. Requires a Bluetooth connection.</p>
-        </div>
-
-        <div class="field">
-          <label for="streamRateSlider">Live Stream Rate - <span id="streamRateValue">1110 Hz (Max)</span></label>
-          <input type="range" id="streamRateSlider" min="0" max="4" step="1" value="4">
-          <p class="note">Averaged live telemetry update rate sent over BLE: 55 Hz, 111 Hz, 222 Hz, 555 Hz, or 1110 Hz (Max). Lower rates reduce BLE traffic. Requires a Bluetooth connection.</p>
-        </div>
+    <main class="main-workspace">
+      <!-- 1. Dashboard View (Active by default) -->
+      <div id="tabDashboard" class="tab-view active-view">
+        <section class="dashboard">
 
 
-        <div class="field">
-          <label for="bufferNVSToggle">
-            <input type="checkbox" id="bufferNVSToggle" checked style="vertical-align: middle; margin-right: 6px;">
-            Persist Traces Offline (RRAM)
-          </label>
-          <p class="note">When checked, traces are saved to on-device non-volatile memory (RRAM) to survive deep sleep/power down, but introduces slight write overhead. When unchecked, traces stay in SRAM only.</p>
-        </div>
+          <div class="visualizer-row">
+            <section class="orientation-visualizer panel" aria-label="Live bow orientation visualizer">
+              <div class="orientation-copy">
+                <span class="eyebrow">Calibration View</span>
+                <h2>Bow Orientation</h2>
+              </div>
+              <div class="orientation-readouts">
+                <span>Cal Roll <strong id="orientationRollValue">0.0</strong> deg</span>
+                <span>Cal Pitch <strong id="orientationPitchValue">0.0</strong> deg</span>
+                <span>Yaw <strong id="orientationYawValue">0.0</strong> deg</span>
+              </div>
+              <canvas id="orientationCanvas"></canvas>
+            </section>
 
-        <p class="note">
-          BLE decodes the 20-byte <strong>OF</strong> live frame (proto, type, seq, dt_us,
-          accel mg, gyro dps). Web Bluetooth needs Chrome or Edge
-          over https or localhost. The "Run Demo Stream" button triggers synthetic sensor data.
-        </p>
+            <div class="panel level-card" id="levelCard">
+              <div class="level-head">
+                <span>Bow Cant</span>
+                <strong><span id="cantValue">0.0</span><small> deg</small></strong>
+              </div>
+              <div class="bubble-level" aria-label="Live bow cant bubble level">
+                <div class="level-tick level-tick-left"></div>
+                <div class="level-center-band"></div>
+                <div class="level-tick level-tick-right"></div>
+                <div id="levelBubble" class="level-bubble"></div>
+              </div>
+              <small id="levelAlertText">Level</small>
+              <div class="level-controls">
+                <button id="toggleLevelTuneBtn" class="mini-btn secondary-btn" style="margin-bottom: 8px; width: 100%;">Tune Bubble Settings</button>
+                
+                <div id="levelTuneSection" class="level-tune-section hidden" style="margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 200px;">
+                  <div class="tune-field">
+                    <div class="tune-label-row" style="display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 2px;">
+                      <label for="levelRangeSlider" style="cursor: pointer;">Level Range (Scale)</label>
+                      <span><strong id="levelRangeValue" style="color: var(--text);">12</strong>°</span>
+                    </div>
+                    <input type="range" id="levelRangeSlider" min="5" max="30" step="1" value="12" style="width: 100%; cursor: pointer;">
+                  </div>
+                  <div class="tune-field">
+                    <div class="tune-label-row" style="display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 2px;">
+                      <label for="levelToleranceSlider" style="cursor: pointer;">Sweet Spot (Tolerance)</label>
+                      <span><strong id="levelToleranceValue" style="color: var(--text);">2.0</strong>°</span>
+                    </div>
+                    <input type="range" id="levelToleranceSlider" min="0.5" max="5.0" step="0.5" value="2.0" style="width: 100%; cursor: pointer;">
+                  </div>
+                </div>
 
-        <div class="panel">
-          <table>
-            <tbody>
-              <tr><td>Protocol</td><td id="protocolValue">--</td></tr>
-              <tr><td>Frame Type</td><td id="typeValue">--</td></tr>
-              <tr><td>Source</td><td id="sourceValue">--</td></tr>
-              <tr><td>Last Seq</td><td id="seqValue">--</td></tr>
-              <tr><td>Packet Loss</td><td id="lossValue">0</td></tr>
-              <tr><td>Last dt_us</td><td id="dtValue">--</td></tr>
-              <tr><td>Valid Frames</td><td id="frameCountValue">0</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </aside>
-
-      <section class="dashboard">
-        <section class="coach-strip">
-          <div class="score-panel panel">
-            <div class="score-ring" aria-label="Current form score">
-              <span id="formScoreValue">--</span>
-              <small>Form Score</small>
-            </div>
-            <div class="score-copy">
-              <span class="eyebrow">Live Feedback</span>
-              <strong id="coachTitle">Waiting for movement</strong>
-              <p id="coachText">Connect a sensor or run the demo to start reading hold stability.</p>
+                <button id="zeroBtn" class="accent" disabled>Zero Calibration</button>
+                <div class="level-yaw-row">
+                  <button id="zeroYawBtn" class="mini-btn" disabled>Calibrate Yaw</button>
+                  <label for="modelIgnoreYawToggle" class="toggle-label" title="Ignore model yaw during display. Yaw may drift over time.">
+                    <input type="checkbox" id="modelIgnoreYawToggle">
+                    Ignore Yaw <span class="drift-warning" title="Yaw angles calculated from sensor gyros naturally accumulate error and drift over time.">(may drift)</span>
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div class="panel phase-panel">
-            <div class="phase-item">
-              <span>Hold</span>
-              <strong id="holdStabilityValue">--</strong>
-              <small>steady aim</small>
+          <div class="panel chart-panel">
+            <div class="panel-head">
+              <div class="chart-header-title">
+                <h2 id="chartTitle">Shot Sequence Trace</h2>
+                <div class="chart-metrics-inline">
+                  <span class="inline-metric-item" title="Live telemetry stream rate">
+                    <span class="metric-dot live"></span>
+                    <span id="hzValue">0</span> Hz
+                  </span>
+                  <span class="metric-divider">/</span>
+                  <span class="inline-metric-item" title="Shots detected during active session">
+                    <strong>Shots:</strong> <span id="shotCountValue">0</span>
+                  </span>
+                </div>
+              </div>
+              <div class="chart-toggles">
+                <button id="viewTraceBtn" class="toggle-btn active">Motion</button>
+                <button id="viewTargetBtn" class="toggle-btn">Pin Float</button>
+              </div>
             </div>
-            <div class="phase-item">
-              <span>Release</span>
-              <strong id="releaseQualityValue">--</strong>
-              <small>break quality</small>
+            <div id="reviewBanner" class="review-overlay hidden">
+              <div class="review-details">
+                <strong>Trace Review Mode</strong>
+                <span id="reviewInfo">--</span>
+              </div>
+              <div id="reviewTraceControls" class="review-trace-controls hidden" aria-label="Pin float replay controls">
+                <button id="replayTraceBtn" class="mini-btn">Replay</button>
+                <div class="scrub-controls" aria-label="Trace timeline scrubber">
+                  <div id="tracePhaseRail" class="trace-phase-rail" aria-hidden="true">
+                    <span class="phase-hold"></span>
+                    <span class="phase-break"></span>
+                    <span class="phase-release"></span>
+                    <span class="phase-follow"></span>
+                  </div>
+                  <input id="traceScrubSlider" type="range" min="0" max="1000" step="1" value="1000">
+                  <span id="traceScrubValue">0.0s</span>
+                </div>
+                <div class="zoom-controls" aria-label="Trace zoom controls">
+                  <button id="zoomOutBtn" class="mini-icon-btn" title="Zoom out">-</button>
+                  <span id="zoomValue" class="zoom-value">1.0x</span>
+                  <button id="zoomInBtn" class="mini-icon-btn" title="Zoom in">+</button>
+                </div>
+              </div>
+              <button id="exitReviewBtn" class="primary mini-btn">Exit Review</button>
             </div>
-            <div class="phase-item">
-              <span>Follow</span>
-              <strong id="followThroughValue">--</strong>
-              <small>after-shot motion</small>
+            <canvas id="traceCanvas"></canvas>
+          </div>
+
+          <!-- Recent Shots Panel -->
+          <div class="panel recent-shots-panel" id="recentShotsPanel">
+            <div class="panel-head">
+              <h2>Recent Shots</h2>
+              <span class="note" style="font-size: 11px;">Last 5 Shots</span>
+            </div>
+            <div class="recent-shots-grid" id="recentShotsList">
+              <p class="note" style="padding: 12px; text-align: center; width: 100%;">No shots captured in this session yet.</p>
             </div>
           </div>
         </section>
+      </div>
 
-        <div class="metric-grid">
-          <div class="panel metric">
-            <span>Stream Rate</span>
-            <strong id="hzValue">0</strong>
-            <small>frames/sec</small>
-          </div>
-          <div class="panel metric">
-            <span>Accel Magnitude</span>
-            <strong id="accelMagValue">0.00</strong>
-            <small>g</small>
-          </div>
-          <div class="panel metric">
-            <span>Gyro Magnitude</span>
-            <strong id="gyroMagValue">0</strong>
-            <small>deg/sec</small>
-          </div>
-          <div class="panel metric">
-            <span>Shots Detected</span>
-            <strong id="shotCountValue">0</strong>
-            <small>this session</small>
-          </div>
-          <div class="panel metric">
-            <span>Bow Cant</span>
-            <strong id="cantValue">0.0</strong>
-            <small>degrees</small>
-          </div>
-        </div>
-
-        <div class="panel chart-panel">
-          <div class="panel-head">
-            <h2 id="chartTitle">Shot Sequence Trace</h2>
-            <div class="chart-toggles">
-              <button id="viewTraceBtn" class="toggle-btn active">Motion</button>
-              <button id="viewTargetBtn" class="toggle-btn">Pin Float</button>
+      <!-- 4. Manual Record View (Hidden by default) -->
+      <div id="tabRecord" class="tab-view hidden-view">
+        <section class="record-workspace">
+          <div class="panel settings-card record-card">
+            <h3>Manual Trace Recorder</h3>
+            <p class="note">
+              Record long traces of custom duration directly in the browser. Perfect for capturing full ends, blank bale drills, or hold testing.
+            </p>
+            
+            <div class="field" style="margin-top: 10px;">
+              <label for="recordLabelInput">Recording Label / Title</label>
+              <input type="text" id="recordLabelInput" placeholder="e.g. End 1 - 70m Practice" value="">
             </div>
-          </div>
-          <div id="reviewBanner" class="review-overlay hidden">
-            <div class="review-details">
-              <strong>Trace Review Mode</strong>
-              <span id="reviewInfo">--</span>
-            </div>
-            <div id="reviewTraceControls" class="review-trace-controls hidden" aria-label="Pin float replay controls">
-              <button id="replayTraceBtn" class="mini-btn">Replay</button>
-              <div class="zoom-controls" aria-label="Trace zoom controls">
-                <button id="zoomOutBtn" class="mini-icon-btn" title="Zoom out">-</button>
-                <span id="zoomValue" class="zoom-value">1.0x</span>
-                <button id="zoomInBtn" class="mini-icon-btn" title="Zoom in">+</button>
+            
+            <div class="record-status-box" id="recordStatusBox">
+              <div class="record-status-badge" id="recordStatusBadge">
+                <span class="dot"></span>
+                <span id="recordStatusText">Disconnected</span>
+              </div>
+              
+              <div class="record-status-display">
+                <div class="record-status-item">
+                  <span>Duration</span>
+                  <strong id="recordTimeText">0.0s</strong>
+                </div>
+                <div class="record-status-item">
+                  <span>Samples</span>
+                  <strong id="recordSamplesText">0</strong>
+                </div>
               </div>
             </div>
-            <button id="exitReviewBtn" class="primary mini-btn">Exit Review</button>
-          </div>
-          <canvas id="traceCanvas"></canvas>
-        </div>
 
-        <div class="panel shot-breakdown">
-          <div class="panel-head">
-            <h2>Last Shot Breakdown</h2>
-            <span id="lastShotTimeValue" class="timestamp-pill">No shots yet</span>
-          </div>
-          <div class="breakdown-grid">
-            <div>
-              <span>Score</span>
-              <strong id="lastShotScoreValue">--</strong>
-            </div>
-            <div>
-              <span>Peak Force</span>
-              <strong id="lastPeakValue">--</strong>
-            </div>
-            <div>
-              <span>Cant</span>
-              <strong id="lastCantValue">--</strong>
-            </div>
-            <div>
-              <span>Pitch</span>
-              <strong id="lastPitchValue">--</strong>
+            <div class="settings-actions-group" style="display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 8px;">
+              <button id="startRecordBtn" class="accent" disabled>Start Recording</button>
+              <button id="stopRecordBtn" class="primary hidden">Stop &amp; Save</button>
+              <button id="discardRecordBtn" class="danger hidden">Discard</button>
             </div>
           </div>
-        </div>
+        </section>
+      </div>
 
-        <div class="readouts">
-          <div class="panel">
-            <table>
-              <tbody>
-                <tr><td>Accel X</td><td id="axValue">0 mg</td></tr>
-                <tr><td>Accel Y</td><td id="ayValue">0 mg</td></tr>
-                <tr><td>Accel Z</td><td id="azValue">0 mg</td></tr>
-                <tr><td>Sample Time</td><td id="sampleTimeValue">--</td></tr>
-              </tbody>
-            </table>
+      <!-- 2. Shot History View (Hidden by default) -->
+      <div id="tabHistory" class="tab-view hidden-view">
+        <section class="history-workspace">
+          <div class="panel history-header-panel">
+            <div class="panel-head">
+              <h2>Saved Shot Logs</h2>
+              <p class="note">Click on any past shot below to review its complete 2D telemetry trace and scores.</p>
+            </div>
           </div>
-          <div class="panel">
-            <table>
-              <tbody>
-                <tr><td>Gyro X</td><td id="gxValue">0 dps</td></tr>
-                <tr><td>Gyro Y</td><td id="gyValue">0 dps</td></tr>
-                <tr><td>Gyro Z</td><td id="gzValue">0 dps</td></tr>
-                <tr><td>&nbsp;</td><td>&nbsp;</td></tr>
-              </tbody>
-            </table>
+          <div class="history-list-wrapper">
+            <div id="historyList" class="history-list">
+              <p class="note" style="padding: 24px; text-align: center;">No saved shots yet.</p>
+            </div>
           </div>
-        </div>
+        </section>
+      </div>
 
-        <div class="panel tabs-panel">
-          <div class="tabs-header">
-            <button id="showLogTabBtn" class="tab-btn active">Live Terminal Log</button>
-            <button id="showHistoryTabBtn" class="tab-btn">Saved Shots History</button>
+      <!-- 3. Sensor Settings View (Hidden by default) -->
+      <div id="tabSettings" class="tab-view hidden-view">
+        <section class="settings-workspace">
+          <!-- Card A: Connection & Calibration -->
+          <div class="panel settings-card">
+            <h3>Connection &amp; Calibration</h3>
+            <div class="field" style="margin-top: 10px;">
+              <label for="transportSelect">Transport</label>
+              <select id="transportSelect">
+                <option value="ble" selected>Bluetooth (BLE)</option>
+              </select>
+            </div>
+            <div class="settings-actions-group" style="display: grid; gap: 8px; margin-top: 12px;">
+              <button id="connectBtn" class="primary">Connect Sensor</button>
+              <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
+              <button id="demoBtn">Run Practice Demo</button>
+              <button id="saveManualBtn" class="accent" disabled>Save Hold Capture</button>
+            </div>
+            <div style="font-size: 11px; color: var(--muted); margin: 8px 0 0 0; text-align: center;">
+              Offsets: Cant <span id="cantOffsetVal">0.0</span>°, Pitch <span id="pitchOffsetVal">0.0</span>°
+            </div>
           </div>
-          <div id="eventLog" class="tab-content log"></div>
-          <div id="shotHistoryTab" class="tab-content hidden">
-            <div class="history-list-wrapper">
-              <div id="historyList" class="history-list">
-                <p class="note" style="padding: 24px; text-align: center;">No saved shots yet.</p>
+
+          <!-- Card B: Telemetry & Buffer Settings -->
+          <div class="panel settings-card">
+            <h3>Telemetry &amp; Buffer</h3>
+            <div class="field" style="margin-top: 10px;">
+              <label for="thresholdSlider">Release Threshold - <span id="thresholdValue">12.0</span> g</label>
+              <input type="range" id="thresholdSlider" min="2" max="30" step="0.5" value="12">
+              <p class="note">Impulse threshold for bow release detection, set in BLE firmware.</p>
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="followThroughSlider">Follow-Through - <span id="followThroughValueMs">1.5</span> s</label>
+              <input type="range" id="followThroughSlider" min="0" max="3000" step="100" value="1500">
+              <p class="note">Post-release recording delay before freezing trace.</p>
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="bufferRateSlider">Trace Buffer Rate - <span id="bufferRateValue">Device 52 Hz / Web 208 Hz</span></label>
+              <input type="range" id="bufferRateSlider" min="0" max="3" step="1" value="1">
+              <p class="note">Same capture setting for firmware recovery and browser shot review; the browser stores a higher-rate local trace.</p>
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="streamRateSlider">Live Stream Rate - <span id="streamRateValue">1110 Hz (Max)</span></label>
+              <input type="range" id="streamRateSlider" min="0" max="4" step="1" value="4">
+              <p class="note">Telemetry frame transmission rate over BLE.</p>
+            </div>
+            <div class="field" style="margin-top: 12px;">
+              <label for="bufferNVSToggle" style="display: inline-flex; align-items: center; cursor: pointer;">
+                <input type="checkbox" id="bufferNVSToggle" checked style="vertical-align: middle; margin-right: 8px;">
+                Persist Traces Offline (RRAM)
+              </label>
+              <p class="note">Saves traces to non-volatile flash so they survive deep sleep power down.</p>
+            </div>
+          </div>
+
+          <!-- Card Mount: Module Orientation -->
+          <div class="panel settings-card mount-orientation-card">
+            <h3>Module Mount Orientation</h3>
+            <div class="field" style="margin-top: 10px;">
+              <label for="mountOrientationSelect">XIAO position on bow</label>
+              <select id="mountOrientationSelect">
+                <option value="firmware-x-90" selected>Current firmware mount</option>
+                <option value="firmware-x-90-flipped">Current mount, inverted sign</option>
+                <option value="face-out-usb-up">Face out, USB up</option>
+                <option value="face-out-usb-down">Face out, USB down</option>
+                <option value="face-out-usb-left">Face out, USB left</option>
+                <option value="face-out-usb-right">Face out, USB right</option>
+                <option value="custom">Custom rotated mount</option>
+              </select>
+              <p id="mountOrientationDescription" class="note">Preview the selected board mounting direction before updating firmware axis mapping.</p>
+            </div>
+            <canvas id="mountOrientationCanvas" aria-label="Bow and XIAO module mount orientation preview"></canvas>
+            <div class="mount-view-controls">
+              <div class="field">
+                <label for="mountViewRollSlider">View roll - <span id="mountViewRollValue">0</span> deg</label>
+                <input type="range" id="mountViewRollSlider" min="-180" max="180" step="1" value="0">
+              </div>
+            </div>
+            <div class="mount-position-controls" aria-label="Move XIAO module preview along bow axes">
+              <div class="field">
+                <label for="mountPositionXSlider">Bow X - <span id="mountPositionXValue">0.00</span></label>
+                <input type="range" id="mountPositionXSlider" min="-0.8" max="0.8" step="0.01" value="0">
+              </div>
+              <div class="field">
+                <label for="mountPositionYSlider">Bow Y - <span id="mountPositionYValue">0.00</span></label>
+                <input type="range" id="mountPositionYSlider" min="-1.2" max="1.2" step="0.01" value="0">
+              </div>
+              <div class="field">
+                <label for="mountPositionZSlider">Bow Z - <span id="mountPositionZValue">0.00</span></label>
+                <input type="range" id="mountPositionZSlider" min="-0.8" max="0.8" step="0.01" value="0">
+              </div>
+            </div>
+            <div class="mount-rotate-controls" aria-label="Rotate IMU module in 90 degree steps">
+              <button id="mountRotateXBtn" type="button">Rotate 90 deg Bow X</button>
+              <button id="mountRotateYBtn" type="button">Rotate 90 deg Bow Y</button>
+              <button id="mountRotateZBtn" type="button">Rotate 90 deg Bow Z</button>
+              <button id="mountResetBtn" type="button">Reset Preset</button>
+            </div>
+            <div class="mount-axis-grid" aria-label="Firmware axis mapping">
+              <span>Bow X <strong id="mountAxisXValue">IMU X</strong></span>
+              <span>Bow Y <strong id="mountAxisYValue">-IMU Z</strong></span>
+              <span>Bow Z <strong id="mountAxisZValue">IMU Y</strong></span>
+            </div>
+            <p id="mountFirmwareNote" class="note">
+              Firmware-computed BLE/serial angles need the same mount mapping compiled into the device.
+            </p>
+          </div>
+
+          <!-- Card Model: Blender model alignment -->
+          <div class="panel settings-card model-alignment-card">
+            <h3>3D Model Alignment</h3>
+            <p class="note">
+              Adjust only the imported bow model. Use this when the sensor data is right but the Blender bow leans, rolls, or pitches the wrong way.
+            </p>
+            <div class="model-rotate-controls" aria-label="Rotate Blender bow model in 90 degree steps">
+              <button id="modelRotateXBtn" type="button">Rotate 90 deg Model X</button>
+              <button id="modelRotateYBtn" type="button">Rotate 90 deg Model Y</button>
+              <button id="modelRotateZBtn" type="button">Rotate 90 deg Model Z</button>
+              <button id="modelResetBtn" type="button">Reset Model</button>
+            </div>
+            <div class="model-toggle-grid">
+              <label for="modelInvertRollToggle">
+                <input type="checkbox" id="modelInvertRollToggle">
+                Invert live cant / roll
+              </label>
+              <label for="modelInvertPitchToggle">
+                <input type="checkbox" id="modelInvertPitchToggle">
+                Invert live pitch
+              </label>
+              <label for="modelSwapRollPitchToggle">
+                <input type="checkbox" id="modelSwapRollPitchToggle">
+                Swap live cant / pitch
+              </label>
+            </div>
+            <div class="model-axis-grid" aria-label="Blender model alignment">
+              <span>Model X <strong id="modelAxisXValue">0 deg</strong></span>
+              <span>Model Y <strong id="modelAxisYValue">0 deg</strong></span>
+              <span>Model Z <strong id="modelAxisZValue">0 deg</strong></span>
+            </div>
+          </div>
+
+          <!-- Card C: Sensor Power Settings -->
+          <div class="panel settings-card">
+            <h3>Power Management</h3>
+            <div class="field" style="margin-top: 10px;">
+              <label for="wakeSlider">Wake-up Sensitivity - <span id="wakeValue">2.0</span> g</label>
+              <input type="range" id="wakeSlider" min="0.5" max="8.0" step="0.1" value="2.0">
+              <p class="note">Acceleration threshold needed to wake the chip from deep sleep.</p>
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="sleepTimeoutSlider">Sleep Timeout - <span id="sleepTimeoutValue">300</span> s</label>
+              <input type="range" id="sleepTimeoutSlider" min="5" max="600" step="5" value="300">
+              <p class="note">Idle duration before sleep when disconnected.</p>
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="sleepSensSlider">Sleep Sensitivity - <span id="sleepSensValue">0.15</span> g</label>
+              <input type="range" id="sleepSensSlider" min="0.05" max="0.50" step="0.01" value="0.15">
+              <p class="note">Movement threshold to keep device awake while idle.</p>
+            </div>
+            <div class="field" style="margin-top: 12px;">
+              <label for="sleepEnableToggle" style="display: inline-flex; align-items: center; cursor: pointer;">
+                <input type="checkbox" id="sleepEnableToggle" checked style="vertical-align: middle; margin-right: 8px;">
+                Enable Device Auto-Sleep
+              </label>
+              <p class="note">If disabled, the device remains awake indefinitely until powered off.</p>
+            </div>
+          </div>
+
+          <!-- Card Bow Profiles: Bow Profile Manager -->
+          <div class="panel settings-card">
+            <h3>Bow Profile Manager</h3>
+            <div class="field" style="margin-top: 10px;">
+              <label for="bowProfileSelect">Select Profile</label>
+              <select id="bowProfileSelect">
+                <option value="">Default Bow</option>
+              </select>
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="bowModelInput">Bow Name / Model</label>
+              <input type="text" id="bowModelInput" placeholder="e.g. Hoyt Formula Xi" value="">
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="drawWeightInput">Draw Weight (lbs)</label>
+              <input type="number" id="drawWeightInput" min="10" max="90" step="0.5" placeholder="e.g. 42" value="">
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="stabilizerSetupInput">Stabilizer Setup</label>
+              <input type="text" id="stabilizerSetupInput" placeholder="e.g. 30in Front / 12in Side" value="">
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="bowNotesInput">Notes</label>
+              <textarea id="bowNotesInput" placeholder="e.g. tiller height, brace height..." style="resize: vertical; min-height: 50px;"></textarea>
+            </div>
+            <div class="settings-actions-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
+              <button id="saveBowProfileBtn" class="primary">Save Profile</button>
+              <button id="deleteBowProfileBtn" class="danger">Delete</button>
+            </div>
+            <div style="margin-top: 8px;">
+              <button id="newBowProfileBtn" class="accent" style="width: 100%;">Create New Profile</button>
+            </div>
+          </div>
+
+          <!-- Card Sessions: Practice Session Tracker -->
+          <div class="panel settings-card">
+            <h3>Session Tracker</h3>
+            <div class="field" style="margin-top: 10px;">
+              <label for="sessionLocationInput">Session Name / Location</label>
+              <input type="text" id="sessionLocationInput" placeholder="e.g. Morning 70m Practice">
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="sessionBowSelect">Bow Profile for Session</label>
+              <select id="sessionBowSelect">
+                <option value="">Default Bow</option>
+              </select>
+            </div>
+            <div class="status-box" style="margin-top: 12px; padding: 10px; background: rgba(255, 255, 255, 0.03); border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.05);">
+              <span class="note" style="font-size: 11px;">Status:</span>
+              <strong id="sessionStatusText" style="display: block; font-size: 12px; margin-top: 2px; color: var(--muted);">No active session (Quick Practice)</strong>
+            </div>
+            <div class="settings-actions-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
+              <button id="startSessionBtn" class="primary">Start Session</button>
+              <button id="endSessionBtn" class="danger" disabled>End Session</button>
+            </div>
+          </div>
+
+          <!-- Card D: Diagnostics & Live Terminal -->
+          <div class="panel settings-card diagnostics-panel">
+            <h3>Diagnostics &amp; Log</h3>
+            <div class="diagnostics-grid" style="display: grid; gap: 12px; margin-top: 10px;">
+              <div class="panel readouts-sub">
+                <table>
+                  <tbody>
+                    <tr><td>Protocol</td><td id="protocolValue">--</td></tr>
+                    <tr><td>Frame Type</td><td id="typeValue">--</td></tr>
+                    <tr><td>Source</td><td id="sourceValue">--</td></tr>
+                    <tr><td>Last Seq</td><td id="seqValue">--</td></tr>
+                    <tr><td>Packet Loss</td><td id="lossValue">0</td></tr>
+                    <tr><td>Last dt_us</td><td id="dtValue">--</td></tr>
+                    <tr><td>Valid Frames</td><td id="frameCountValue">0</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="panel log-container" style="display: flex; flex-direction: column;">
+                <div id="eventLog" class="log" style="flex: 1; height: 160px; max-height: 160px;"></div>
               </div>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
+
+      <!-- 5. Performance Analysis View (Hidden by default) -->
+      <div id="tabAnalysis" class="tab-view hidden-view">
+        <section class="analysis-workspace">
+          <!-- Card A: Select Setups & Shots -->
+          <div class="panel settings-card compare-selector-card">
+            <h3>Bow Setup &amp; Shot Comparison</h3>
+            <p class="note">
+              Select two bow setups (profiles) to compare aggregate stats, and select specific shots to overlay their holding float paths and stability curves over time.
+            </p>
+            
+            <div class="compare-selector-grid">
+              <!-- Setup A -->
+              <div class="compare-column">
+                <span class="column-title" style="color: var(--green);">Setup A (Baseline)</span>
+                <div class="field">
+                  <label for="compareBowASelect">Bow Profile</label>
+                  <select id="compareBowASelect">
+                    <option value="">Default Bow</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="compareShotASelect">Shot / Record</label>
+                  <select id="compareShotASelect">
+                    <option value="">Select a shot...</option>
+                  </select>
+                </div>
+              </div>
+              
+              <!-- Setup B -->
+              <div class="compare-column">
+                <span class="column-title" style="color: var(--cyan);">Setup B (Comparison)</span>
+                <div class="field">
+                  <label for="compareBowBSelect">Bow Profile</label>
+                  <select id="compareBowBSelect">
+                    <option value="">Default Bow</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="compareShotBSelect">Shot / Record</label>
+                  <select id="compareShotBSelect">
+                    <option value="">Select a shot...</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            
+            <div class="settings-actions-group" style="margin-top: 10px;">
+              <button id="runCompareBtn" class="primary">Compare Setups &amp; Shots</button>
+            </div>
+          </div>
+
+          <!-- Setup Aggregate Stats Comparison Grid -->
+          <div class="compare-stats-panel hidden" id="compareStatsPanel">
+            <div class="panel compare-stat-card">
+              <span class="stat-label">Hold Stability (Avg)</span>
+              <div class="stat-row">
+                <div class="stat-col align-left">
+                  <span class="stat-val" style="color: var(--green);" id="compareHoldAVal">--%</span>
+                  <span class="stat-sub">Setup A</span>
+                </div>
+                <div class="stat-col align-right">
+                  <span class="stat-val" style="color: var(--cyan);" id="compareHoldBVal">--%</span>
+                  <span class="stat-sub">Setup B</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel compare-stat-card">
+              <span class="stat-label">Release Quality (Avg)</span>
+              <div class="stat-row">
+                <div class="stat-col align-left">
+                  <span class="stat-val" style="color: var(--green);" id="compareReleaseAVal">--%</span>
+                  <span class="stat-sub">Setup A</span>
+                </div>
+                <div class="stat-col align-right">
+                  <span class="stat-val" style="color: var(--cyan);" id="compareReleaseBVal">--%</span>
+                  <span class="stat-sub">Setup B</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel compare-stat-card">
+              <span class="stat-label">Follow-Through (Avg)</span>
+              <div class="stat-row">
+                <div class="stat-col align-left">
+                  <span class="stat-val" style="color: var(--green);" id="compareFollowAVal">--%</span>
+                  <span class="stat-sub">Setup A</span>
+                </div>
+                <div class="stat-col align-right">
+                  <span class="stat-val" style="color: var(--cyan);" id="compareFollowBVal">--%</span>
+                  <span class="stat-sub">Setup B</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel compare-stat-card">
+              <span class="stat-label">Form Score (Avg)</span>
+              <div class="stat-row">
+                <div class="stat-col align-left">
+                  <span class="stat-val" style="color: var(--green);" id="compareFormAVal">--</span>
+                  <span class="stat-sub">Setup A</span>
+                </div>
+                <div class="stat-col align-right">
+                  <span class="stat-val" style="color: var(--cyan);" id="compareFormBVal">--</span>
+                  <span class="stat-sub">Setup B</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Overlay Chart/Canvas Panel -->
+          <div class="panel chart-panel compare-chart-card hidden" id="compareChartCard">
+            <div class="panel-head">
+              <h2>Overlay Visualization</h2>
+              <div class="chart-toggles">
+                <button id="compareViewFloatBtn" class="toggle-btn active">Aim Float (Target)</button>
+                <button id="compareViewTimelineBtn" class="toggle-btn">Stability Curve</button>
+              </div>
+            </div>
+            <div class="compare-legend">
+              <span class="legend-item"><span class="legend-dot" style="background: var(--green);"></span> Setup A Shot</span>
+              <span class="legend-item"><span class="legend-dot" style="background: var(--cyan);"></span> Setup B Shot</span>
+            </div>
+            <canvas id="compareCanvas"></canvas>
+            
+            <!-- Comparison Replay & Scrubber Controls -->
+            <div id="compareTraceControls" class="review-trace-controls" aria-label="Comparison replay controls" style="margin-top: 10px;">
+              <button id="compareReplayBtn" class="mini-btn">Replay</button>
+              <div class="scrub-controls" aria-label="Comparison timeline scrubber">
+                <input id="compareScrubSlider" type="range" min="0" max="1000" step="1" value="1000">
+                <span id="compareScrubValue">0.0s</span>
+              </div>
+              <div class="zoom-controls" aria-label="Comparison zoom controls">
+                <button id="compareZoomOutBtn" class="mini-icon-btn" title="Zoom out">-</button>
+                <span id="compareZoomValue" class="zoom-value">1.0x</span>
+                <button id="compareZoomInBtn" class="mini-icon-btn" title="Zoom in">+</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
   </div>
 
@@ -304,6 +670,6 @@
     </div>
   </div>
 
-  <script type="module" src="app/main.js?v=shot-store-7"></script>
+  <script type="module" src="app/main.js?v=shot-store-57"></script>
 </body>
 </html>

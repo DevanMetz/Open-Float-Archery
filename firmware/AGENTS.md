@@ -93,8 +93,8 @@ Leaving these at the tiny defaults (`BT_BUF_ACL_RX_SIZE=27`, `BT_BUF_ACL_TX_SIZE
 Connected probe observed during the v3.3.0 bring-up:
 
 ```text
-CMSIS-DAP serial: 463D5515
-Windows VCOM:    COM11
+CMSIS-DAP serial: 09EC6223
+Windows VCOM:    COM10
 VID/PID:         2886:0066
 ```
 
@@ -169,7 +169,7 @@ PowerShell serial probe. Open COM11 with DTR/RTS asserted, then reset the target
 
 ```powershell
 $job = Start-Job -ScriptBlock {
-  $port = New-Object System.IO.Ports.SerialPort "COM11",115200,None,8,One
+  $port = New-Object System.IO.Ports.SerialPort "COM10",115200,None,8,One
   $port.ReadTimeout = 500
   $port.DtrEnable = $true
   $port.RtsEnable = $true
@@ -184,7 +184,7 @@ Start-Sleep -Seconds 1
 openocd `
   -s "C:/Users/metzd/Downloads/platform-seeedboards/zephyr/boards/arm/xiao_nrf54l15/support" `
   -s "C:/Program Files/OpenOCD/share/openocd/scripts" `
-  -c "adapter serial 463D5515" `
+  -c "adapter serial 09EC6223" `
   -f "C:/Users/metzd/Downloads/platform-seeedboards/zephyr/boards/arm/xiao_nrf54l15/support/openocd.cfg" `
   -c "init" `
   -c "reset run" `
@@ -274,10 +274,19 @@ thresh:<g>    Set shot detection threshold in g, clamped to 2.0-30.0
 wakesens:<g>  Set wake-up trigger accelerometer threshold in g, clamped to 0.5-8.0
 sleeptime:<s> Set deep sleep timeout in seconds, clamped to 5-600
 sleepsens:<g> Set active sleep movement accelerometer threshold in g, clamped to 0.05-0.50
+bufrate:<hz>  Set trace buffer rate to 0, 52, 104, or 208 Hz
+bufnvs:<0|1>  Toggle RRAM persistence for buffered traces
+followms:<ms> Set post-release trace freeze delay, clamped to 0-3000 ms
+streamrate:<n> Set BLE live stream divider to 1, 2, 5, 10, or 20
 shotreset     Reset the persisted shot count to 0
 shotset:<n>   Set the persisted shot count to n (e.g. correct a miscount)
 shotack:<n>   Confirm a type-2/type-4 shot was saved by the browser; frees it
+tracereq:<n>  Request chunked upload of a stored trace
 ```
+
+Fresh firmware defaults disconnected deep sleep to 300 seconds. Existing
+devices may still have an older persisted `openfloat/sleeptime` value in RRAM;
+send `sleeptime:300` or use the dashboard sleep slider to migrate them.
 
 The host-side test client lives in the web repo:
 
@@ -362,7 +371,7 @@ python tools\openfloat_ble_client.py --name-prefix OpenFloat --scan-timeout 12 -
 
 Use `--warmup <seconds>` for steady-state BLE throughput stats after the Windows connection parameter and PHY updates settle.
 
-One Windows-specific caveat remains: after the Python/Bleak client exits, Windows may hold the BLE connection for a while. In that state immediate rediscovery by scanning can fail even though serial continues streaming and the firmware remains alive. The firmware restarts advertising in its `disconnected` callback, so if a real disconnect reaches the device it should advertise again. For repeat automated tests on this host, resetting the module through OpenOCD before the next scan is currently the reliable path.
+One Windows-specific caveat remains: after the Python/Bleak client exits, Windows may hold the BLE connection for a while. In that state immediate rediscovery by scanning can fail even though serial continues streaming and the firmware remains alive. The firmware restarts advertising in its `disconnected` callback, so if a real disconnect reaches the device it should advertise again. The Python client now connects with the scanned BLE device object for name/prefix matches, which helps WinRT reliability; if repeat scans still fail, reset the module through OpenOCD and use a short scan timeout before an older persisted sleep timer can fire.
 
 Useful CPU liveness check:
 

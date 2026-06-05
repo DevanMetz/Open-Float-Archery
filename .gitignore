@@ -11,6 +11,9 @@ __pycache__/
 .vscode/
 .idea/
 
+# Blender backup files
+*.blend1
+
 # OS junk
 .DS_Store
 Thumbs.db

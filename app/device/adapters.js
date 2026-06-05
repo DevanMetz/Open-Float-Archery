@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { BINARY_FRAME_LEN, decodeBinaryFrame, TextLineParser } from "../protocol/frame.js?v=shot-store-7";
+import { BINARY_FRAME_LEN, decodeBinaryFrame, TextLineParser } from "../protocol/frame.js?v=shot-store-57";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
@@ -72,6 +72,7 @@ export class DemoAdapter extends BaseAdapter {
         gxDps: Math.sin(t * 5) * 18,
         gyDps: Math.cos(t * 4) * 12,
         gzDps: Math.sin(t * 3) * 8,
+        yawDeg: Math.sin(t * 0.8) * 24,
         flags: 0,
       });
     }, 16);
@@ -173,7 +174,7 @@ export class SerialAdapter extends BaseAdapter {
   }
 }
 
-// Web Bluetooth: the firmware notifies batched 20-byte binary frames.
+// Web Bluetooth: the firmware notifies batched 28-byte binary frames.
 export class BleAdapter extends BaseAdapter {
   constructor(bus) {
     super(bus);
