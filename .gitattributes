@@ -1,0 +1,23 @@
+# Normalize line endings: Git stores LF, checks out native on each platform.
+* text=auto
+
+# Keep LF in shell scripts and firmware/web sources regardless of platform.
+*.sh    text eol=lf
+*.c     text eol=lf
+*.h     text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.py    text eol=lf
+
+# Treat binary assets as binary (no line-ending or diff munging).
+*.blend  binary
+*.blend1 binary
+*.glb    binary
+*.stl    binary
+*.FCStd  binary
+*.png    binary
+*.jpg    binary
+*.ico    binary

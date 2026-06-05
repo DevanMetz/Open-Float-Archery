@@ -14,6 +14,9 @@ __pycache__/
 # Blender backup files
 *.blend1
 
+# Large IMU capture logs (debug data, not source)
+*.csv
+
 # OS junk
 .DS_Store
 Thumbs.db
