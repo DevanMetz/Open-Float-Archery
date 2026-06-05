@@ -368,6 +368,10 @@ export class BleAdapter extends BaseAdapter {
             `(shot count ${decoded.storage.shotCount}).`,
         );
         this.pendingStoredShots = decoded.storage.pending;
+        this.bus.emit("upload-status", {
+          pending: decoded.storage.pending,
+          shotCount: decoded.storage.shotCount,
+        });
         if (this.pendingStoredShots > 0) {
           this._startStoredShotWatchdog();
         } else {
@@ -395,6 +399,7 @@ export class BleAdapter extends BaseAdapter {
     this._stopTraceDownloadTimer();
     this.currentTraceDownloadShotId = null;
     this.pendingStoredShots = 0;
+    this.bus.emit("upload-status", { pending: 0, shotCount: null });
     this.log("BLE disconnected.");
     this.status("", "Disconnected");
   }

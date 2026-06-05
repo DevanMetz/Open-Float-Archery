@@ -156,6 +156,11 @@ export class TelemetryStore {
     // Device-reported lifetime count (e.g. restored from NVS on connect).
     // Updates the displayed counter only; not logged as a new shot.
     bus.on("shotcount", (count) => this.store.set({ shotCount: count }));
+    // Device-reported backlog of shots saved before connecting, uploaded on
+    // reconnect. Drives the inline "Uploading" status indicator.
+    bus.on("upload-status", ({ pending }) =>
+      this.store.set({ uploadPending: Math.max(0, pending | 0) }),
+    );
     bus.on("status", ({ mode, text }) =>
       store.set({
         statusMode: mode,
@@ -192,8 +197,17 @@ export class TelemetryStore {
       1,
       Math.round(this.shotTraceRateHz * BROWSER_SHOT_TRACE_SECONDS),
     );
-    this.currentSessionId = localStorage.getItem("openfloat_active_session_id") || null;
-    
+    // Sessions are now derived from shot timestamps at display time, not tracked
+    // live. Shots are saved with session_id = null.
+    this.currentSessionId = null;
+
+    // device_shot_id values already saved during the current connection. Used
+    // to dedup the device re-uploading the same shot (watchdog re-send of
+    // shotdump, or a lost ack). Scoped per-connection because the device's
+    // shot_id restarts at 0 after a firmware `shotreset`/reflash, which would
+    // otherwise collide with older shots in IndexedDB and wrongly drop new ones.
+    this.connectionShotIds = new Set();
+
     this.isRecordingManual = false;
     this.manualRecordingBuffer = [];
     this.manualRecordingDurationUs = 0;
@@ -385,60 +399,20 @@ export class TelemetryStore {
     this.store.set({ shotCount: shot.shotCount, lastShot: shot });
 
     try {
-      // 1. Ensure an active session exists
-      if (!this.currentSessionId) {
-        this.currentSessionId = generateUUID();
-        const sessionRecord = {
-          id: this.currentSessionId,
-          started_at: new Date(Date.now() - 10000).toISOString(), // Roughly started 10s ago
-          location_label: "Quick Practice",
-          bow_profile_id: localStorage.getItem("openfloat_active_bow_id") || null
-        };
-        await put("sessions", sessionRecord);
-        await put("sync_queue", {
-          table: "sessions",
-          action: "CREATE",
-          targetId: this.currentSessionId,
-          payload: sessionRecord,
-          status: "pending"
-        });
-        this.bus.emit("log", `Created new training session: ${this.currentSessionId.slice(0, 8)}...`);
-      }
-
-      // 2. Check for duplicate shot in this session
-      if (shot.shotId != null) {
-        const existingShots = await getAll("shots");
-        const existingShot = existingShots.find(
-          (record) =>
-            record.device_id === "OpenFloat-Sensor" &&
-            record.device_shot_id === shot.shotId &&
-            record.session_id === this.currentSessionId,
+      // 1. Skip a shot the device re-uploaded within this connection (watchdog
+      //    re-send of shotdump, or a lost ack). Still re-emit shot-saved so the
+      //    device gets acknowledged again and frees the stored slot.
+      if (shot.shotId != null && this.connectionShotIds.has(shot.shotId)) {
+        this.bus.emit(
+          "log",
+          `Shot id ${shot.shotId} already handled this connection; re-acknowledging.`,
         );
-
-        if (existingShot) {
-          this.bus.emit(
-            "log",
-            `Shot #${shot.shotCount} (id ${shot.shotId}) already saved in this session; acknowledging duplicate upload.`,
-          );
-          this.store.set({
-            shotCount: shot.shotCount,
-            lastShotSummary: {
-              timestamp: existingShot.timestamp,
-              score: existingShot.shot_score,
-              peakG: existingShot.peak_g,
-              cant: existingShot.cant_angle_deg,
-              pitch: existingShot.pitch_angle_deg,
-              yaw: existingShot.yaw_angle_deg || 0,
-            },
-          });
-          this.bus.emit("shot-saved", {
-            shotId: shot.shotId,
-            stored: !!shot.stored,
-            localShotId: existingShot.id,
-            duplicate: true,
-          });
-          return;
-        }
+        this.bus.emit("shot-saved", {
+          shotId: shot.shotId,
+          stored: !!shot.stored,
+          duplicate: true,
+        });
+        return;
       }
 
       this.bus.emit(
@@ -458,7 +432,7 @@ export class TelemetryStore {
       const computedYaw = activeState.yaw || 0;
       const shotRecord = {
         id: localShotId,
-        session_id: this.currentSessionId,
+        session_id: null,
         device_id: "OpenFloat-Sensor",
         device_shot_id: shot.shotId,
         stored_upload: !!shot.stored,
@@ -477,6 +451,11 @@ export class TelemetryStore {
       };
 
       await put("shots", shotRecord);
+      // Mark handled only after a successful save, so a failed write can still
+      // be retried when the device re-sends the shot.
+      if (shot.shotId != null) {
+        this.connectionShotIds.add(shot.shotId);
+      }
       await put("sync_queue", {
         table: "shots",
         action: "CREATE",
@@ -568,6 +547,7 @@ export class TelemetryStore {
         "log",
         `Browser trace saved for shot ID ${deviceShotId} (${frozen.length} samples, ${sampleRateHz} Hz).`,
       );
+      this.bus.emit("shot-trace-saved", { localShotId, deviceShotId });
       if (this.syncAdapter) {
         this.syncAdapter.triggerSync();
       }
@@ -587,27 +567,7 @@ export class TelemetryStore {
     this.bus.emit("log", `Saving last ${durationSec}s of live telemetry (${this.history30s.length} samples)...`);
 
     try {
-      // 1. Ensure an active session exists
-      if (!this.currentSessionId) {
-        this.currentSessionId = generateUUID();
-        const sessionRecord = {
-          id: this.currentSessionId,
-          started_at: new Date(Date.now() - durationSec * 1000).toISOString(),
-          location_label: "Quick Practice (Manual)",
-          bow_profile_id: localStorage.getItem("openfloat_active_bow_id") || null
-        };
-        await put("sessions", sessionRecord);
-        await put("sync_queue", {
-          table: "sessions",
-          action: "CREATE",
-          targetId: this.currentSessionId,
-          payload: sessionRecord,
-          status: "pending"
-        });
-        this.bus.emit("log", `Created new manual session: ${this.currentSessionId.slice(0, 8)}...`);
-      }
-
-      // 2. Compute metrics from the 30s buffer
+      // 1. Compute metrics from the 30s buffer
       let maxG = 0;
       let sumStability = 0;
       
@@ -635,7 +595,7 @@ export class TelemetryStore {
       const manualShotId = generateUUID();
       const shotRecord = {
         id: manualShotId,
-        session_id: this.currentSessionId,
+        session_id: null,
         device_id: "OpenFloat-Sensor",
         timestamp: new Date().toISOString(),
         peak_g: Number(maxG.toFixed(2)),
@@ -745,27 +705,7 @@ export class TelemetryStore {
     this.bus.emit("log", `Saving manual recording: "${label}" (${durationSec.toFixed(1)}s, ${this.manualRecordingBuffer.length} samples at ~${sampleRateHz}Hz)...`);
 
     try {
-      // 1. Ensure an active session exists
-      if (!this.currentSessionId) {
-        this.currentSessionId = generateUUID();
-        const sessionRecord = {
-          id: this.currentSessionId,
-          started_at: new Date(Date.now() - durationSec * 1000).toISOString(),
-          location_label: "Quick Practice (Manual)",
-          bow_profile_id: localStorage.getItem("openfloat_active_bow_id") || null
-        };
-        await put("sessions", sessionRecord);
-        await put("sync_queue", {
-          table: "sessions",
-          action: "CREATE",
-          targetId: this.currentSessionId,
-          payload: sessionRecord,
-          status: "pending"
-        });
-        this.bus.emit("log", `Created new session: ${this.currentSessionId.slice(0, 8)}...`);
-      }
-
-      // 2. Compute metrics
+      // 1. Compute metrics
       let maxG = 0;
       let sumStability = 0;
       const parsedTrace = this.manualRecordingBuffer.map(pt => {
@@ -793,11 +733,11 @@ export class TelemetryStore {
         ? Number((sumStability / this.manualRecordingBuffer.length).toFixed(1))
         : 100;
 
-      // 3. Save shot record
+      // 2. Save shot record
       const manualShotId = generateUUID();
       const shotRecord = {
         id: manualShotId,
-        session_id: this.currentSessionId,
+        session_id: null,
         device_id: "OpenFloat-Sensor",
         timestamp: new Date().toISOString(),
         peak_g: Number(maxG.toFixed(2)),
@@ -933,11 +873,16 @@ export class TelemetryStore {
       // 3. Save to database
       try {
         const existingShots = await getAll("shots");
-        const shotRecord = existingShots.find(
-          (record) =>
-            record.device_id === "OpenFloat-Sensor" &&
-            record.device_shot_id === chunk.shotId
-        );
+        // Attach to the most recently saved shot with this device_shot_id.
+        // device_shot_id can repeat across a firmware shotreset/reflash, so
+        // prefer the newest match rather than the first in key order.
+        const shotRecord = existingShots
+          .filter(
+            (record) =>
+              record.device_id === "OpenFloat-Sensor" &&
+              record.device_shot_id === chunk.shotId,
+          )
+          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
 
         if (shotRecord) {
           const tracePayload = {
@@ -956,6 +901,7 @@ export class TelemetryStore {
           });
 
           this.bus.emit("log", `Trace for shot ID ${chunk.shotId} successfully reassembled and saved.`);
+          this.bus.emit("shot-trace-saved", { localShotId: shotRecord.id, deviceShotId: chunk.shotId });
 
           // Trigger a UI redraw if this is the currently selected shot in review mode
           const activeState = this.store.get();

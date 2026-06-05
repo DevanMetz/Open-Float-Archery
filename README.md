@@ -59,12 +59,25 @@ without hardware.
   orientation visualizer. Both apply the current zero offsets before rendering,
   so a properly zeroed bow appears level.
 - **On-Device Orientation Processing**: Consumes high-rate Madgwick filter quaternions directly from BLE notifications, avoiding client-side complementary filter lag.
-- Pin Float shot review shows phase-colored traces: green aiming hold,
-  amber/red release break, and gray follow-through.
+- Pin Float shot review shows phase-colored traces (green aiming hold,
+  amber/red release break, and gray follow-through), centered on the point of
+  shot detection so the release reticle sits at the center of the target face.
 - The shot review canvas also renders a 1-sigma float ellipse, release reticle,
-  animated replay marker, and a seconds-based scrubber with phase indicators.
-- **Bow Profile Manager & Session Tracker**: Organize and save stabilizer configurations, draw weights, and notes under custom bow profiles. Group practice shots under named, collapsible sessions (e.g. location/date) to track progress over time.
-- **Manual Long-Trace Recording**: A dedicated tab for starting, stopping, naming, and saving custom-length telemetry captures of arbitrary duration. Bypasses the default shot-trigger limits to capture full ends or holding drills.
+  and an animated replay marker. The replay controls live in their own sections
+  below the target (not overlapping it): a Trace Review banner and a full-width
+  scrubber with a circular play/pause button, a phase-colored timeline, an
+  adjustable replay speed (0.25×-4×), and scroll-wheel (desktop) or pinch
+  (mobile) zoom directly on the trace.
+- **Live Shot Traces**: While the device is connected, the browser captures each
+  shot's trace from the live stream and saves it shortly after the
+  follow-through window completes; the device itself only stores traces for
+  shots taken while disconnected, which then upload on reconnect.
+- **Stored-Shot Upload Indicator**: When a device that buffered shots while
+  disconnected reconnects, an inline "Uploading N" status appears beside the
+  live rate and shot counter and counts down as the backlog transfers.
+- **Bow Profile Manager**: Organize and save stabilizer configurations, draw weights, and notes under custom bow profiles.
+- **Automatic Practice Sessions**: Saved shots are grouped into collapsible sessions automatically by timestamp — any gap longer than 30 minutes starts a new session. Rename any session and assign the bow used directly from the Saved Shots view.
+- **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
 - **Bow Stability Comparison & Analysis Dashboard**: A dedicated tab to compare different equipment setups or track progression over time on the same setup. Features side-by-side average metrics and synchronized replaying / scrubbing of overlaid target float paths and time-aligned stability curves.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
 - **Offline PWA Support**: Registers a service worker to cache application assets (markup, styling, scripts, and the 3D model GLB), enabling full offline operation at remote archery ranges.

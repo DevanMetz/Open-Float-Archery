@@ -2,7 +2,11 @@
 // Handles local storage of profiles, sessions, shots, traces, and the sync queue.
 
 const DB_NAME = "openfloat_db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+
+// Shots whose timestamps fall within this window of each other are grouped into
+// the same practice session automatically (no manual start/stop needed).
+export const SESSION_GAP_MS = 30 * 60 * 1000;
 
 let dbPromise = null;
 
@@ -54,6 +58,12 @@ export function initDb() {
           autoIncrement: true,
         });
         store.createIndex("status", "status", { unique: false });
+      }
+
+      // 6. Session Overrides (keyPath 'id' = anchor shot id of an auto-detected
+      //    session group). Stores the user-edited name and bow for that group.
+      if (!db.objectStoreNames.contains("session_overrides")) {
+        db.createObjectStore("session_overrides", { keyPath: "id" });
       }
     };
   });
@@ -132,6 +142,39 @@ export async function updateSyncTaskStatus(taskId, status) {
     };
     getReq.onerror = () => reject(getReq.error);
   });
+}
+
+// Group shots into practice sessions purely from their timestamps. Any gap
+// larger than `gapMs` between consecutive shots starts a new session. Each group
+// is anchored by its earliest shot's id (stable as new shots are appended), so
+// user edits (name/bow) stored in `session_overrides` stay attached.
+// Returns groups sorted newest-first; each group's shots are also newest-first.
+export function groupShotsByTime(shots, gapMs = SESSION_GAP_MS) {
+  const sorted = [...shots].sort(
+    (a, b) => new Date(a.timestamp) - new Date(b.timestamp),
+  );
+
+  const groups = [];
+  let current = null;
+  for (const shot of sorted) {
+    const t = new Date(shot.timestamp).getTime();
+    if (!current || t - current.lastTime > gapMs) {
+      current = {
+        anchorId: shot.id,
+        startTime: t,
+        lastTime: t,
+        shots: [],
+      };
+      groups.push(current);
+    }
+    current.shots.push(shot);
+    current.lastTime = t;
+  }
+
+  // Present newest sessions and newest shots first for display.
+  for (const g of groups) g.shots.reverse();
+  groups.reverse();
+  return groups;
 }
 
 // Generate a cryptographic-quality UUIDv4 client side

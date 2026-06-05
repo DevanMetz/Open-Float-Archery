@@ -902,6 +902,14 @@ export function mountDashboard({ store, telemetry, el }) {
     el.frameCountValue.textContent = s.reviewMode ? "--" : String(s.frameCount || 0);
     el.shotCountValue.textContent = String(s.shotCount || 0);
 
+    const uploadPending = s.reviewMode ? 0 : s.uploadPending || 0;
+    if (el.uploadStatusItem) {
+      el.uploadStatusItem.classList.toggle("hidden", uploadPending <= 0);
+    }
+    if (el.uploadCountValue) {
+      el.uploadCountValue.textContent = String(uploadPending);
+    }
+
     const now = performance.now();
     const calibratedRoll = calibratedAngle(roll, s.cantOffset);
     
@@ -1001,21 +1009,28 @@ export function mountDashboard({ store, telemetry, el }) {
         const holdData = holdWindow(data, releaseIdx, hasRelease);
 
         if (state.reviewMode) {
-          // Center around the average of the hold portion (excluding release recoil)
-          let sumRoll = 0;
-          let sumPitch = 0;
-          let count = 0;
-          for (let i = 0; i < holdData.length; i++) {
-            sumRoll += holdData[i].roll || 0;
-            sumPitch += holdData[i].pitch || 0;
-            count++;
-          }
-          if (count > 0) {
-            rollCenter = sumRoll / count;
-            pitchCenter = sumPitch / count;
+          if (hasRelease && data[releaseIdx]) {
+            // Center the target on the point of shot detection (the release),
+            // so the red crosshair sits at dead center of the face.
+            rollCenter = data[releaseIdx].roll || 0;
+            pitchCenter = data[releaseIdx].pitch || 0;
           } else {
-            rollCenter = data[0].roll || 0;
-            pitchCenter = data[0].pitch || 0;
+            // No release detected: fall back to the hold-portion average.
+            let sumRoll = 0;
+            let sumPitch = 0;
+            let count = 0;
+            for (let i = 0; i < holdData.length; i++) {
+              sumRoll += holdData[i].roll || 0;
+              sumPitch += holdData[i].pitch || 0;
+              count++;
+            }
+            if (count > 0) {
+              rollCenter = sumRoll / count;
+              pitchCenter = sumPitch / count;
+            } else {
+              rollCenter = data[0].roll || 0;
+              pitchCenter = data[0].pitch || 0;
+            }
           }
         } else {
           // Centering around hold average in live streaming view

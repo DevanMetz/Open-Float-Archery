@@ -26,9 +26,6 @@
         <button id="navDashboardBtn" class="nav-tab active">
           <span class="nav-icon">📈</span> Dashboard
         </button>
-        <button id="navRecordBtn" class="nav-tab">
-          <span class="nav-icon">🔴</span> Record
-        </button>
         <button id="navHistoryBtn" class="nav-tab">
           <span class="nav-icon">🎯</span> Saved Shots
         </button>
@@ -143,39 +140,57 @@
                   <span class="inline-metric-item" title="Shots detected during active session">
                     <strong>Shots:</strong> <span id="shotCountValue">0</span>
                   </span>
+                  <span class="metric-divider">/</span>
+                  <span id="uploadStatusItem" class="inline-metric-item upload-status hidden" title="Uploading shots that were saved on the device before connecting">
+                    <span class="metric-dot upload"></span>
+                    <span class="upload-label">Uploading</span>&nbsp;<span id="uploadCountValue">0</span>
+                  </span>
+                  <span class="metric-divider">/</span>
+                  <span id="recordStatusItem" class="inline-metric-item record-status hidden" title="Manual trace recording in progress">
+                    <span class="metric-dot rec"></span>
+                    <span id="recordTimeText">0.0s</span>&nbsp;<span class="record-smp"><span id="recordSamplesText">0</span> smp</span>
+                  </span>
                 </div>
               </div>
               <div class="chart-toggles">
+                <button id="recordToggleBtn" class="record-toggle-btn" disabled title="Connect a sensor to record a manual trace">
+                  <span class="rec-dot"></span><span id="recordToggleLabel">Record</span>
+                </button>
+                <button id="discardRecordBtn" class="toggle-btn discard-btn hidden" title="Discard recording">Discard</button>
+                <span class="chart-toggle-divider"></span>
                 <button id="viewTraceBtn" class="toggle-btn active">Motion</button>
                 <button id="viewTargetBtn" class="toggle-btn">Pin Float</button>
               </div>
             </div>
+            <canvas id="traceCanvas"></canvas>
             <div id="reviewBanner" class="review-overlay hidden">
               <div class="review-details">
                 <strong>Trace Review Mode</strong>
                 <span id="reviewInfo">--</span>
               </div>
-              <div id="reviewTraceControls" class="review-trace-controls hidden" aria-label="Pin float replay controls">
-                <button id="replayTraceBtn" class="mini-btn">Replay</button>
-                <div class="scrub-controls" aria-label="Trace timeline scrubber">
-                  <div id="tracePhaseRail" class="trace-phase-rail" aria-hidden="true">
-                    <span class="phase-hold"></span>
-                    <span class="phase-break"></span>
-                    <span class="phase-release"></span>
-                    <span class="phase-follow"></span>
-                  </div>
-                  <input id="traceScrubSlider" type="range" min="0" max="1000" step="1" value="1000">
-                  <span id="traceScrubValue">0.0s</span>
-                </div>
-                <div class="zoom-controls" aria-label="Trace zoom controls">
-                  <button id="zoomOutBtn" class="mini-icon-btn" title="Zoom out">-</button>
-                  <span id="zoomValue" class="zoom-value">1.0x</span>
-                  <button id="zoomInBtn" class="mini-icon-btn" title="Zoom in">+</button>
-                </div>
-              </div>
               <button id="exitReviewBtn" class="primary mini-btn">Exit Review</button>
             </div>
-            <canvas id="traceCanvas"></canvas>
+            <div id="reviewScrubBar" class="review-scrub-bar hidden" aria-label="Trace timeline scrubber">
+              <button id="replayTraceBtn" class="play-btn" title="Play replay" aria-label="Play replay">
+                <svg class="play-icon icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                <svg class="play-icon icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1.2"/><rect x="14" y="4.5" width="4" height="15" rx="1.2"/></svg>
+              </button>
+              <span id="traceScrubValue" class="scrub-time">0.0s</span>
+              <div class="scrub-track">
+                <div id="tracePhaseRail" class="trace-phase-rail" aria-hidden="true">
+                  <span class="phase-hold"></span>
+                  <span class="phase-break"></span>
+                  <span class="phase-release"></span>
+                  <span class="phase-follow"></span>
+                </div>
+                <input id="traceScrubSlider" type="range" min="0" max="1000" step="1" value="1000" aria-label="Scrub trace position">
+              </div>
+              <div class="speed-controls" aria-label="Replay speed" title="Replay speed (scroll or pinch the trace to zoom)">
+                <button id="speedDownBtn" class="mini-icon-btn" title="Slower replay">&minus;</button>
+                <span id="speedValue" class="speed-value">1&times;</span>
+                <button id="speedUpBtn" class="mini-icon-btn" title="Faster replay">+</button>
+              </div>
+            </div>
           </div>
 
           <!-- Recent Shots Panel -->
@@ -186,47 +201,6 @@
             </div>
             <div class="recent-shots-grid" id="recentShotsList">
               <p class="note" style="padding: 12px; text-align: center; width: 100%;">No shots captured in this session yet.</p>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      <!-- 4. Manual Record View (Hidden by default) -->
-      <div id="tabRecord" class="tab-view hidden-view">
-        <section class="record-workspace">
-          <div class="panel settings-card record-card">
-            <h3>Manual Trace Recorder</h3>
-            <p class="note">
-              Record long traces of custom duration directly in the browser. Perfect for capturing full ends, blank bale drills, or hold testing.
-            </p>
-            
-            <div class="field" style="margin-top: 10px;">
-              <label for="recordLabelInput">Recording Label / Title</label>
-              <input type="text" id="recordLabelInput" placeholder="e.g. End 1 - 70m Practice" value="">
-            </div>
-            
-            <div class="record-status-box" id="recordStatusBox">
-              <div class="record-status-badge" id="recordStatusBadge">
-                <span class="dot"></span>
-                <span id="recordStatusText">Disconnected</span>
-              </div>
-              
-              <div class="record-status-display">
-                <div class="record-status-item">
-                  <span>Duration</span>
-                  <strong id="recordTimeText">0.0s</strong>
-                </div>
-                <div class="record-status-item">
-                  <span>Samples</span>
-                  <strong id="recordSamplesText">0</strong>
-                </div>
-              </div>
-            </div>
-
-            <div class="settings-actions-group" style="display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 8px;">
-              <button id="startRecordBtn" class="accent" disabled>Start Recording</button>
-              <button id="stopRecordBtn" class="primary hidden">Stop &amp; Save</button>
-              <button id="discardRecordBtn" class="danger hidden">Discard</button>
             </div>
           </div>
         </section>
@@ -448,29 +422,6 @@
             </div>
             <div style="margin-top: 8px;">
               <button id="newBowProfileBtn" class="accent" style="width: 100%;">Create New Profile</button>
-            </div>
-          </div>
-
-          <!-- Card Sessions: Practice Session Tracker -->
-          <div class="panel settings-card">
-            <h3>Session Tracker</h3>
-            <div class="field" style="margin-top: 10px;">
-              <label for="sessionLocationInput">Session Name / Location</label>
-              <input type="text" id="sessionLocationInput" placeholder="e.g. Morning 70m Practice">
-            </div>
-            <div class="field" style="margin-top: 10px;">
-              <label for="sessionBowSelect">Bow Profile for Session</label>
-              <select id="sessionBowSelect">
-                <option value="">Default Bow</option>
-              </select>
-            </div>
-            <div class="status-box" style="margin-top: 12px; padding: 10px; background: rgba(255, 255, 255, 0.03); border-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.05);">
-              <span class="note" style="font-size: 11px;">Status:</span>
-              <strong id="sessionStatusText" style="display: block; font-size: 12px; margin-top: 2px; color: var(--muted);">No active session (Quick Practice)</strong>
-            </div>
-            <div class="settings-actions-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
-              <button id="startSessionBtn" class="primary">Start Session</button>
-              <button id="endSessionBtn" class="danger" disabled>End Session</button>
             </div>
           </div>
 

@@ -40,9 +40,11 @@ hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
   orientation estimate. If a transport omits those angles, the browser falls
   back to local gyro/accelerometer tracking.
 - Dashboard calibration/review views include a calibrated digital bubble level,
-  a Three.js bow orientation visualizer, phase-colored Pin Float trace replay,
-  a 1-sigma float ellipse, release reticle, and a seconds-based trace scrubber
-  with phase indicators.
+  a Three.js bow orientation visualizer, and phase-colored Pin Float trace
+  replay centered on the shot-detection point, with a 1-sigma float ellipse,
+  release reticle, and a full-width scrubber in its own section below the target
+  (circular play/pause button, phase-colored timeline, 0.25x-4x replay speed,
+  and scroll-wheel / pinch zoom on the trace).
 - Button-triggered zeroing of cant and pitch offsets.
 
 Verified test clients: `tools/openfloat_ble_client.py` (BLE + serial decoder)
@@ -512,13 +514,17 @@ CloudSyncAdapter
   - never required for live telemetry
 
 UI
-  - live dashboard (inline stream rate & shot counter metrics, dynamic target trace)
+  - live dashboard (inline stream rate & shot counter metrics, dynamic target
+    trace, inline Record button, and a stored-shot "Uploading N" indicator)
   - shot review (aiming hold, release, follow-through phases)
   - calibration & alignment settings (axis swapping, orientation override)
   - calibrated glassmorphic spirit bubble level (custom range & tolerance sweet-spot sliders)
   - low-pass filtered (EMA) bubble visualizer for smooth and responsive tracking
   - real-time recent shots grid list (syncing with device shot events & manual recordings)
-  - phase-colored trace replay with seconds scrubber
+  - phase-colored trace replay with a below-target scrubber (play/pause, replay
+    speed, scroll/pinch zoom)
+  - saved-shots history auto-grouped into practice sessions by timestamp
+    (30-minute gap), with per-session editable name and bow
   - device setup & hardware configuration
   - cloud account and sync status
 ```
@@ -536,7 +542,9 @@ is registered to cache all core markup, styling, modules, and 3D GLTF assets,
 ensuring the application is fully functional offline at remote archery ranges.
 
 ### Real-time UI & Database Updates
-The Recent Shots list is reactive. When a connection is active (serial or BLE) and the device detects a shot, the adapter parses and relays the event onto the global `EventBus` as a `"shot"` event. The `TelemetryStore` listens to this event, ensures a session is active, performs session-scoped duplicate checking, writes the shot to IndexedDB, and emits a `"shot-saved"` event. The dashboard UI listens to `"shot-saved"` and instantly updates the Recent Shots grid, allowing the user to click the new shot and review its aiming float path immediately. Manual captures also trigger `"shot-saved"` upon save.
+The Recent Shots list is reactive. When a connection is active (serial or BLE) and the device detects a shot, the adapter parses and relays the event onto the global `EventBus` as a `"shot"` event. The `TelemetryStore` listens to this event, deduplicates against the set of device shot IDs already handled **this connection** (the device's `shot_id` restarts at 0 after a `shotreset`/reflash, so all-time deduplication by ID is unsafe), writes the shot to IndexedDB with `session_id: null`, and emits a `"shot-saved"` event. The dashboard UI listens to `"shot-saved"` and instantly updates the Recent Shots grid. Practice sessions are no longer tracked live — they are derived from shot timestamps when the Saved Shots history is rendered (any gap over 30 minutes starts a new session), and the user can rename a session and assign its bow, stored as a per-group override.
+
+While the device is connected it does **not** persist a trace for each shot; the browser captures the trace from the live stream and saves it to IndexedDB shortly after the configurable follow-through window, then emits `"shot-trace-saved"`. (Shots taken while disconnected are stored on-device and their traces upload on reconnect.) Because a just-detected shot becomes clickable before its browser trace is persisted, opening a recent shot polls briefly for the trace before reporting it unavailable. Manual captures also trigger `"shot-saved"` upon save.
 
 ## 11. Browser Data Parsing
 
@@ -643,6 +651,15 @@ shot_traces
   sample_rate_hz
   payload
 ```
+
+**Client session model (current implementation):** the local IndexedDB no longer
+tracks live `sessions`. Shots are saved with `session_id: null`, and practice
+sessions are derived from shot timestamps at display time (any gap over 30
+minutes starts a new session). A `session_overrides` object store keyed by each
+group's earliest shot id holds the user-edited `name` and `bow_profile_id`. The
+cloud `sessions` table above remains the recommended server model for future
+sync; the local schema favors timestamp-derived grouping so no manual
+start/stop is required.
 
 If using Firestore, avoid placing large raw traces inside user profile
 documents. Store shot metadata and raw traces separately. If using

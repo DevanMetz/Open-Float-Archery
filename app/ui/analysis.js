@@ -1,7 +1,7 @@
 // Bow Stability Comparison & Analysis Dashboard module for OpenFloat.
 // Handles dropdown population, statistics aggregation, and rendering overlays.
 
-import { getAll, get } from "../core/db.js";
+import { getAll, get, groupShotsByTime } from "../core/db.js";
 
 // Helper stats functions
 function mean(arr) {
@@ -298,27 +298,31 @@ export function mountAnalysis(bus, store, el) {
     }
   }
 
+  // Build a Map of shot.id -> bow_profile_id ("" for Default Bow), derived from
+  // the auto-detected time sessions and their saved bow overrides.
+  async function buildShotBowMap() {
+    const shots = await getAll("shots");
+    const overrides = await getAll("session_overrides");
+    const overrideMap = new Map(overrides.map(o => [o.id, o]));
+    const map = new Map();
+    for (const group of groupShotsByTime(shots)) {
+      const override = overrideMap.get(group.anchorId);
+      const bowId = (override && override.bow_profile_id) || "";
+      for (const s of group.shots) map.set(s.id, bowId);
+    }
+    return map;
+  }
+
   async function handleBowSelectionChange(column) {
     const bowSelect = column === "A" ? el.compareBowASelect : el.compareBowBSelect;
     const shotSelect = column === "A" ? el.compareShotASelect : el.compareShotBSelect;
     const bowId = bowSelect.value;
 
     try {
-      // 1. Get filtered sessions
-      const sessions = await getAll("sessions");
-      const filteredSessions = sessions.filter(s => {
-        if (!bowId) return !s.bow_profile_id;
-        return s.bow_profile_id === bowId;
-      });
-      const sessionIds = new Set(filteredSessions.map(s => s.id));
-
-      // 2. Get filtered shots
+      // Filter shots by the bow assigned to their auto-detected session.
+      const shotBowMap = await buildShotBowMap();
       const shots = await getAll("shots");
-      const filteredShots = shots.filter(s => {
-        const sid = s.session_id || "legacy";
-        if (sid === "legacy") return !bowId; // Group legacy shots with default bow
-        return sessionIds.has(sid);
-      });
+      const filteredShots = shots.filter(s => (shotBowMap.get(s.id) || "") === bowId);
 
       // Sort newest first
       filteredShots.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
@@ -380,17 +384,12 @@ export function mountAnalysis(bus, store, el) {
 
   async function calculateAverages(bowIdA, bowIdB) {
     try {
-      const sessions = await getAll("sessions");
       const shots = await getAll("shots");
+      const shotBowMap = await buildShotBowMap();
 
       const getStatsForBow = (bowId) => {
-        const filteredSessions = sessions.filter(s => !bowId ? !s.bow_profile_id : s.bow_profile_id === bowId);
-        const sessionIds = new Set(filteredSessions.map(s => s.id));
-        const filteredShots = shots.filter(s => {
-          const sid = s.session_id || "legacy";
-          if (sid === "legacy") return !bowId;
-          return sessionIds.has(sid);
-        });
+        const target = bowId || "";
+        const filteredShots = shots.filter(s => (shotBowMap.get(s.id) || "") === target);
 
         if (filteredShots.length === 0) return null;
 

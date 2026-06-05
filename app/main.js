@@ -14,10 +14,10 @@ import {
   rotateMountAxes,
 } from "./ui/dashboard.js?v=shot-store-57";
 import { mountAnalysis } from "./ui/analysis.js?v=shot-store-57";
-import { initDb, getAll, get, put, remove, generateUUID } from "./core/db.js";
+import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS } from "./core/db.js";
 import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-57";
 
-const APP_BUILD = "shot-store-57";
+const APP_BUILD = "shot-store-65";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -25,16 +25,16 @@ const ELEMENT_IDS = [
   "connectBtn", "disconnectBtn", "demoBtn",
   "protocolValue", "typeValue", "sourceValue", "seqValue", "lossValue",
   "dtValue", "hzValue", "frameCountValue",
-  "shotCountValue", "eventLog", "traceCanvas",
+  "shotCountValue", "uploadStatusItem", "uploadCountValue", "eventLog", "traceCanvas",
   "orientationCanvas", "orientationRollValue", "orientationPitchValue", "orientationYawValue",
   "syncBadge", "syncText", "cloudModal", "closeCloudModalBtn",
   "sbUrlInput", "sbKeyInput", "saveCloudSettingsBtn", "clearCloudSettingsBtn",
   "saveManualBtn",
   "chartTitle", "reviewBanner", "reviewInfo", "exitReviewBtn",
-  "navDashboardBtn", "navRecordBtn", "navHistoryBtn", "navSettingsBtn",
-  "tabDashboard", "tabRecord", "tabHistory", "tabSettings", "historyList",
-  "recordLabelInput", "recordStatusBox", "recordStatusBadge", "recordStatusText",
-  "recordTimeText", "recordSamplesText", "startRecordBtn", "stopRecordBtn", "discardRecordBtn",
+  "navDashboardBtn", "navHistoryBtn", "navSettingsBtn",
+  "tabDashboard", "tabHistory", "tabSettings", "historyList",
+  "recordToggleBtn", "recordToggleLabel", "recordStatusItem",
+  "recordTimeText", "recordSamplesText", "discardRecordBtn",
   "thresholdSlider", "thresholdValue",
   "wakeSlider", "wakeValue",
   "sleepTimeoutSlider", "sleepTimeoutValue",
@@ -43,8 +43,8 @@ const ELEMENT_IDS = [
   "formScoreValue", "coachTitle", "coachText", "holdStabilityValue",
   "releaseQualityValue", "followThroughValue", "cantValue",
   "levelCard", "levelBubble", "levelAlertText",
-  "reviewTraceControls", "replayTraceBtn", "zoomOutBtn", "zoomInBtn",
-  "zoomValue", "traceScrubSlider", "traceScrubValue", "tracePhaseRail",
+  "reviewScrubBar", "replayTraceBtn", "speedDownBtn", "speedUpBtn",
+  "speedValue", "traceScrubSlider", "traceScrubValue", "tracePhaseRail",
   "zeroBtn", "zeroYawBtn", "cantOffsetVal", "pitchOffsetVal", "batteryBadge", "batteryText",
   "mountOrientationSelect", "mountOrientationCanvas", "mountOrientationDescription",
   "mountViewRollSlider", "mountViewRollValue",
@@ -61,7 +61,6 @@ const ELEMENT_IDS = [
   "mobileAlertBanner", "mobileAlertText", "closeMobileAlertBtn",
   "bowProfileSelect", "bowModelInput", "drawWeightInput", "stabilizerSetupInput", "bowNotesInput",
   "saveBowProfileBtn", "deleteBowProfileBtn", "newBowProfileBtn",
-  "sessionLocationInput", "sessionBowSelect", "sessionStatusText", "startSessionBtn", "endSessionBtn",
   "compareBowASelect", "compareShotASelect", "compareBowBSelect", "compareShotBSelect",
   "runCompareBtn", "compareStatsPanel", "compareHoldAVal", "compareHoldBVal",
   "compareReleaseAVal", "compareReleaseBVal", "compareFollowAVal", "compareFollowBVal",
@@ -120,6 +119,7 @@ const store = createStore({
   accelG: 0,
   gyroMag: 0,
   shotCount: 0,
+  uploadPending: 0,
   wakeSensitivity: 2.0,
   threshold: cached.threshold !== undefined ? Number(cached.threshold) : 12.0,
   sample: null,
@@ -143,6 +143,7 @@ const store = createStore({
   yaw: 0,
   lastShotSummary: null,
   traceZoom: 1,
+  replaySpeed: 1,
   replayActive: false,
   replayPaused: false,
   replayProgress: 1,
@@ -280,7 +281,6 @@ function initSettingsFromCache() {
 initDb().then(async () => {
   bus.emit("log", "Local IndexedDB initialized successfully.");
   await loadBowProfiles();
-  await restoreActiveSession();
   await loadRecentShotsList();
 }).catch((err) => {
   bus.emit("log", `Database initialization failed: ${err.message}`);
@@ -317,16 +317,18 @@ store.subscribe((state) => {
     el.viewTargetBtn.classList.toggle("active", state.chartView === "target");
   }
 
-  if (el.reviewTraceControls && el.replayTraceBtn && el.zoomValue) {
+  if (el.reviewScrubBar && el.replayTraceBtn && el.speedValue) {
     const pinReviewActive = state.reviewMode && state.chartView === "target";
-    el.reviewTraceControls.classList.toggle("hidden", !pinReviewActive);
-    if (state.replayActive) {
-      el.replayTraceBtn.textContent = state.replayPaused ? "Resume" : "Pause";
-    } else {
-      el.replayTraceBtn.textContent = state.replayProgress > 0 && state.replayProgress < 1 ? "Resume" : "Replay";
-    }
+    el.reviewScrubBar.classList.toggle("hidden", !pinReviewActive);
+    const playing = state.replayActive && !state.replayPaused;
+    el.replayTraceBtn.classList.toggle("playing", playing);
+    el.replayTraceBtn.title = playing ? "Pause replay" : "Play replay";
     el.replayTraceBtn.disabled = !pinReviewActive;
-    el.zoomValue.textContent = `${(state.traceZoom || 1).toFixed(1)}x`;
+    el.speedValue.textContent = `${formatSpeed(state.replaySpeed || 1)}×`;
+    if (el.traceCanvas) {
+      // Disable native gestures only while zoom-by-gesture is active.
+      el.traceCanvas.style.touchAction = pinReviewActive ? "none" : "";
+    }
     if (el.traceScrubSlider && el.traceScrubValue) {
       const progress = Math.max(0, Math.min(1, state.replayProgress ?? 1));
       if (document.activeElement !== el.traceScrubSlider) {
@@ -369,30 +371,28 @@ store.subscribe((state) => {
     el.pitchOffsetVal.textContent = (state.pitchOffset || 0.0).toFixed(1);
   }
 
-  if (el.startRecordBtn && el.stopRecordBtn && el.discardRecordBtn) {
+  if (el.recordToggleBtn) {
     const connected = state.connected;
     const active = state.manualRecordingActive;
-    
-    el.startRecordBtn.disabled = !connected || active;
-    el.startRecordBtn.classList.toggle("hidden", active);
-    el.stopRecordBtn.classList.toggle("hidden", !active);
-    el.discardRecordBtn.classList.toggle("hidden", !active);
+
+    el.recordToggleBtn.disabled = !connected;
+    el.recordToggleBtn.classList.toggle("recording", active);
+    if (el.recordToggleLabel) {
+      el.recordToggleLabel.textContent = active ? "Stop" : "Record";
+    }
+    el.recordToggleBtn.title = !connected
+      ? "Connect a sensor to record a manual trace"
+      : active
+        ? "Stop and save the recording"
+        : "Record a manual trace";
   }
 
-  if (el.recordStatusText && el.recordStatusBox && el.recordStatusBadge) {
-    if (state.manualRecordingActive) {
-      el.recordStatusText.textContent = "Recording...";
-      el.recordStatusBox.className = "record-status-box recording";
-      el.recordStatusBadge.className = "record-status-badge recording";
-    } else if (state.connected) {
-      el.recordStatusText.textContent = "Ready";
-      el.recordStatusBox.className = "record-status-box";
-      el.recordStatusBadge.className = "record-status-badge ready";
-    } else {
-      el.recordStatusText.textContent = "Disconnected";
-      el.recordStatusBox.className = "record-status-box";
-      el.recordStatusBadge.className = "record-status-badge";
-    }
+  if (el.discardRecordBtn) {
+    el.discardRecordBtn.classList.toggle("hidden", !state.manualRecordingActive);
+  }
+
+  if (el.recordStatusItem) {
+    el.recordStatusItem.classList.toggle("hidden", !state.manualRecordingActive);
   }
 
   if (el.recordTimeText) {
@@ -646,15 +646,14 @@ el.statusBadge.addEventListener("click", async () => {
 });
 el.demoBtn.addEventListener("click", toggleDemo);
 el.saveManualBtn.addEventListener("click", () => telemetry.saveManual30sCapture());
-el.startRecordBtn.addEventListener("click", () => {
-  const label = el.recordLabelInput.value.trim() || "Manual Capture";
-  telemetry.startManualRecording(label);
-});
-el.stopRecordBtn.addEventListener("click", async () => {
-  const savedId = await telemetry.saveManualRecording();
-  if (savedId) {
-    el.recordLabelInput.value = "";
-    selectViewTab("tabHistory");
+el.recordToggleBtn.addEventListener("click", async () => {
+  if (store.get().manualRecordingActive) {
+    // Currently recording -> stop and save. Stay on the dashboard.
+    await telemetry.saveManualRecording();
+  } else {
+    // Not recording -> start with a timestamped default label.
+    const label = `Manual Capture ${new Date().toLocaleTimeString()}`;
+    telemetry.startManualRecording(label);
   }
 });
 el.discardRecordBtn.addEventListener("click", () => {
@@ -949,17 +948,15 @@ el.modelIgnoreYawToggle.addEventListener("change", () => {
 
 // Tab Switching Navigation Logic
 function selectViewTab(targetId) {
-  const tabs = ["tabDashboard", "tabRecord", "tabHistory", "tabSettings", "tabAnalysis"];
+  const tabs = ["tabDashboard", "tabHistory", "tabSettings", "tabAnalysis"];
   const navButtons = {
     tabDashboard: el.navDashboardBtn,
-    tabRecord: el.navRecordBtn,
     tabHistory: el.navHistoryBtn,
     tabSettings: el.navSettingsBtn,
     tabAnalysis: el.navAnalysisBtn
   };
   const panels = {
     tabDashboard: el.tabDashboard,
-    tabRecord: el.tabRecord,
     tabHistory: el.tabHistory,
     tabSettings: el.tabSettings,
     tabAnalysis: el.tabAnalysis
@@ -986,9 +983,8 @@ function selectViewTab(targetId) {
   }
 }
 
-if (el.navDashboardBtn && el.navRecordBtn && el.navHistoryBtn && el.navSettingsBtn && el.navAnalysisBtn) {
+if (el.navDashboardBtn && el.navHistoryBtn && el.navSettingsBtn && el.navAnalysisBtn) {
   el.navDashboardBtn.addEventListener("click", () => selectViewTab("tabDashboard"));
-  el.navRecordBtn.addEventListener("click", () => selectViewTab("tabRecord"));
   el.navHistoryBtn.addEventListener("click", () => selectViewTab("tabHistory"));
   el.navAnalysisBtn.addEventListener("click", () => selectViewTab("tabAnalysis"));
   el.navSettingsBtn.addEventListener("click", () => selectViewTab("tabSettings"));
@@ -1012,16 +1008,24 @@ el.replayTraceBtn.addEventListener("click", () => {
     return;
   }
 
-  const durationMs = 1800;
+  // Progress accumulates per-frame scaled by the current replay speed, so the
+  // speed control takes effect live (mid-replay) without restarting playback.
+  const BASE_DURATION_MS = 1800;
+  let lastTs = performance.now();
   const startProgress = state.replayProgress >= 1 ? 0 : (state.replayProgress || 0);
-  const startedAt = performance.now() - startProgress * durationMs;
   store.set({ replayActive: true, replayPaused: false, replayProgress: startProgress });
 
   function tick(now) {
     const current = store.get();
     if (!current.reviewMode || current.chartView !== "target") return;
     if (current.replayPaused) return;
-    const progress = Math.min(1, (now - startedAt) / durationMs);
+    const dt = now - lastTs;
+    lastTs = now;
+    const speed = current.replaySpeed || 1;
+    const progress = Math.min(
+      1,
+      (current.replayProgress || 0) + (dt / BASE_DURATION_MS) * speed,
+    );
     store.set({
       replayProgress: progress,
       replayActive: progress < 1,
@@ -1042,15 +1046,73 @@ el.traceScrubSlider.addEventListener("input", () => {
   });
 });
 
-el.zoomOutBtn.addEventListener("click", () => {
-  const nextZoom = Math.max(0.4, Number(((store.get().traceZoom || 1) - 0.2).toFixed(1)));
-  store.set({ traceZoom: nextZoom });
-});
+// Replay speed control (replaces the old zoom multiplier; zoom is now a gesture)
+const REPLAY_SPEEDS = [0.25, 0.5, 1, 2, 4];
+function formatSpeed(s) {
+  return String(s);
+}
+function stepReplaySpeed(dir) {
+  const cur = store.get().replaySpeed || 1;
+  let idx = REPLAY_SPEEDS.indexOf(cur);
+  if (idx === -1) idx = REPLAY_SPEEDS.indexOf(1);
+  idx = Math.max(0, Math.min(REPLAY_SPEEDS.length - 1, idx + dir));
+  store.set({ replaySpeed: REPLAY_SPEEDS[idx] });
+}
+el.speedDownBtn.addEventListener("click", () => stepReplaySpeed(-1));
+el.speedUpBtn.addEventListener("click", () => stepReplaySpeed(1));
 
-el.zoomInBtn.addEventListener("click", () => {
-  const nextZoom = Math.min(3, Number(((store.get().traceZoom || 1) + 0.2).toFixed(1)));
-  store.set({ traceZoom: nextZoom });
-});
+// Trace zoom via scroll wheel (desktop) and pinch (mobile) on the target.
+const TRACE_ZOOM_MIN = 0.5;
+const TRACE_ZOOM_MAX = 6;
+function clampZoom(z) {
+  return Math.max(TRACE_ZOOM_MIN, Math.min(TRACE_ZOOM_MAX, Number(z.toFixed(3))));
+}
+function zoomActive() {
+  const s = store.get();
+  return s.reviewMode && s.chartView === "target";
+}
+function touchDistance(touches) {
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.hypot(dx, dy);
+}
+if (el.traceCanvas) {
+  el.traceCanvas.addEventListener(
+    "wheel",
+    (e) => {
+      if (!zoomActive()) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      store.set({ traceZoom: clampZoom((store.get().traceZoom || 1) * factor) });
+    },
+    { passive: false },
+  );
+
+  let pinchStartDist = 0;
+  let pinchStartZoom = 1;
+  el.traceCanvas.addEventListener(
+    "touchstart",
+    (e) => {
+      if (!zoomActive() || e.touches.length !== 2) return;
+      pinchStartDist = touchDistance(e.touches);
+      pinchStartZoom = store.get().traceZoom || 1;
+    },
+    { passive: true },
+  );
+  el.traceCanvas.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!zoomActive() || e.touches.length !== 2 || pinchStartDist <= 0) return;
+      e.preventDefault();
+      const ratio = touchDistance(e.touches) / pinchStartDist;
+      store.set({ traceZoom: clampZoom(pinchStartZoom * ratio) });
+    },
+    { passive: false },
+  );
+  el.traceCanvas.addEventListener("touchend", (e) => {
+    if (e.touches.length < 2) pinchStartDist = 0;
+  });
+}
 
 // Bow Profile & Session Management Functions
 async function loadBowProfiles() {
@@ -1059,22 +1121,19 @@ async function loadBowProfiles() {
     
     // Clear and reset dynamic options
     el.bowProfileSelect.innerHTML = '<option value="">Default Bow</option>';
-    el.sessionBowSelect.innerHTML = '<option value="">Default Bow</option>';
 
     profiles.forEach((profile) => {
       const option = document.createElement("option");
       option.value = profile.id;
       option.textContent = profile.model + (profile.draw_weight ? ` (${profile.draw_weight} lbs)` : "");
-      
-      el.bowProfileSelect.appendChild(option.cloneNode(true));
-      el.sessionBowSelect.appendChild(option);
+
+      el.bowProfileSelect.appendChild(option);
     });
 
     // Restore selected active bow
     const activeBowId = localStorage.getItem("openfloat_active_bow_id") || "";
     el.bowProfileSelect.value = activeBowId;
-    el.sessionBowSelect.value = activeBowId;
-    
+
     populateBowForm();
   } catch (error) {
     console.error("Error loading bow profiles:", error);
@@ -1106,73 +1165,15 @@ async function populateBowForm() {
   }
 }
 
-async function restoreActiveSession() {
-  const sessionId = localStorage.getItem("openfloat_active_session_id");
-  if (!sessionId) {
-    setNoActiveSessionUI();
-    return;
-  }
-
-  try {
-    const session = await get("sessions", sessionId);
-    if (!session) {
-      localStorage.removeItem("openfloat_active_session_id");
-      telemetry.currentSessionId = null;
-      setNoActiveSessionUI();
-      return;
-    }
-
-    telemetry.currentSessionId = sessionId;
-    
-    if (session.bow_profile_id) {
-      localStorage.setItem("openfloat_active_bow_id", session.bow_profile_id);
-      el.bowProfileSelect.value = session.bow_profile_id;
-      el.sessionBowSelect.value = session.bow_profile_id;
-      populateBowForm();
-    }
-
-    el.sessionLocationInput.value = session.location_label || "";
-    el.startSessionBtn.disabled = true;
-    el.endSessionBtn.disabled = false;
-
-    let bowName = "Default Bow";
-    if (session.bow_profile_id) {
-      const bow = await get("bow_profiles", session.bow_profile_id);
-      if (bow) bowName = bow.model;
-    }
-
-    el.sessionStatusText.innerHTML = `Active: <strong style="color: var(--cyan);">${session.location_label || "Practice"}</strong> (${bowName})`;
-  } catch (error) {
-    console.error("Error restoring active session:", error);
-    setNoActiveSessionUI();
-  }
-}
-
-function setNoActiveSessionUI() {
-  el.startSessionBtn.disabled = false;
-  el.endSessionBtn.disabled = true;
-  el.sessionStatusText.textContent = "No active session (Quick Practice)";
-  el.sessionStatusText.style.color = "var(--muted)";
-}
-
-// Bind Bow Profile & Session Event Listeners
+// Bind Bow Profile Event Listeners
 el.bowProfileSelect.addEventListener("change", () => {
   const activeBowId = el.bowProfileSelect.value;
   localStorage.setItem("openfloat_active_bow_id", activeBowId);
-  el.sessionBowSelect.value = activeBowId;
-  populateBowForm();
-});
-
-el.sessionBowSelect.addEventListener("change", () => {
-  const activeBowId = el.sessionBowSelect.value;
-  localStorage.setItem("openfloat_active_bow_id", activeBowId);
-  el.bowProfileSelect.value = activeBowId;
   populateBowForm();
 });
 
 el.newBowProfileBtn.addEventListener("click", () => {
   el.bowProfileSelect.value = "";
-  el.sessionBowSelect.value = "";
   localStorage.setItem("openfloat_active_bow_id", "");
   populateBowForm();
   el.bowModelInput.focus();
@@ -1259,143 +1260,60 @@ el.deleteBowProfileBtn.addEventListener("click", async () => {
   }
 });
 
-el.startSessionBtn.addEventListener("click", async () => {
-  const location = el.sessionLocationInput.value.trim() || "Practice Session";
-  const bowId = el.sessionBowSelect.value || null;
+// Escape user-entered text before injecting into innerHTML.
+function escapeHtml(str) {
+  return String(str == null ? "" : str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
-  const sessionId = generateUUID();
-  const sessionRecord = {
-    id: sessionId,
-    started_at: new Date().toISOString(),
-    location_label: location,
-    bow_profile_id: bowId
-  };
+function defaultSessionName(startTime) {
+  const d = new Date(startTime);
+  const hour = d.getHours();
+  const partOfDay =
+    hour < 5 ? "Night" : hour < 12 ? "Morning" : hour < 17 ? "Afternoon" : "Evening";
+  return `${partOfDay} Practice`;
+}
 
-  try {
-    await put("sessions", sessionRecord);
-    await put("sync_queue", {
-      table: "sessions",
-      action: "CREATE",
-      targetId: sessionId,
-      payload: sessionRecord,
-      status: "pending"
-    });
-
-    localStorage.setItem("openfloat_active_session_id", sessionId);
-    telemetry.currentSessionId = sessionId;
-
-    let bowName = "Default Bow";
-    if (bowId) {
-      const bow = await get("bow_profiles", bowId);
-      if (bow) bowName = bow.model;
-    }
-
-    el.startSessionBtn.disabled = true;
-    el.endSessionBtn.disabled = false;
-    el.sessionStatusText.innerHTML = `Active: <strong style="color: var(--cyan);">${location}</strong> (${bowName})`;
-    
-    bus.emit("log", `Started practice session: "${location}"`);
-
-    if (syncAdapter) syncAdapter.triggerSync();
-  } catch (error) {
-    console.error("Error starting session:", error);
-    bus.emit("log", `Error starting session: ${error.message}`);
-  }
-});
-
-el.endSessionBtn.addEventListener("click", async () => {
-  const sessionId = localStorage.getItem("openfloat_active_session_id");
-  if (!sessionId) return;
-
-  try {
-    const session = await get("sessions", sessionId);
-    if (session) {
-      session.ended_at = new Date().toISOString();
-      await put("sessions", session);
-      await put("sync_queue", {
-        table: "sessions",
-        action: "UPDATE",
-        targetId: sessionId,
-        payload: session,
-        status: "pending"
-      });
-    }
-
-    localStorage.removeItem("openfloat_active_session_id");
-    telemetry.currentSessionId = null;
-
-    setNoActiveSessionUI();
-    el.sessionLocationInput.value = "";
-    
-    bus.emit("log", `Ended practice session: "${session ? session.location_label : ''}"`);
-
-    if (syncAdapter) syncAdapter.triggerSync();
-  } catch (error) {
-    console.error("Error ending session:", error);
-    bus.emit("log", `Error ending session: ${error.message}`);
-  }
-});
+function bowDisplayName(bow) {
+  if (!bow) return "Default Bow";
+  return bow.model + (bow.draw_weight ? ` (${bow.draw_weight} lbs)` : "");
+}
 
 async function loadShotHistoryList() {
   el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">Loading saved history...</p>`;
   try {
     const shots = await getAll("shots");
-    const sessions = await getAll("sessions");
     const bows = await getAll("bow_profiles");
+    const overrides = await getAll("session_overrides");
 
     if (shots.length === 0) {
-      el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">No saved shots yet.</p>`;
+      el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">No saved shots yet. Shots taken within ${Math.round(SESSION_GAP_MS / 60000)} minutes of each other are grouped into a session automatically.</p>`;
       return;
     }
 
-    const sessionMap = new Map(sessions.map(s => [s.id, s]));
     const bowMap = new Map(bows.map(b => [b.id, b]));
+    const overrideMap = new Map(overrides.map(o => [o.id, o]));
 
-    const grouped = {};
-    for (const shot of shots) {
-      const sessionId = shot.session_id || "legacy";
-      if (!grouped[sessionId]) {
-        grouped[sessionId] = [];
-      }
-      grouped[sessionId].push(shot);
-    }
-
-    const groups = [];
-    for (const [sessionId, sessionShots] of Object.entries(grouped)) {
-      sessionShots.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      
-      const sessionRecord = sessionMap.get(sessionId);
-      const dateStr = sessionRecord 
-        ? new Date(sessionRecord.started_at).toISOString() 
-        : (sessionShots.length > 0 ? sessionShots[0].timestamp : new Date(0).toISOString());
-
-      groups.push({
-        id: sessionId,
-        session: sessionRecord,
-        shots: sessionShots,
-        startedAt: dateStr
-      });
-    }
-
-    groups.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+    // Group shots purely by their timestamps (newest session first).
+    const groups = groupShotsByTime(shots);
 
     el.historyList.innerHTML = "";
     let isFirst = true;
     for (const group of groups) {
+      const override = overrideMap.get(group.anchorId) || null;
       const groupEl = document.createElement("div");
       groupEl.className = "session-group" + (isFirst ? "" : " collapsed");
       isFirst = false;
 
-      const locationLabel = group.session ? group.session.location_label : "Quick Practice";
-      const dateStr = new Date(group.startedAt).toLocaleString();
-      
-      let bowName = "Default Bow";
-      if (group.session && group.session.bow_profile_id) {
-        const bow = bowMap.get(group.session.bow_profile_id);
-        if (bow) {
-          bowName = bow.model + (bow.draw_weight ? ` (${bow.draw_weight} lbs)` : "");
-        }
-      }
+      const sessionName = (override && override.name) || defaultSessionName(group.startTime);
+      const dateStr = new Date(group.startTime).toLocaleString();
+
+      const bow = override && override.bow_profile_id ? bowMap.get(override.bow_profile_id) : null;
+      const bowName = bowDisplayName(bow);
 
       const shotCount = group.shots.length;
       let totalScore = 0;
@@ -1404,17 +1322,25 @@ async function loadShotHistoryList() {
       }
       const avgScore = shotCount > 0 ? Math.round(totalScore / shotCount) : 0;
 
+      const bowOptions = ['<option value="">Default Bow</option>']
+        .concat(bows.map(b => {
+          const sel = override && override.bow_profile_id === b.id ? " selected" : "";
+          return `<option value="${escapeHtml(b.id)}"${sel}>${escapeHtml(bowDisplayName(b))}</option>`;
+        }))
+        .join("");
+
       groupEl.innerHTML = `
         <div class="session-header">
           <div class="session-meta">
             <div class="session-title-row">
               <span class="session-arrow-icon">▼</span>
-              <span class="session-location">${locationLabel}</span>
+              <span class="session-location">${escapeHtml(sessionName)}</span>
+              <button class="session-edit-btn" type="button" title="Edit session name and bow">✎</button>
             </div>
             <div class="session-info-row">
               <span class="session-date">${dateStr}</span>
               <span class="session-divider">|</span>
-              <span class="session-bow">${bowName}</span>
+              <span class="session-bow">${escapeHtml(bowName)}</span>
             </div>
           </div>
           <div class="session-stats">
@@ -1428,12 +1354,56 @@ async function loadShotHistoryList() {
             </div>
           </div>
         </div>
+        <div class="session-editor hidden">
+          <div class="field">
+            <label>Session Name</label>
+            <input type="text" class="session-name-input" value="${escapeHtml(sessionName)}" placeholder="e.g. Morning 70m Practice">
+          </div>
+          <div class="field">
+            <label>Bow Used</label>
+            <select class="session-bow-input">${bowOptions}</select>
+          </div>
+          <div class="session-editor-actions">
+            <button class="primary session-save-btn" type="button">Save</button>
+            <button class="session-cancel-btn" type="button">Cancel</button>
+          </div>
+        </div>
         <div class="session-shots-container"></div>
       `;
 
       const headerEl = groupEl.querySelector(".session-header");
+      const editorEl = groupEl.querySelector(".session-editor");
       headerEl.addEventListener("click", () => {
         groupEl.classList.toggle("collapsed");
+      });
+
+      // Edit button: open the inline editor without toggling collapse.
+      groupEl.querySelector(".session-edit-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        editorEl.classList.toggle("hidden");
+      });
+      groupEl.querySelector(".session-cancel-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        editorEl.classList.add("hidden");
+      });
+      groupEl.querySelector(".session-save-btn").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const nameVal = groupEl.querySelector(".session-name-input").value.trim();
+        const bowVal = groupEl.querySelector(".session-bow-input").value || null;
+        const record = {
+          id: group.anchorId,
+          name: nameVal || null,
+          bow_profile_id: bowVal,
+          updated_at: new Date().toISOString(),
+        };
+        try {
+          await put("session_overrides", record);
+          bus.emit("log", `Updated session "${nameVal || defaultSessionName(group.startTime)}".`);
+          await loadShotHistoryList();
+        } catch (err) {
+          console.error("Error saving session override:", err);
+          bus.emit("log", `Error saving session: ${err.message}`);
+        }
       });
 
       const containerEl = groupEl.querySelector(".session-shots-container");
@@ -1447,7 +1417,7 @@ async function loadShotHistoryList() {
 
         item.innerHTML = `
           <div class="history-meta">
-            <div class="history-title">${title}</div>
+            <div class="history-title">${escapeHtml(title)}</div>
             <div class="history-subtitle">${timestampStr}</div>
           </div>
           <div class="history-metrics">
@@ -1483,10 +1453,31 @@ async function loadShotHistoryList() {
 
 async function reviewShotTrace(shot) {
   try {
-    const trace = await get("shot_traces", shot.id);
+    let trace = await get("shot_traces", shot.id);
+
+    // For shots taken while connected, the device does not store a trace — the
+    // browser captures it and only persists it after the follow-through window
+    // (~1.5 s + buffer). The shot is clickable immediately, so a just-taken
+    // shot's trace may still be in flight. Poll briefly before giving up.
+    if (!trace || !trace.payload) {
+      const ageMs = Date.now() - new Date(shot.timestamp).getTime();
+      if (ageMs < 4000) {
+        bus.emit("log", "Trace still being captured (follow-through); waiting…");
+        const deadline = Date.now() + 4000;
+        while ((!trace || !trace.payload) && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 250));
+          trace = await get("shot_traces", shot.id);
+        }
+      }
+    }
 
     if (!trace || !trace.payload) {
-      alert("Trace data for this shot could not be located in IndexedDB.");
+      alert(
+        "No saved trace for this shot yet.\n\n" +
+          "Live shots capture their trace shortly after the follow-through " +
+          "window — try again in a moment. If a trace never appears, check that " +
+          "“Trace Buffer Rate” in Settings isn’t set to Off.",
+      );
       return;
     }
 
@@ -1620,6 +1611,12 @@ async function loadRecentShotsList() {
 
 // Update recent shots on shot-saved event
 bus.on("shot-saved", () => {
+  loadRecentShotsList();
+});
+
+// A trace finishing capture (live follow-through) or upload (stored) doesn't
+// change the list, but refresh so any "trace ready" state stays accurate.
+bus.on("shot-trace-saved", () => {
   loadRecentShotsList();
 });
 
