@@ -21,6 +21,19 @@ http://localhost:4178/
 Use Chrome or Edge for Web Serial and Web Bluetooth. The demo stream works
 without hardware.
 
+## Repository Layout
+
+- `index.html`, `styles.css`, `manifest.json`, and `service-worker.js` are the
+  static browser app shell and PWA assets.
+- `app/` contains native ES modules with no build step: protocol parsing,
+  device adapters, IndexedDB storage, telemetry scoring/sync, and UI rendering.
+- `firmware/` is the Zephyr/NCS app for the Seeed XIAO nRF54L15 Sense.
+- `tools/` contains host-side validation utilities, including the BLE client and
+  follow-through trace verifier.
+- `Blender/` and `FreeCAD/` contain visual/mechanical assets used by the app and
+  enclosure work.
+- `Blueprint.md` is the detailed architecture and implementation status.
+
 ## Current Firmware Status
 
 - IMU raw-register FIFO path runs the LSM6DS3TR-C at 3332 Hz ODR, read via an
@@ -41,7 +54,9 @@ without hardware.
 - Fresh firmware defaults disconnected deep sleep to 300 s. Existing persisted
   settings can override it; update devices with `sleeptime:<s>` or the dashboard
   sleep slider.
-- BLE notifications batch seven 28-byte frames (containing on-board quaternions) into 196-byte notifications.
+- BLE notifications batch seven 28-byte frames (containing on-board quaternions)
+  into 196-byte notifications. The same 28-byte envelope also carries shot,
+  count-sync, storage-status, stored-shot, and trace-chunk frames.
 - Latest Windows/Bleak validation received 28,670 sequential frames with zero
   sequence loss over 25.5 s; warm-up-excluded rate was about 1129 Hz, with
   0 FIFO overruns, 0 resyncs, 0 outlier frames, and 100% distinct frames
@@ -75,12 +90,19 @@ without hardware.
 - **Stored-Shot Upload Indicator**: When a device that buffered shots while
   disconnected reconnects, an inline "Uploading N" status appears beside the
   live rate and shot counter and counts down as the backlog transfers.
+- **Configurable Device Settings**: The Settings view can send threshold,
+  wake/sleep, trace buffer, follow-through, BLE stream-rate, NVS buffering, and
+  auto-sleep commands over BLE. Settings are cached locally and persisted on the
+  device when firmware supports the command.
 - **Bow Profile Manager**: Organize and save stabilizer configurations, draw weights, and notes under custom bow profiles.
 - **Automatic Practice Sessions**: Saved shots are grouped into collapsible sessions automatically by timestamp — any gap longer than 30 minutes starts a new session. Rename any session and assign the bow used directly from the Saved Shots view.
 - **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
-- **Bow Stability Comparison & Analysis Dashboard**: A dedicated tab to compare different equipment setups or track progression over time on the same setup. Features side-by-side average metrics and synchronized replaying / scrubbing of overlaid target float paths and time-aligned stability curves.
+- **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
 - **Offline PWA Support**: Registers a service worker to cache application assets (markup, styling, scripts, and the 3D model GLB), enabling full offline operation at remote archery ranges.
+- **Optional Supabase Sync**: The Cloud modal accepts a Supabase URL and anon key
+  for self-hosted sync. Local IndexedDB writes remain the source of truth and are
+  queued before upload; leaving cloud settings blank keeps the app local-only.
 
 ## BLE Telemetry Test Client
 

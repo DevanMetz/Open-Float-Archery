@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-57">
+  <link rel="stylesheet" href="styles.css?v=shot-store-81">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="apple-touch-icon" href="icon.svg">
@@ -28,9 +28,6 @@
         </button>
         <button id="navHistoryBtn" class="nav-tab">
           <span class="nav-icon">🎯</span> Saved Shots
-        </button>
-        <button id="navAnalysisBtn" class="nav-tab">
-          <span class="nav-icon">📊</span> Analysis
         </button>
         <button id="navSettingsBtn" class="nav-tab">
           <span class="nav-icon">⚙️</span> Settings
@@ -168,6 +165,16 @@
                 <strong>Trace Review Mode</strong>
                 <span id="reviewInfo">--</span>
               </div>
+              <div id="reviewCompareField" class="review-compare-field">
+                <label for="reviewCompareSelect">Compare with</label>
+                <select id="reviewCompareSelect" title="Overlay another saved shot on the target trace">
+                  <option value="">None</option>
+                </select>
+              </div>
+              <span id="reviewCompareLegend" class="review-compare-legend hidden" aria-hidden="true">
+                <span class="legend-current">Current</span>
+                <span class="legend-compare">Compare</span>
+              </span>
               <button id="exitReviewBtn" class="primary mini-btn">Exit Review</button>
             </div>
             <div id="reviewScrubBar" class="review-scrub-bar hidden" aria-label="Trace timeline scrubber">
@@ -450,147 +457,6 @@
         </section>
       </div>
 
-      <!-- 5. Performance Analysis View (Hidden by default) -->
-      <div id="tabAnalysis" class="tab-view hidden-view">
-        <section class="analysis-workspace">
-          <!-- Card A: Select Setups & Shots -->
-          <div class="panel settings-card compare-selector-card">
-            <h3>Bow Setup &amp; Shot Comparison</h3>
-            <p class="note">
-              Select two bow setups (profiles) to compare aggregate stats, and select specific shots to overlay their holding float paths and stability curves over time.
-            </p>
-            
-            <div class="compare-selector-grid">
-              <!-- Setup A -->
-              <div class="compare-column">
-                <span class="column-title" style="color: var(--green);">Setup A (Baseline)</span>
-                <div class="field">
-                  <label for="compareBowASelect">Bow Profile</label>
-                  <select id="compareBowASelect">
-                    <option value="">Default Bow</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label for="compareShotASelect">Shot / Record</label>
-                  <select id="compareShotASelect">
-                    <option value="">Select a shot...</option>
-                  </select>
-                </div>
-              </div>
-              
-              <!-- Setup B -->
-              <div class="compare-column">
-                <span class="column-title" style="color: var(--cyan);">Setup B (Comparison)</span>
-                <div class="field">
-                  <label for="compareBowBSelect">Bow Profile</label>
-                  <select id="compareBowBSelect">
-                    <option value="">Default Bow</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label for="compareShotBSelect">Shot / Record</label>
-                  <select id="compareShotBSelect">
-                    <option value="">Select a shot...</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-            
-            <div class="settings-actions-group" style="margin-top: 10px;">
-              <button id="runCompareBtn" class="primary">Compare Setups &amp; Shots</button>
-            </div>
-          </div>
-
-          <!-- Setup Aggregate Stats Comparison Grid -->
-          <div class="compare-stats-panel hidden" id="compareStatsPanel">
-            <div class="panel compare-stat-card">
-              <span class="stat-label">Hold Stability (Avg)</span>
-              <div class="stat-row">
-                <div class="stat-col align-left">
-                  <span class="stat-val" style="color: var(--green);" id="compareHoldAVal">--%</span>
-                  <span class="stat-sub">Setup A</span>
-                </div>
-                <div class="stat-col align-right">
-                  <span class="stat-val" style="color: var(--cyan);" id="compareHoldBVal">--%</span>
-                  <span class="stat-sub">Setup B</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="panel compare-stat-card">
-              <span class="stat-label">Release Quality (Avg)</span>
-              <div class="stat-row">
-                <div class="stat-col align-left">
-                  <span class="stat-val" style="color: var(--green);" id="compareReleaseAVal">--%</span>
-                  <span class="stat-sub">Setup A</span>
-                </div>
-                <div class="stat-col align-right">
-                  <span class="stat-val" style="color: var(--cyan);" id="compareReleaseBVal">--%</span>
-                  <span class="stat-sub">Setup B</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="panel compare-stat-card">
-              <span class="stat-label">Follow-Through (Avg)</span>
-              <div class="stat-row">
-                <div class="stat-col align-left">
-                  <span class="stat-val" style="color: var(--green);" id="compareFollowAVal">--%</span>
-                  <span class="stat-sub">Setup A</span>
-                </div>
-                <div class="stat-col align-right">
-                  <span class="stat-val" style="color: var(--cyan);" id="compareFollowBVal">--%</span>
-                  <span class="stat-sub">Setup B</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="panel compare-stat-card">
-              <span class="stat-label">Form Score (Avg)</span>
-              <div class="stat-row">
-                <div class="stat-col align-left">
-                  <span class="stat-val" style="color: var(--green);" id="compareFormAVal">--</span>
-                  <span class="stat-sub">Setup A</span>
-                </div>
-                <div class="stat-col align-right">
-                  <span class="stat-val" style="color: var(--cyan);" id="compareFormBVal">--</span>
-                  <span class="stat-sub">Setup B</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Overlay Chart/Canvas Panel -->
-          <div class="panel chart-panel compare-chart-card hidden" id="compareChartCard">
-            <div class="panel-head">
-              <h2>Overlay Visualization</h2>
-              <div class="chart-toggles">
-                <button id="compareViewFloatBtn" class="toggle-btn active">Aim Float (Target)</button>
-                <button id="compareViewTimelineBtn" class="toggle-btn">Stability Curve</button>
-              </div>
-            </div>
-            <div class="compare-legend">
-              <span class="legend-item"><span class="legend-dot" style="background: var(--green);"></span> Setup A Shot</span>
-              <span class="legend-item"><span class="legend-dot" style="background: var(--cyan);"></span> Setup B Shot</span>
-            </div>
-            <canvas id="compareCanvas"></canvas>
-            
-            <!-- Comparison Replay & Scrubber Controls -->
-            <div id="compareTraceControls" class="review-trace-controls" aria-label="Comparison replay controls" style="margin-top: 10px;">
-              <button id="compareReplayBtn" class="mini-btn">Replay</button>
-              <div class="scrub-controls" aria-label="Comparison timeline scrubber">
-                <input id="compareScrubSlider" type="range" min="0" max="1000" step="1" value="1000">
-                <span id="compareScrubValue">0.0s</span>
-              </div>
-              <div class="zoom-controls" aria-label="Comparison zoom controls">
-                <button id="compareZoomOutBtn" class="mini-icon-btn" title="Zoom out">-</button>
-                <span id="compareZoomValue" class="zoom-value">1.0x</span>
-                <button id="compareZoomInBtn" class="mini-icon-btn" title="Zoom in">+</button>
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
     </main>
   </div>
 
@@ -621,6 +487,6 @@
     </div>
   </div>
 
-  <script type="module" src="app/main.js?v=shot-store-57"></script>
+  <script type="module" src="app/main.js?v=shot-store-81"></script>
 </body>
 </html>

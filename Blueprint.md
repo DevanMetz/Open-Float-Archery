@@ -73,10 +73,13 @@ higher sustained rates would need SPI (different hardware).
 watermark interrupt drains one large I2C burst and the loop sleeps in between.
 
 Shot detection persists a lifetime shot count to RRAM (Zephyr Settings/ZMS) and
-notifies it to the browser on each increment (and on connect). **Not yet
-implemented** (still design targets below): CRC-footed live packets, validated
-800-1000 Hz capture, the on-device rolling shot buffer and shot replay/transfer,
-the dedicated device-info / shot-data / config characteristics, and cloud sync.
+notifies it to the browser on each increment (and on connect). The firmware now
+keeps compact stored-shot records and chunked trace windows for reconnect
+upload; the browser stores shots/traces in IndexedDB and can optionally queue
+them to Supabase when the user supplies project credentials. **Not yet
+implemented** (still design targets below): CRC-footed live packets, dedicated
+device-info / shot-data / config characteristics, polished account/coaching
+cloud workflows, and broad field validation across bows, mounts, and browsers.
 Where a section below describes one of these, treat it as the intended direction
 rather than current behavior.
 
@@ -447,6 +450,7 @@ post-release follow-through).
 
 The control characteristic accepts the ASCII commands:
 * `start`/`stop`: Toggle live telemetry stream notifications.
+* `shotdump`: Request the stored-shot backlog and a fresh storage-status frame.
 * `zero`: Capture the current gravitational vector, compute pitch/roll offsets, store them in RRAM (`"cant_offset"`, `"pitch_offset"`), and apply them dynamically so live roll reads exactly 0.0°.
 * `thresh:<g>`: Set shot detection accelerometer threshold, clamped to 2-30 g.
 * `wakesens:<g>`: Set wake-up trigger accelerometer threshold, clamped to 0.5-8.0 g.
@@ -455,6 +459,8 @@ The control characteristic accepts the ASCII commands:
 * `bufrate:<hz>`: Set on-device trace buffering rate. Values: `0` (Off), `52` (52 Hz), `104` (104 Hz), `208` (208 Hz). Saves to RRAM (`"openfloat/bufrate"`).
 * `bufnvs:<val>`: Toggle whether trace buffer is persisted to non-volatile RRAM. Values: `0` (Off/SRAM only), `1` (On/RRAM). Saves to RRAM (`"openfloat/bufnvs"`).
 * `followms:<ms>`: Set the post-release follow-through delay before freezing a shot trace, clamped to 0-3000 ms. Saves to RRAM (`"openfloat/followms"`).
+* `streamrate:<n>`: Set the BLE live stream divider. Values: `1`, `2`, `5`, `10`, or `20` (about 1110, 555, 222, 111, or 55 Hz).
+* `autosleep:<0|1>`: Enable or disable inactivity-triggered deep sleep. Saves to RRAM (`"openfloat/autosleep"`).
 * `tracereq:<shot_id>`: Request a chunked upload of the trace of the shot with ID `shot_id` as Type 6 notifications.
 * `shotack:<shot_id>`: Acknowledge a saved type-2/type-4 shot so firmware can free the queued copy from RRAM.
 * `shotreset`: Clear the persisted shot count and shot queue.
@@ -522,7 +528,7 @@ UI
   - low-pass filtered (EMA) bubble visualizer for smooth and responsive tracking
   - real-time recent shots grid list (syncing with device shot events & manual recordings)
   - phase-colored trace replay with a below-target scrubber (play/pause, replay
-    speed, scroll/pinch zoom)
+    speed, scroll/pinch zoom) and optional **Compare with** shot overlay
   - saved-shots history auto-grouped into practice sessions by timestamp
     (30-minute gap), with per-session editable name and bow
   - device setup & hardware configuration
@@ -534,12 +540,16 @@ device, protocol, telemetry, ui) and supports **Web Serial, Web Bluetooth, and a
 demo stream**. Web Serial opens the device's USB VCOM, asserts DTR/RTS, and
 decodes `OFRAW` text with firmware-computed Madgwick Euler angles. Web Bluetooth
 decodes the 28-byte binary frames (live samples batched in 196-byte
-notifications, plus shot-event and count-sync frames); those BLE frames carry
-the on-board Madgwick filter quaternion, allowing the browser to extract and
-convert it to Euler angles directly, aligning it with the serial stream.
-Additionally, a Progressive Web App (PWA) service worker (`service-worker.js`)
-is registered to cache all core markup, styling, modules, and 3D GLTF assets,
-ensuring the application is fully functional offline at remote archery ranges.
+notifications, plus shot-event, count-sync, storage-status, stored-shot, and
+trace-chunk frames); those BLE frames carry the on-board Madgwick filter
+quaternion, allowing the browser to extract and convert it to Euler angles
+directly, aligning it with the serial stream. The app also includes local bow
+profiles, timestamp-derived practice sessions, manual trace recording, saved
+shot review/compare, and an optional Supabase-backed sync queue configured from
+the Cloud modal. Additionally, a Progressive Web App (PWA) service worker
+(`service-worker.js`) is registered to cache all core markup, styling, modules,
+and the 3D bow model, ensuring the application is usable offline at remote
+archery ranges after it has been loaded once.
 
 ### Real-time UI & Database Updates
 The Recent Shots list is reactive. When a connection is active (serial or BLE) and the device detects a shot, the adapter parses and relays the event onto the global `EventBus` as a `"shot"` event. The `TelemetryStore` listens to this event, deduplicates against the set of device shot IDs already handled **this connection** (the device's `shot_id` restarts at 0 after a `shotreset`/reflash, so all-time deduplication by ID is unsafe), writes the shot to IndexedDB with `session_id: null`, and emits a `"shot-saved"` event. The dashboard UI listens to `"shot-saved"` and instantly updates the Recent Shots grid. Practice sessions are no longer tracked live — they are derived from shot timestamps when the Saved Shots history is rendered (any gap over 30 minutes starts a new session), and the user can rename a session and assign its bow, stored as a per-group override.
@@ -602,7 +612,11 @@ Cloud sync should upload after local persistence succeeds, not before.
 
 ## 13. Cloud Architecture
 
-Cloud is optional and should enhance the product rather than gate it.
+Cloud is optional and should enhance the product rather than gate it. The
+current browser app has an optional Supabase adapter: users can enter a Supabase
+URL and anon key in the Cloud modal, the app signs in anonymously when allowed,
+and local IndexedDB mutations are queued before upload. This is a contributor
+prototype for self-hosted sync, not a hosted OpenFloat account service.
 
 Recommended model:
 
@@ -750,15 +764,19 @@ not begun. See the Implementation Status section near the top for detail.
 - Add threshold configuration. (Runtime BLE command `thresh:<g>` implemented.)
 - Add sample-rate and range configuration. (Not yet runtime-configurable.)
 
-### Phase 6: Local-First Persistence  [todo]
+### Phase 6: Local-First Persistence  [partial]
 
-- Save shots and sessions to IndexedDB.
+- Save shots, traces, bow profiles, timestamp-derived session overrides, and
+  sync queue tasks to IndexedDB.
 - Add import/export for open-source data portability.
 
-### Phase 7: Optional Cloud Sync  [todo]
+### Phase 7: Optional Cloud Sync  [partial]
 
-- Add account login.
-- Sync local shots after successful local save.
+- Add account login. (Prototype uses optional Supabase credentials and anonymous
+  auth where enabled.)
+- Sync local shots after successful local save. (Queued Supabase upserts are
+  implemented for shots/traces/profiles; production account UX and conflict
+  handling are still future work.)
 - Keep offline use fully functional.
 
 ### Phase 8: Field Validation  [todo]

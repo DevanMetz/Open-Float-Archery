@@ -223,6 +223,119 @@ function holdWindow(data, releaseIdx, hasRelease) {
   return data.slice(0, releaseStart);
 }
 
+function reviewTraceCenter(data, releaseIdx, hasRelease, holdData) {
+  if (hasRelease && data[releaseIdx]) {
+    return {
+      roll: data[releaseIdx].roll || 0,
+      pitch: data[releaseIdx].pitch || 0,
+    };
+  }
+
+  let sumRoll = 0;
+  let sumPitch = 0;
+  let count = 0;
+  for (const pt of holdData) {
+    sumRoll += pt.roll || 0;
+    sumPitch += pt.pitch || 0;
+    count++;
+  }
+  if (count > 0) {
+    return { roll: sumRoll / count, pitch: sumPitch / count };
+  }
+  return { roll: data[0]?.roll || 0, pitch: data[0]?.pitch || 0 };
+}
+
+function maxDeviationAround(scaleData, rollCenter, pitchCenter) {
+  let maxDev = 1.0;
+  for (const pt of scaleData) {
+    const dx = (pt.roll || 0) - rollCenter;
+    const dy = (pt.pitch || 0) - pitchCenter;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxDev) maxDev = dist;
+  }
+  return maxDev;
+}
+
+// Points used to size the target scale (hold-focused; excludes follow-through spikes).
+function reviewScalePoints(traceData, releaseIdx, hasRelease) {
+  const holdData = holdWindow(traceData, releaseIdx, hasRelease);
+  if (holdData.length >= 5) return holdData;
+  if (!hasRelease) return traceData;
+  const releaseEnd = Math.min(
+    traceData.length - 1,
+    releaseIdx + Math.max(8, Math.round(traceData.length * 0.055)),
+  );
+  return traceData.slice(0, releaseEnd + 1);
+}
+
+const REVIEW_TARGET_SCALE_FIT = 0.85;
+
+// Overlay a compare shot using the same normalization as the primary review trace:
+// subtract the detected release roll/pitch so the shot point maps to target center.
+function drawCompareReviewTrace(ctx, {
+  traceData,
+  releaseIdx,
+  hasRelease,
+  rollCenter,
+  pitchCenter,
+  displayScale,
+  normMaxDev,
+  cx,
+  cy,
+  replayProgress,
+}) {
+  if (traceData.length < 2) return;
+
+  const replayCount = Math.max(2, Math.ceil(traceData.length * replayProgress));
+  const visible = traceData.slice(0, replayCount);
+  const mapPoint = (pt) => ({
+    x: cx + (((pt.roll || 0) - rollCenter) / normMaxDev) * displayScale,
+    y: cy - (((pt.pitch || 0) - pitchCenter) / normMaxDev) * displayScale,
+  });
+
+  ctx.save();
+  ctx.strokeStyle = "#35C7E8";
+  ctx.lineWidth = 2.6;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.globalAlpha = 0.88;
+  ctx.beginPath();
+  for (let i = 0; i < visible.length; i++) {
+    const p = mapPoint(visible[i]);
+    if (i === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  }
+  ctx.stroke();
+
+  // Release reticle at target center — same anchoring as the primary trace.
+  if (hasRelease && visible.length > releaseIdx) {
+    ctx.strokeStyle = "rgba(53, 199, 232, 0.9)";
+    ctx.fillStyle = "rgba(53, 199, 232, 0.16)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - 12, cy);
+    ctx.lineTo(cx + 12, cy);
+    ctx.moveTo(cx, cy - 12);
+    ctx.lineTo(cx, cy + 12);
+    ctx.stroke();
+  }
+
+  const finalPt = mapPoint(visible[visible.length - 1]);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#35C7E8";
+  ctx.beginPath();
+  ctx.arc(finalPt.x, finalPt.y, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#FFFFFF";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawSigmaEllipse(ctx, points, mapPoint) {
   if (points.length < 8) return;
 
@@ -1004,34 +1117,16 @@ export function mountDashboard({ store, telemetry, el }) {
         let rollCenter = 0;
         let pitchCenter = 0;
 
-        const thresholdG = state.threshold ?? 12.0;
+        const thresholdG = state.reviewMode && state.reviewThresholdG != null
+          ? state.reviewThresholdG
+          : (state.threshold ?? 12.0);
         const { releaseIdx, hasRelease } = findReleaseIndex(data, state.reviewMode, thresholdG);
         const holdData = holdWindow(data, releaseIdx, hasRelease);
 
         if (state.reviewMode) {
-          if (hasRelease && data[releaseIdx]) {
-            // Center the target on the point of shot detection (the release),
-            // so the red crosshair sits at dead center of the face.
-            rollCenter = data[releaseIdx].roll || 0;
-            pitchCenter = data[releaseIdx].pitch || 0;
-          } else {
-            // No release detected: fall back to the hold-portion average.
-            let sumRoll = 0;
-            let sumPitch = 0;
-            let count = 0;
-            for (let i = 0; i < holdData.length; i++) {
-              sumRoll += holdData[i].roll || 0;
-              sumPitch += holdData[i].pitch || 0;
-              count++;
-            }
-            if (count > 0) {
-              rollCenter = sumRoll / count;
-              pitchCenter = sumPitch / count;
-            } else {
-              rollCenter = data[0].roll || 0;
-              pitchCenter = data[0].pitch || 0;
-            }
-          }
+          const center = reviewTraceCenter(data, releaseIdx, hasRelease, holdData);
+          rollCenter = center.roll;
+          pitchCenter = center.pitch;
         } else {
           // Centering around hold average in live streaming view
           let sumRoll = 0;
@@ -1044,25 +1139,69 @@ export function mountDashboard({ store, telemetry, el }) {
           pitchCenter = sumPitch / data.length;
         }
 
-        // Normalize scale: find the maximum deviation inside the hold portion (ignoring release spike)
-        let maxDev = 1.0; // Minimum 1.0 degree window to prevent infinite zoom on tiny movements
-        const scaleData = state.reviewMode && holdData.length >= 5 ? holdData : data;
-        for (let i = 0; i < scaleData.length; i++) {
-          const pt = scaleData[i];
-          const dx = (pt.roll || 0) - rollCenter;
-          const dy = (pt.pitch || 0) - pitchCenter;
-          const dist = Math.hypot(dx, dy);
-          if (dist > maxDev) {
-            maxDev = dist;
-          }
+        const primaryScalePts = reviewScalePoints(data, releaseIdx, hasRelease);
+        const primaryNormMaxDev = maxDeviationAround(primaryScalePts, rollCenter, pitchCenter);
+
+        let compareOverlay = null;
+        let compareNormMaxDev = 1.0;
+        if (state.reviewMode && state.compareTrace && state.compareTrace.length >= 2) {
+          const compareData = state.compareTrace;
+          const compareThreshold = state.compareThresholdG ?? 12;
+          const compareRelease = findReleaseIndex(compareData, true, compareThreshold);
+          const compareHoldData = holdWindow(
+            compareData,
+            compareRelease.releaseIdx,
+            compareRelease.hasRelease,
+          );
+          const compareCenter = reviewTraceCenter(
+            compareData,
+            compareRelease.releaseIdx,
+            compareRelease.hasRelease,
+            compareHoldData,
+          );
+          const compareScalePts = reviewScalePoints(
+            compareData,
+            compareRelease.releaseIdx,
+            compareRelease.hasRelease,
+          );
+          compareNormMaxDev = maxDeviationAround(
+            compareScalePts,
+            compareCenter.roll,
+            compareCenter.pitch,
+          );
+          compareOverlay = {
+            traceData: compareData,
+            releaseIdx: compareRelease.releaseIdx,
+            hasRelease: compareRelease.hasRelease,
+            rollCenter: compareCenter.roll,
+            pitchCenter: compareCenter.pitch,
+          };
         }
 
-        // Map the maximum deviation exactly to the outer ring of the target face (maxRadius)
-        const scale = (maxRadius / maxDev) * targetZoom;
+        // Solo review: one shared scale from the primary trace extent.
+        // Compare mode: each trace is normalized to its own movement extent, then
+        // drawn with the same display scale so neither looks compressed on the face.
+        const displayScale = maxRadius * REVIEW_TARGET_SCALE_FIT * targetZoom;
+        const primaryDrawScale = displayScale / primaryNormMaxDev;
         const mapPoint = (pt) => ({
-          x: cx + ((pt.roll || 0) - rollCenter) * scale,
-          y: cy - ((pt.pitch || 0) - pitchCenter) * scale,
+          x: cx + ((pt.roll || 0) - rollCenter) * primaryDrawScale,
+          y: cy - ((pt.pitch || 0) - pitchCenter) * primaryDrawScale,
         });
+
+        if (compareOverlay) {
+          drawCompareReviewTrace(ctx, {
+            traceData: compareOverlay.traceData,
+            releaseIdx: compareOverlay.releaseIdx,
+            hasRelease: compareOverlay.hasRelease,
+            rollCenter: compareOverlay.rollCenter,
+            pitchCenter: compareOverlay.pitchCenter,
+            displayScale,
+            normMaxDev: compareNormMaxDev,
+            cx,
+            cy,
+            replayProgress,
+          });
+        }
 
         drawSigmaEllipse(ctx, holdData, mapPoint);
 
@@ -1130,7 +1269,11 @@ export function mountDashboard({ store, telemetry, el }) {
           ctx.textBaseline = "bottom";
           ctx.fillText(`zoom ${targetZoom.toFixed(1)}x`, w - 12, h - 12);
           ctx.textAlign = "left";
-          ctx.fillText("green hold  red release  gray follow", 12, h - 12);
+          const phaseHint = "green hold  red release  gray follow";
+          const compareHint = compareOverlay
+            ? "  |  cyan = compare (release centered, matched scale)"
+            : "";
+          ctx.fillText(phaseHint + compareHint, 12, h - 12);
         }
       }
     } else {

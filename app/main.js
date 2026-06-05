@@ -2,8 +2,8 @@
 // own the transport lifecycle (connect / disconnect / demo).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-57";
-import { createAdapter } from "./device/adapters.js?v=shot-store-57";
+import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-81";
+import { createAdapter } from "./device/adapters.js?v=shot-store-81";
 import {
   cloneMountAxes,
   mountDashboard,
@@ -12,12 +12,16 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/dashboard.js?v=shot-store-57";
-import { mountAnalysis } from "./ui/analysis.js?v=shot-store-57";
+} from "./ui/dashboard.js?v=shot-store-81";
+import {
+  drawEmptyTargetPreview,
+  drawTraceTargetPreview,
+  watchTracePreviewResize,
+} from "./ui/trace-preview.js?v=shot-store-81";
 import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS } from "./core/db.js";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-57";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-81";
 
-const APP_BUILD = "shot-store-65";
+const APP_BUILD = "shot-store-81";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -30,7 +34,8 @@ const ELEMENT_IDS = [
   "syncBadge", "syncText", "cloudModal", "closeCloudModalBtn",
   "sbUrlInput", "sbKeyInput", "saveCloudSettingsBtn", "clearCloudSettingsBtn",
   "saveManualBtn",
-  "chartTitle", "reviewBanner", "reviewInfo", "exitReviewBtn",
+  "chartTitle", "reviewBanner", "reviewInfo", "reviewCompareSelect",
+  "reviewCompareField", "reviewCompareLegend", "exitReviewBtn",
   "navDashboardBtn", "navHistoryBtn", "navSettingsBtn",
   "tabDashboard", "tabHistory", "tabSettings", "historyList",
   "recordToggleBtn", "recordToggleLabel", "recordStatusItem",
@@ -61,13 +66,6 @@ const ELEMENT_IDS = [
   "mobileAlertBanner", "mobileAlertText", "closeMobileAlertBtn",
   "bowProfileSelect", "bowModelInput", "drawWeightInput", "stabilizerSetupInput", "bowNotesInput",
   "saveBowProfileBtn", "deleteBowProfileBtn", "newBowProfileBtn",
-  "compareBowASelect", "compareShotASelect", "compareBowBSelect", "compareShotBSelect",
-  "runCompareBtn", "compareStatsPanel", "compareHoldAVal", "compareHoldBVal",
-  "compareReleaseAVal", "compareReleaseBVal", "compareFollowAVal", "compareFollowBVal",
-  "compareFormAVal", "compareFormBVal", "compareChartCard", "compareViewFloatBtn",
-  "compareViewTimelineBtn", "compareCanvas", "navAnalysisBtn", "tabAnalysis",
-  "compareTraceControls", "compareReplayBtn", "compareScrubSlider", "compareScrubValue",
-  "compareZoomOutBtn", "compareZoomValue", "compareZoomInBtn",
   "recentShotsPanel", "recentShotsList",
   "toggleLevelTuneBtn", "levelTuneSection", "levelRangeSlider",
   "levelRangeValue", "levelToleranceSlider", "levelToleranceValue"
@@ -128,9 +126,15 @@ const store = createStore({
   syncQueueCount: 0,
   cloudUser: null,
   reviewMode: false,
+  reviewShotId: null,
   reviewTrace: null,
   reviewSampleRateHz: 52,
+  reviewThresholdG: 12,
   reviewInfo: "",
+  compareShotId: null,
+  compareTrace: null,
+  compareShotLabel: "",
+  compareThresholdG: 12,
   chartView: "line",
   formScore: null,
   holdStability: null,
@@ -292,7 +296,6 @@ telemetry.syncAdapter = syncAdapter; // Register sync on telemetry store
 
 mountDashboard({ store, telemetry, el });
 mountLog(bus, el.eventLog);
-mountAnalysis(bus, store, el);
 mountOrientationSettings({ store, el });
 
 // Initialize settings fields from localStorage cache on load
@@ -317,9 +320,22 @@ store.subscribe((state) => {
     el.viewTargetBtn.classList.toggle("active", state.chartView === "target");
   }
 
-  if (el.reviewScrubBar && el.replayTraceBtn && el.speedValue) {
-    const pinReviewActive = state.reviewMode && state.chartView === "target";
-    el.reviewScrubBar.classList.toggle("hidden", !pinReviewActive);
+    if (el.reviewCompareLegend) {
+      const hasCompare = !!(state.reviewMode && state.compareTrace && state.compareTrace.length);
+      el.reviewCompareLegend.classList.toggle("hidden", !hasCompare);
+      if (hasCompare) {
+        const compareLabel = state.compareShotLabel || "Compare";
+        const compareSpan = el.reviewCompareLegend.querySelector(".legend-compare");
+        if (compareSpan) compareSpan.textContent = compareLabel;
+      }
+    }
+    if (el.reviewCompareSelect) {
+      el.reviewCompareSelect.disabled = !state.reviewMode;
+    }
+
+    if (el.reviewScrubBar && el.replayTraceBtn && el.speedValue) {
+      const pinReviewActive = state.reviewMode && state.chartView === "target";
+      el.reviewScrubBar.classList.toggle("hidden", !pinReviewActive);
     const playing = state.replayActive && !state.replayPaused;
     el.replayTraceBtn.classList.toggle("playing", playing);
     el.replayTraceBtn.title = playing ? "Pause replay" : "Play replay";
@@ -662,18 +678,30 @@ el.discardRecordBtn.addEventListener("click", () => {
   }
 });
 el.zeroBtn.addEventListener("click", () => {
-  if (adapter) {
-    adapter.sendControl("zero");
-    const roll = store.get().roll || 0;
-    const pitch = store.get().pitch || 0;
-    const yaw = store.get().yaw || 0;
-    store.set({
-      cantOffset: roll,
-      pitchOffset: pitch
-    });
-    bus.emit("log", `Zero calibration requested. Bow level set at Cant: ${roll.toFixed(1)} deg, Pitch: ${pitch.toFixed(1)} deg, Yaw: ${yaw.toFixed(1)} deg`);
-    saveSettingsToCache();
-  }
+  if (!adapter) return;
+
+  const roll = store.get().roll || 0;
+  const pitch = store.get().pitch || 0;
+  const yaw = store.get().yaw || 0;
+  const confirmed = confirm(
+    "Run zero calibration?\n\n" +
+      "This sets the bow level reference from the sensor's current cant and pitch. " +
+      "Only do this when the bow is level and still.\n\n" +
+      `Current reading: Cant ${roll.toFixed(1)}°, Pitch ${pitch.toFixed(1)}°, Yaw ${yaw.toFixed(1)}°\n\n` +
+      "Your previous calibration will be replaced.",
+  );
+  if (!confirmed) return;
+
+  adapter.sendControl("zero");
+  store.set({
+    cantOffset: roll,
+    pitchOffset: pitch,
+  });
+  bus.emit(
+    "log",
+    `Zero calibration requested. Bow level set at Cant: ${roll.toFixed(1)} deg, Pitch: ${pitch.toFixed(1)} deg, Yaw: ${yaw.toFixed(1)} deg`,
+  );
+  saveSettingsToCache();
 });
 el.zeroYawBtn.addEventListener("click", () => {
   const yaw = store.get().yaw || 0;
@@ -948,18 +976,16 @@ el.modelIgnoreYawToggle.addEventListener("change", () => {
 
 // Tab Switching Navigation Logic
 function selectViewTab(targetId) {
-  const tabs = ["tabDashboard", "tabHistory", "tabSettings", "tabAnalysis"];
+  const tabs = ["tabDashboard", "tabHistory", "tabSettings"];
   const navButtons = {
     tabDashboard: el.navDashboardBtn,
     tabHistory: el.navHistoryBtn,
     tabSettings: el.navSettingsBtn,
-    tabAnalysis: el.navAnalysisBtn
   };
   const panels = {
     tabDashboard: el.tabDashboard,
     tabHistory: el.tabHistory,
     tabSettings: el.tabSettings,
-    tabAnalysis: el.tabAnalysis
   };
 
   tabs.forEach((id) => {
@@ -979,14 +1005,13 @@ function selectViewTab(targetId) {
     loadShotHistoryList();
   }
   if (targetId === "tabDashboard") {
-    loadRecentShotsList();
+    withPreservedScroll(() => loadRecentShotsList());
   }
 }
 
-if (el.navDashboardBtn && el.navHistoryBtn && el.navSettingsBtn && el.navAnalysisBtn) {
+if (el.navDashboardBtn && el.navHistoryBtn && el.navSettingsBtn) {
   el.navDashboardBtn.addEventListener("click", () => selectViewTab("tabDashboard"));
   el.navHistoryBtn.addEventListener("click", () => selectViewTab("tabHistory"));
-  el.navAnalysisBtn.addEventListener("click", () => selectViewTab("tabAnalysis"));
   el.navSettingsBtn.addEventListener("click", () => selectViewTab("tabSettings"));
 }
 
@@ -1302,6 +1327,7 @@ async function loadShotHistoryList() {
     const groups = groupShotsByTime(shots);
 
     el.historyList.innerHTML = "";
+    const historyPreviewJobs = [];
     let isFirst = true;
     for (const group of groups) {
       const override = overrideMap.get(group.anchorId) || null;
@@ -1408,46 +1434,106 @@ async function loadShotHistoryList() {
 
       const containerEl = groupEl.querySelector(".session-shots-container");
       for (const shot of group.shots) {
-        const item = document.createElement("div");
-        item.className = "history-item";
-
-        const timestampStr = new Date(shot.timestamp).toLocaleTimeString();
-        const title = shot.label || (shot.peak_g > 15 ? "Arrow Release" : "Hold Capture");
-        const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
-
-        item.innerHTML = `
-          <div class="history-meta">
-            <div class="history-title">${escapeHtml(title)}</div>
-            <div class="history-subtitle">${timestampStr}</div>
-          </div>
-          <div class="history-metrics">
-            <div class="history-stat">
-              <span class="history-stat-label">Score</span>
-              <span class="history-stat-val score">${score}</span>
-            </div>
-            <div class="history-stat">
-              <span class="history-stat-label">Stability</span>
-              <span class="history-stat-val stability">${shot.stability_score}%</span>
-            </div>
-            <div class="history-stat">
-              <span class="history-stat-label">Peak G</span>
-              <span class="history-stat-val peak">${shot.peak_g.toFixed(1)}g</span>
-            </div>
-          </div>
-        `;
-
+        const item = buildHistoryItemElement(shot);
         item.addEventListener("click", (e) => {
+          if (e.target.closest(".history-item-delete-btn")) return;
           e.stopPropagation();
           reviewShotTrace(shot);
         });
+        const deleteBtn = item.querySelector(".history-item-delete-btn");
+        deleteBtn?.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          deleteSavedShot(shot.id);
+        });
         containerEl.appendChild(item);
+        historyPreviewJobs.push({ item, shot });
       }
 
       el.historyList.appendChild(groupEl);
     }
+
+    await paintHistoryShotPreviews(historyPreviewJobs);
   } catch (error) {
     console.error("Error loading shot history:", error);
     el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center; color: var(--red);">Failed to load history: ${error.message}</p>`;
+  }
+}
+
+function formatShotCompareLabel(shot) {
+  const timeStr = new Date(shot.timestamp).toLocaleString();
+  const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
+  const label = shot.label || (shot.peak_g > 15 ? "Arrow" : "Hold");
+  return `${label} - ${timeStr} (Score: ${score})`;
+}
+
+async function refreshReviewCompareOptions(currentShotId, preserveSelection = true) {
+  if (!el.reviewCompareSelect) return;
+
+  const previous = preserveSelection ? el.reviewCompareSelect.value : "";
+  const shots = await getAll("shots");
+  const candidates = [];
+
+  for (const candidate of shots) {
+    if (candidate.id === currentShotId) continue;
+    const trace = await get("shot_traces", candidate.id);
+    if (trace && trace.payload && trace.payload.length >= 2) {
+      candidates.push(candidate);
+    }
+  }
+
+  candidates.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+  el.reviewCompareSelect.innerHTML =
+    '<option value="">None</option>' +
+    candidates
+      .map((s) => `<option value="${s.id}">${escapeHtml(formatShotCompareLabel(s))}</option>`)
+      .join("");
+
+  if (previous && [...el.reviewCompareSelect.options].some((opt) => opt.value === previous)) {
+    el.reviewCompareSelect.value = previous;
+  } else {
+    el.reviewCompareSelect.value = "";
+  }
+}
+
+async function loadReviewCompareShot(shotId) {
+  if (!shotId) {
+    store.set({
+      compareShotId: null,
+      compareTrace: null,
+      compareShotLabel: "",
+      compareThresholdG: 12,
+    });
+    return;
+  }
+
+  try {
+    const shot = await get("shots", shotId);
+    const trace = await get("shot_traces", shotId);
+    if (!shot || !trace || !trace.payload || trace.payload.length < 2) {
+      store.set({
+        compareShotId: null,
+        compareTrace: null,
+        compareShotLabel: "",
+        compareThresholdG: 12,
+      });
+      if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
+      bus.emit("log", "Compare shot has no saved trace.");
+      return;
+    }
+
+    const label = shot.label || formatShotCompareLabel(shot);
+    store.set({
+      compareShotId: shotId,
+      compareTrace: trace.payload,
+      compareShotLabel: label,
+      compareThresholdG: shot.threshold_g != null ? Number(shot.threshold_g) : 12,
+    });
+    bus.emit("log", `Comparing with shot ${shotId.slice(0, 8)}…`);
+  } catch (error) {
+    console.error("Failed to load compare shot:", error);
+    bus.emit("log", `Compare load failed: ${error.message}`);
   }
 }
 
@@ -1500,14 +1586,20 @@ async function reviewShotTrace(shot) {
 
     store.set({
       reviewMode: true,
+      reviewShotId: shot.id,
       reviewTrace: trace.payload,
       reviewSampleRateHz: trace.sample_rate_hz || 52,
+      reviewThresholdG: shot.threshold_g != null ? Number(shot.threshold_g) : 12,
       reviewInfo: info,
       chartView: "target",
       replayActive: false,
       replayPaused: false,
       replayProgress: 1,
       traceZoom: 1,
+      compareShotId: null,
+      compareTrace: null,
+      compareShotLabel: "",
+      compareThresholdG: 12,
       formScore: score,
       holdStability,
       releaseQuality,
@@ -1523,6 +1615,9 @@ async function reviewShotTrace(shot) {
       },
     });
 
+    await refreshReviewCompareOptions(shot.id, false);
+    if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
+
     bus.emit("log", `Entering review mode for shot ${shot.id.slice(0, 8)}...`);
     selectViewTab("tabDashboard");
   } catch (error) {
@@ -1534,9 +1629,15 @@ async function reviewShotTrace(shot) {
 el.exitReviewBtn.addEventListener("click", () => {
   store.set({
     reviewMode: false,
+    reviewShotId: null,
     reviewTrace: null,
     reviewSampleRateHz: 52,
+    reviewThresholdG: 12,
     reviewInfo: "",
+    compareShotId: null,
+    compareTrace: null,
+    compareShotLabel: "",
+    compareThresholdG: 12,
     replayActive: false,
     replayPaused: false,
     replayProgress: 1,
@@ -1548,10 +1649,397 @@ el.exitReviewBtn.addEventListener("click", () => {
     coachTitle: null,
     coachText: null
   });
+  if (el.reviewCompareSelect) {
+    el.reviewCompareSelect.innerHTML = '<option value="">None</option>';
+    el.reviewCompareSelect.value = "";
+  }
   bus.emit("log", "Exited review mode. Returned to live telemetry stream.");
 });
 
-// Load recent shots for dashboard
+if (el.reviewCompareSelect) {
+  el.reviewCompareSelect.addEventListener("change", () => {
+    loadReviewCompareShot(el.reviewCompareSelect.value);
+  });
+}
+
+const RECENT_SHOTS_LIMIT = 5;
+
+function recentShotCardMetrics(shot) {
+  const timeStr = new Date(shot.timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
+  const stability = shot.stability_score != null ? Math.round(shot.stability_score) : "--";
+  const peakG = Number.isFinite(Number(shot.peak_g)) ? Number(shot.peak_g).toFixed(1) : "--";
+  return { timeStr, score, stability, peakG };
+}
+
+function buildHistoryItemElement(shot) {
+  const item = document.createElement("div");
+  item.className = "history-item";
+  item.dataset.shotId = shot.id;
+
+  const timestampStr = new Date(shot.timestamp).toLocaleTimeString();
+  const title = shot.label || (shot.peak_g > 15 ? "Arrow Release" : "Hold Capture");
+  const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
+  const stability =
+    shot.stability_score != null ? Math.round(shot.stability_score) : "--";
+  const peakG = Number.isFinite(Number(shot.peak_g)) ? Number(shot.peak_g).toFixed(1) : "--";
+
+  item.innerHTML = `
+    <div class="history-item-preview-wrap is-empty" aria-hidden="true">
+      <canvas class="history-item-trace-preview"></canvas>
+    </div>
+    <div class="history-item-body">
+      <div class="history-meta">
+        <div class="history-title">${escapeHtml(title)}</div>
+        <div class="history-subtitle">${escapeHtml(timestampStr)}</div>
+      </div>
+      <div class="history-metrics">
+        <div class="history-stat">
+          <span class="history-stat-label">Score</span>
+          <span class="history-stat-val score">${score}</span>
+        </div>
+        <div class="history-stat">
+          <span class="history-stat-label">Stability</span>
+          <span class="history-stat-val stability">${stability}%</span>
+        </div>
+        <div class="history-stat">
+          <span class="history-stat-label">Peak G</span>
+          <span class="history-stat-val peak">${peakG}g</span>
+        </div>
+      </div>
+      <button
+        type="button"
+        class="history-item-delete-btn mini-icon-btn"
+        title="Delete shot"
+        aria-label="Delete shot"
+      >🗑</button>
+    </div>
+  `;
+  return item;
+}
+
+function syncQueueTaskMatchesShot(task, shotId) {
+  if (!task || !shotId) return false;
+  if (task.targetId === shotId) return true;
+  const payload = task.payload;
+  if (!payload) return false;
+  if (payload.shot_id === shotId) return true;
+  if (payload.id === shotId) return true;
+  return false;
+}
+
+async function purgeSyncQueueForShot(shotId) {
+  const tasks = await getAll("sync_queue");
+  const matches = tasks.filter((task) => syncQueueTaskMatchesShot(task, shotId));
+  await Promise.all(matches.map((task) => remove("sync_queue", task.id)));
+}
+
+async function deleteSavedShot(shotId) {
+  if (!shotId) return;
+
+  let shot;
+  try {
+    shot = await get("shots", shotId);
+  } catch (_) {
+    shot = null;
+  }
+  if (!shot) return;
+
+  const title = shot.label || (shot.peak_g > 15 ? "Arrow Release" : "Hold Capture");
+  const timeStr = new Date(shot.timestamp).toLocaleString();
+  const confirmed = confirm(
+    `Delete this saved shot?\n\n${title}\n${timeStr}\n\nThis cannot be undone.`,
+  );
+  if (!confirmed) return;
+
+  try {
+    await purgeSyncQueueForShot(shotId);
+    try {
+      await remove("shot_traces", shotId);
+    } catch (_) {}
+    await remove("shots", shotId);
+
+    try {
+      const override = await get("session_overrides", shotId);
+      if (override) await remove("session_overrides", shotId);
+    } catch (_) {}
+
+    const state = store.get();
+    const updates = {};
+    if (state.reviewMode && state.reviewShotId === shotId) {
+      Object.assign(updates, {
+        reviewMode: false,
+        reviewShotId: null,
+        reviewTrace: null,
+        reviewInfo: "",
+        replayActive: false,
+        replayPaused: false,
+        replayProgress: 1,
+      });
+    }
+    if (state.compareShotId === shotId) {
+      Object.assign(updates, {
+        compareShotId: null,
+        compareTrace: null,
+        compareShotLabel: "",
+        compareThresholdG: 12,
+      });
+      if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
+    }
+    if (Object.keys(updates).length > 0) store.set(updates);
+
+    el.recentShotsList
+      ?.querySelector(`.recent-shot-card[data-shot-id="${shotId}"]`)
+      ?.remove();
+
+    const historyItem = el.historyList?.querySelector(
+      `.history-item[data-shot-id="${shotId}"]`,
+    );
+    if (historyItem) {
+      const sessionGroup = historyItem.closest(".session-group");
+      historyItem.remove();
+      const remaining = sessionGroup?.querySelectorAll(".history-item").length ?? 0;
+      if (remaining === 0 && sessionGroup) {
+        sessionGroup.remove();
+      } else if (sessionGroup) {
+        const shotsLeft = sessionGroup.querySelectorAll(".history-item").length;
+        const shotsBadge = sessionGroup.querySelector(
+          ".session-stat-badge:first-child .badge-val",
+        );
+        if (shotsBadge) shotsBadge.textContent = String(shotsLeft);
+      }
+      const anyShots = el.historyList?.querySelector(".history-item");
+      if (!anyShots) {
+        el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">No saved shots yet. Shots taken within ${Math.round(SESSION_GAP_MS / 60000)} minutes of each other are grouped into a session automatically.</p>`;
+      }
+    } else {
+      await loadShotHistoryList();
+    }
+
+    if (state.reviewMode && state.reviewShotId && state.reviewShotId !== shotId) {
+      await refreshReviewCompareOptions(state.reviewShotId);
+    }
+
+    if (syncAdapter) syncAdapter.triggerSync();
+    bus.emit("log", `Deleted shot "${title}".`);
+  } catch (error) {
+    console.error("Failed to delete shot:", error);
+    bus.emit("log", `Delete failed: ${error.message}`);
+    alert(`Could not delete shot: ${error.message}`);
+  }
+}
+
+async function paintHistoryShotPreviews(jobs) {
+  if (!el.historyList) return;
+  const entries = jobs?.length
+    ? jobs
+    : [...el.historyList.querySelectorAll(".history-item[data-shot-id]")].map((item) => ({
+        item,
+        shot: null,
+      }));
+
+  await Promise.all(
+    entries.map(async ({ item, shot }) => {
+      const canvas = item.querySelector(".history-item-trace-preview");
+      const wrap = item.querySelector(".history-item-preview-wrap");
+      if (!canvas || !wrap) return;
+      try {
+        const shotId = item.dataset.shotId;
+        const record = shot || (shotId ? await get("shots", shotId) : null);
+        if (!record) return;
+        let trace = null;
+        try {
+          trace = await get("shot_traces", record.id);
+        } catch (_) {
+          trace = null;
+        }
+        paintShotPreview(canvas, wrap, record, trace);
+      } catch (error) {
+        console.error("Failed to paint history shot preview:", error);
+      }
+    }),
+  );
+}
+
+async function refreshHistoryShotPreview(localShotId) {
+  if (!el.historyList || !localShotId) return;
+  const item = el.historyList.querySelector(
+    `.history-item[data-shot-id="${localShotId}"]`,
+  );
+  if (!item) return;
+  try {
+    const shot = await get("shots", localShotId);
+    const trace = await get("shot_traces", localShotId);
+    const canvas = item.querySelector(".history-item-trace-preview");
+    const wrap = item.querySelector(".history-item-preview-wrap");
+    if (!shot || !canvas || !wrap) return;
+    paintShotPreview(canvas, wrap, shot, trace);
+  } catch (error) {
+    console.error("Failed to refresh history shot preview:", error);
+  }
+}
+
+function paintShotPreview(canvas, wrap, shot, trace) {
+  if (!canvas || !wrap) return;
+  const thresholdG = shot.threshold_g != null ? Number(shot.threshold_g) : 12;
+  const paint = () => {
+    if (trace?.payload?.length >= 2) {
+      drawTraceTargetPreview(canvas, trace.payload, { thresholdG });
+      wrap.classList.remove("is-empty");
+    } else {
+      drawEmptyTargetPreview(canvas);
+      wrap.classList.add("is-empty");
+    }
+  };
+  watchTracePreviewResize(canvas, paint);
+  requestAnimationFrame(() => requestAnimationFrame(paint));
+}
+
+function buildRecentShotCardElement(shot, trace, titleIndex, totalShots) {
+  const item = document.createElement("div");
+  item.className = "recent-shot-card";
+  item.dataset.shotId = shot.id;
+
+  const { timeStr, score, stability, peakG } = recentShotCardMetrics(shot);
+  const title = shot.label || `Shot #${Math.max(1, totalShots - titleIndex)}`;
+
+  item.innerHTML = `
+    <div class="recent-shot-preview-wrap is-empty" aria-hidden="true">
+      <canvas class="recent-shot-preview"></canvas>
+    </div>
+    <div class="recent-shot-header">
+      <span class="recent-shot-title">${escapeHtml(title)}</span>
+      <span class="recent-shot-time">${escapeHtml(timeStr)}</span>
+    </div>
+    <div class="recent-shot-metrics">
+      <div class="recent-shot-metric">
+        <span class="metric-label">Score</span>
+        <strong class="metric-val score">${score}</strong>
+      </div>
+      <div class="recent-shot-metric">
+        <span class="metric-label">Stability</span>
+        <strong class="metric-val">${stability}%</strong>
+      </div>
+      <div class="recent-shot-metric">
+        <span class="metric-label">Peak G</span>
+        <strong class="metric-val">${peakG}g</strong>
+      </div>
+    </div>
+  `;
+
+  const previewCanvas = item.querySelector(".recent-shot-preview");
+  const previewWrap = item.querySelector(".recent-shot-preview-wrap");
+  paintShotPreview(previewCanvas, previewWrap, shot, trace);
+
+  item.addEventListener("click", () => {
+    reviewShotTrace(shot);
+  });
+  return item;
+}
+
+function updateRecentShotCardMetrics(card, shot, titleIndex, totalShots) {
+  const { timeStr, score, stability, peakG } = recentShotCardMetrics(shot);
+  const title = shot.label || `Shot #${Math.max(1, totalShots - titleIndex)}`;
+  const titleEl = card.querySelector(".recent-shot-title");
+  const timeEl = card.querySelector(".recent-shot-time");
+  const scoreEl = card.querySelector(".metric-val.score");
+  const metrics = card.querySelectorAll(".recent-shot-metric .metric-val");
+  if (titleEl) titleEl.textContent = title;
+  if (timeEl) timeEl.textContent = timeStr;
+  if (scoreEl) scoreEl.textContent = String(score);
+  if (metrics[1]) metrics[1].textContent = `${stability}%`;
+  if (metrics[2]) metrics[2].textContent = `${peakG}g`;
+}
+
+function trimRecentShotCards() {
+  if (!el.recentShotsList) return;
+  const cards = el.recentShotsList.querySelectorAll(".recent-shot-card");
+  for (let i = RECENT_SHOTS_LIMIT; i < cards.length; i++) {
+    cards[i].remove();
+  }
+}
+
+function clearRecentShotsEmptyNote() {
+  if (!el.recentShotsList) return;
+  const note = el.recentShotsList.querySelector(":scope > .note");
+  if (note) note.remove();
+}
+
+async function refreshRecentShotPreview(localShotId) {
+  if (!el.recentShotsList || !localShotId) return;
+  const card = el.recentShotsList.querySelector(
+    `.recent-shot-card[data-shot-id="${localShotId}"]`,
+  );
+  if (!card) return;
+
+  try {
+    const shot = await get("shots", localShotId);
+    const trace = await get("shot_traces", localShotId);
+    if (!shot) return;
+    const canvas = card.querySelector(".recent-shot-preview");
+    const wrap = card.querySelector(".recent-shot-preview-wrap");
+    paintShotPreview(canvas, wrap, shot, trace);
+  } catch (error) {
+    console.error("Failed to refresh recent shot preview:", error);
+  }
+}
+
+async function upsertRecentShotCard(localShotId) {
+  if (!el.recentShotsList || !localShotId) return;
+
+  try {
+    const shot = await get("shots", localShotId);
+    if (!shot) return;
+
+    const allShots = await getAll("shots");
+    allShots.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const totalShots = allShots.length;
+
+    clearRecentShotsEmptyNote();
+
+    let card = el.recentShotsList.querySelector(
+      `.recent-shot-card[data-shot-id="${localShotId}"]`,
+    );
+    if (card) {
+      updateRecentShotCardMetrics(card, shot, 0, totalShots);
+      return;
+    }
+
+    const trace = await get("shot_traces", localShotId);
+    card = buildRecentShotCardElement(shot, trace, 0, totalShots);
+    el.recentShotsList.prepend(card);
+    trimRecentShotCards();
+  } catch (error) {
+    console.error("Failed to upsert recent shot card:", error);
+  }
+}
+
+function withPreservedScroll(run) {
+  const root = document.scrollingElement || document.documentElement;
+  const scrollTop = root.scrollTop;
+  const finish = () => {
+    requestAnimationFrame(() => {
+      root.scrollTop = scrollTop;
+    });
+  };
+  try {
+    const result = run();
+    if (result && typeof result.then === "function") {
+      return result.then(finish, finish);
+    }
+    finish();
+    return result;
+  } catch (error) {
+    finish();
+    throw error;
+  }
+}
+
+// Load recent shots for dashboard (full rebuild — only on init / tab switch)
 async function loadRecentShotsList() {
   if (!el.recentShotsList) return;
   try {
@@ -1561,63 +2049,53 @@ async function loadRecentShotsList() {
       return;
     }
 
-    // Sort shots by timestamp descending (newest first)
     shots.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const recent = shots.slice(0, RECENT_SHOTS_LIMIT);
 
-    // Take the 5 most recent shots
-    const recent = shots.slice(0, 5);
+    el.recentShotsList.replaceChildren();
 
-    el.recentShotsList.innerHTML = "";
-    
-    recent.forEach((shot, index) => {
-      const item = document.createElement("div");
-      item.className = "recent-shot-card";
-      
-      const timeStr = new Date(shot.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
-      const title = shot.label || `Shot #${shots.length - index}`;
+    const traceEntries = await Promise.all(
+      recent.map(async (shot) => {
+        try {
+          const trace = await get("shot_traces", shot.id);
+          return { shot, trace };
+        } catch (_) {
+          return { shot, trace: null };
+        }
+      }),
+    );
 
-      item.innerHTML = `
-        <div class="recent-shot-header">
-          <span class="recent-shot-title">${title}</span>
-          <span class="recent-shot-time">${timeStr}</span>
-        </div>
-        <div class="recent-shot-metrics">
-          <div class="recent-shot-metric">
-            <span class="metric-label">Score</span>
-            <strong class="metric-val score">${score}</strong>
-          </div>
-          <div class="recent-shot-metric">
-            <span class="metric-label">Stability</span>
-            <strong class="metric-val">${Math.round(shot.stability_score)}%</strong>
-          </div>
-          <div class="recent-shot-metric">
-            <span class="metric-label">Peak G</span>
-            <strong class="metric-val">${shot.peak_g.toFixed(1)}g</strong>
-          </div>
-        </div>
-      `;
-
-      item.addEventListener("click", () => {
-        reviewShotTrace(shot);
-      });
-      el.recentShotsList.appendChild(item);
+    const fragment = document.createDocumentFragment();
+    traceEntries.forEach(({ shot, trace }, index) => {
+      fragment.appendChild(buildRecentShotCardElement(shot, trace, index, shots.length));
     });
+    el.recentShotsList.appendChild(fragment);
   } catch (error) {
     console.error("Error loading recent shots:", error);
     el.recentShotsList.innerHTML = `<p class="note" style="padding: 12px; text-align: center; width: 100%;">Failed to load recent shots.</p>`;
   }
 }
 
-// Update recent shots on shot-saved event
-bus.on("shot-saved", () => {
-  loadRecentShotsList();
+bus.on("shot-saved", async (payload) => {
+  if (payload?.duplicate) return;
+  const localShotId = payload?.localShotId;
+  if (localShotId) {
+    await upsertRecentShotCard(localShotId);
+    return;
+  }
+  await withPreservedScroll(() => loadRecentShotsList());
 });
 
-// A trace finishing capture (live follow-through) or upload (stored) doesn't
-// change the list, but refresh so any "trace ready" state stays accurate.
-bus.on("shot-trace-saved", () => {
-  loadRecentShotsList();
+bus.on("shot-trace-saved", async (payload) => {
+  const localShotId = payload?.localShotId;
+  if (localShotId) {
+    await refreshRecentShotPreview(localShotId);
+    await refreshHistoryShotPreview(localShotId);
+  }
+  const state = store.get();
+  if (state.reviewMode && state.reviewShotId) {
+    await refreshReviewCompareOptions(state.reviewShotId);
+  }
 });
 
 // Register Service Worker for offline-first support

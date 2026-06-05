@@ -86,7 +86,7 @@ CONFIG_BT_BUF_ACL_TX_SIZE=217
 CONFIG_BT_L2CAP_TX_MTU=212
 ```
 
-Leaving these at the tiny defaults (`BT_BUF_ACL_RX_SIZE=27`, `BT_BUF_ACL_TX_SIZE=27`, `BT_L2CAP_TX_MTU=23`) fragments or prevents the intended 200-byte notification path. Very large 251-byte ACL/data-length settings caused net buffer faults in earlier bring-up. The current 217/212 settings build, boot, advertise, and stream 200-byte notifications on Windows/Bleak; retest boot and BLE any time these values move.
+Leaving these at the tiny defaults (`BT_BUF_ACL_RX_SIZE=27`, `BT_BUF_ACL_TX_SIZE=27`, `BT_L2CAP_TX_MTU=23`) fragments or prevents the intended high-rate notification path. Very large 251-byte ACL/data-length settings caused net buffer faults in earlier bring-up. The current 217/212 settings build, boot, advertise, and stream 196-byte notifications on Windows/Bleak; retest boot and BLE any time these values move.
 
 ## Flash With OpenOCD
 
@@ -237,14 +237,16 @@ Battery: 0000180f-0000-1000-8000-00805f9b34fb (Standard Battery Service / BAS)
   Level: 00002a19-0000-1000-8000-00805f9b34fb (Battery Level 0-100%)
 ```
 
-The BLE live characteristic notifies 20-byte binary frames. Live samples are
-batched ten per notification (200-byte payload, ~112 notifications/s). Shot and
-count frames reuse the same 20-byte envelope, demultiplexed by the type byte, and
-are sent as standalone notifications:
+The BLE live characteristic notifies 28-byte binary frames. Live samples are
+batched seven per notification (196-byte payload, ~161 notifications/s at the
+maximum stream rate). Shot, count, storage-status, stored-shot, and trace frames
+reuse the same 28-byte envelope, demultiplexed by the type byte, and control/
+event frames are sent as standalone notifications:
 
 ```text
 type 1 (live):  magic[2]="OF", proto u8, type u8, seq u16, dt_us u16,
-                accel_mg int16[3], gyro_dps_q4 int16[3]
+                accel_mg int16[3], gyro_dps_q4 int16[3],
+                quat int16[4] scaled by 10000
 type 2 (shot):  "OF", proto, type, shot_count u16, shot_id u16,
                 accel_mg int16[3], threshold_cg u16, roll/pitch cdeg
                 -- sent on each real shot
@@ -254,6 +256,12 @@ type 3 (count): "OF", proto, type, shot_count u16, shot_id u16, ...
 type 4 (stored shot):
                 same payload as type 2; replayed from the RRAM-backed
                 stored-shot queue until the browser saves and acknowledges it
+type 5 (storage status):
+                shot_count u16, pending u16, upload_shot_id u16,
+                requested u16; sent on subscribe/request
+type 6 (trace chunk):
+                shot_id u16, chunk_index u8, total_chunks u8, len u8,
+                up to 19 payload bytes; sent after tracereq:<shot_id>
 ```
 
 The shot count is detected on-device, persisted to RRAM via Zephyr Settings
@@ -269,6 +277,7 @@ The BLE control characteristic accepts ASCII commands:
 ```text
 start         Enable live notifications (also triggers a count-sync frame)
 stop          Disable live notifications
+shotdump      Request upload of any stored-shot backlog and a storage-status frame
 zero          Capture the current roll/pitch and save them as permanent offsets in RRAM
 thresh:<g>    Set shot detection threshold in g, clamped to 2.0-30.0
 wakesens:<g>  Set wake-up trigger accelerometer threshold in g, clamped to 0.5-8.0
@@ -278,6 +287,7 @@ bufrate:<hz>  Set trace buffer rate to 0, 52, 104, or 208 Hz
 bufnvs:<0|1>  Toggle RRAM persistence for buffered traces
 followms:<ms> Set post-release trace freeze delay, clamped to 0-3000 ms
 streamrate:<n> Set BLE live stream divider to 1, 2, 5, 10, or 20
+autosleep:<0|1> Enable or disable inactivity-triggered deep sleep
 shotreset     Reset the persisted shot count to 0
 shotset:<n>   Set the persisted shot count to n (e.g. correct a miscount)
 shotack:<n>   Confirm a type-2/type-4 shot was saved by the browser; frees it
@@ -314,11 +324,11 @@ Current BLE verification status:
 ```text
 Windows found OpenFloat-463D at DB:92:7D:1C:E9:DA.
 The client connected to the custom live UUID.
-Decoded 200-byte notifications were received; each contained ten distinct 20-byte frames (dt_us=900).
+Decoded 196-byte notifications were received; each contained seven distinct 28-byte frames (dt_us=900).
 Serial banner confirmed imu_odr_hz=3332, ~1110 averaged frames/s, INT1 watermark FTH=15.
 Raw-register FIFO IMU path configured the LSM6DS3TR-C directly over I2C at 3332 Hz ODR, accel +/-16 g, gyro +/-2000 dps, read via INT1 watermark.
-Current run: frames=28670, lost=0, elapsed=25.5s, rate=1123.2 Hz, notifications=2867, notify_rate=112.3 Hz, bytes=573400, bytes_per_s=22463.
-Warm-up-excluded window: frames=23180, lost=0, elapsed=20.5s, rate=1129.3 Hz, notifications=2318, notify_rate=112.9 Hz.
+Current run: frames=28670, lost=0, elapsed=25.5s, rate=1123.2 Hz, bytes_per_s approximately 31 KB/s with 28-byte frames.
+Warm-up-excluded window: frames=23180, lost=0, elapsed=20.5s, rate=1129.3 Hz.
 FIFO health: fifo_overruns=0, fifo_resyncs=0, severe accel-misalignment frames=0, distinct frames=100% (|a| held 0.814-1.179 g), CPU ~35% active.
 Earlier 6664 Hz experiment (for comparison): frames=40080, lost=0, rate=991.9 Hz, but ~1 FIFO overrun/s and ~16 corrupted frames per 25 s.
 ```
