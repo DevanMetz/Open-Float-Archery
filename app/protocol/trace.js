@@ -75,7 +75,7 @@ export function micSeriesFromPayload(payload, sampleRateHz = 52) {
   if (!Array.isArray(payload) || payload.length === 0) return [];
   const dtUs = sampleRateHz > 0 ? Math.round(1000000 / sampleRateHz) : 19230;
   return payload.map((point, index) => ({
-    tUs: index * dtUs,
+    tUs: Number.isFinite(Number(point.tUs)) ? Number(point.tUs) : index * dtUs,
     micAmp: point.micAmp || 0,
   }));
 }
@@ -90,7 +90,10 @@ export function resolveReviewMicSeries(trace, sampleRateHz = 52) {
 
 export function micChartPointsFromSeries(micSeries) {
   if (!Array.isArray(micSeries) || micSeries.length === 0) return [];
-  return micSeries.map((point) => ({ micAmp: point.micAmp || 0 }));
+  return micSeries.map((point) => ({
+    tUs: Number.isFinite(Number(point.tUs)) ? Number(point.tUs) : undefined,
+    micAmp: point.micAmp || 0,
+  }));
 }
 
 export function buildShotTraceRecord({

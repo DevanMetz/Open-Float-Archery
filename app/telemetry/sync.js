@@ -264,6 +264,10 @@ export class CloudSyncAdapter {
           shot_id: payload.shot_id,
           encoding: "gzip-base64",
           sample_rate_hz: payload.sample_rate_hz || 416,
+          source: payload.source || null,
+          has_mic: !!payload.has_mic,
+          mic_sample_rate_hz: payload.mic_sample_rate_hz || null,
+          mic_series: payload.mic_series || null,
           payload: compressed
         };
       }
@@ -307,7 +311,8 @@ export class CloudSyncAdapter {
         `Database upsert failed: too many unsupported columns in ${table}`,
       );
     } else if (action === "DELETE") {
-      const { error } = await sb.from(table).delete().eq("id", targetId);
+      const idColumn = table === "shot_traces" ? "shot_id" : "id";
+      const { error } = await sb.from(table).delete().eq(idColumn, targetId);
       if (error) throw new Error(`Database delete failed: ${error.message}`);
     }
   }

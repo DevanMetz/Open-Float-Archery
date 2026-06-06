@@ -579,11 +579,13 @@ quaternion, allowing the browser to extract and convert it to Euler angles
 directly, aligning it with the serial stream. The app also includes local bow
 profiles, timestamp-derived practice sessions, manual trace recording, saved
 shot review/compare, Steady Aim hold training (`app/ui/training.js`), Bow Shop
-3D customization, and an optional Supabase-backed sync queue configured from the
-Cloud modal. Additionally, a Progressive Web App (PWA) service worker
-(`service-worker.js`) is registered to cache all core markup, styling, modules,
-and the 3D bow model, ensuring the application is usable offline at remote
-archery ranges after it has been loaded once.
+3D customization, independent OpenFloat Float Score metrics, session review
+summaries with score trend plots, and an optional Supabase-backed sync queue
+configured from the Cloud modal. Additionally, a Progressive Web App (PWA)
+service worker (`service-worker.js`) is registered to cache all core markup,
+styling, modules, and the 3D bow model. It uses network-first same-origin
+fetches with cached fallback, keeping offline range use while allowing versioned
+app assets to update promptly.
 
 ### 3D Model Asset Contract
 
@@ -619,7 +621,9 @@ procedural XIAO module.
 ### Real-time UI & Database Updates
 The Recent Shots list is reactive. When a connection is active (serial or BLE) and the device detects a shot, the adapter parses and relays the event onto the global `EventBus` as a `"shot"` event. The `TelemetryStore` listens to this event, deduplicates against the set of device shot IDs already handled **this connection** (the device's `shot_id` restarts at 0 after a `shotreset`/reflash, so all-time deduplication by ID is unsafe), writes the shot to IndexedDB with `session_id: null`, and emits a `"shot-saved"` event. The dashboard UI listens to `"shot-saved"` and instantly updates the Recent Shots grid. Practice sessions are no longer tracked live — they are derived from shot timestamps when the Saved Shots history is rendered (any gap over 30 minutes starts a new session), and the user can rename a session and assign its bow, stored as a per-group override.
 
-While the device is connected it does **not** persist a trace for each shot; the browser captures the trace from the live stream and saves it to IndexedDB shortly after the configurable follow-through window, then emits `"shot-trace-saved"`. (Shots taken while disconnected are stored on-device and their traces upload on reconnect.) Because a just-detected shot becomes clickable before its browser trace is persisted, opening a recent shot polls briefly for the trace before reporting it unavailable. Manual captures also trigger `"shot-saved"` upon save.
+While the device is connected it does **not** persist a trace for each shot; the browser captures the trace from the live stream and saves it to IndexedDB shortly after the configurable follow-through window, then emits `"shot-trace-saved"`. Connected browser captures keep about 3.5 seconds of pre-shot hold plus the configured follow-through window; the 20-second live trace buffer is retention headroom, not the saved shot duration. (Shots taken while disconnected are stored on-device and their traces upload on reconnect.) Trace payload points carry `tUs` relative to release so motion and audio envelopes share the same review time axis. Because a just-detected shot becomes clickable before its browser trace is persisted, opening a recent shot polls briefly for the trace before reporting it unavailable. Manual captures also trigger `"shot-saved"` upon save.
+
+Saved-shot history derives practice sessions from timestamp gaps. Each session renders a review summary: average Float Score, best shot, worst shot, consistency trend, shots by drill label, biggest recurring issue, and a compact Float Score plot across the session. The score is an OpenFloat-specific v1 metric (`openfloat-float-score-v1`) derived from hold stability, release quality, follow-through control, and level consistency; it is not modeled on a commercial scoring system.
 
 ## 11. Browser Data Parsing
 
@@ -720,6 +724,8 @@ shots
   hold_stability
   release_quality
   follow_through
+  level_consistency
+  score_version
   stored_upload
   packet_loss_count
   raw_trace_ref
@@ -728,6 +734,10 @@ shot_traces
   shot_id
   encoding
   sample_rate_hz
+  source
+  has_mic
+  mic_sample_rate_hz
+  mic_series
   payload
 ```
 
@@ -744,8 +754,9 @@ If using Firestore, avoid placing large raw traces inside user profile
 documents. Store shot metadata and raw traces separately. If using
 Supabase/PostgreSQL, normalize sessions, shots, and trace payload references.
 The browser currently stores `device_shot_id` so reconnect uploads can be
-deduplicated, `shot_score` for the derived form score, and `stored_upload` to
-mark shots recovered from firmware nonvolatile storage.
+deduplicated, `shot_score` for the derived OpenFloat Float Score,
+`score_version` for scoring-model compatibility, and `stored_upload` to mark
+shots recovered from firmware nonvolatile storage.
 
 For existing Supabase projects, add the newer shot fields with:
 
@@ -756,7 +767,15 @@ alter table public.shots
   add column if not exists stored_upload boolean default false,
   add column if not exists hold_stability numeric,
   add column if not exists release_quality numeric,
-  add column if not exists follow_through numeric;
+  add column if not exists follow_through numeric,
+  add column if not exists level_consistency numeric,
+  add column if not exists score_version text;
+
+alter table public.shot_traces
+  add column if not exists source text,
+  add column if not exists has_mic boolean default false,
+  add column if not exists mic_sample_rate_hz numeric,
+  add column if not exists mic_series jsonb;
 
 create unique index if not exists shots_device_shot_id_unique
   on public.shots (device_id, device_shot_id)

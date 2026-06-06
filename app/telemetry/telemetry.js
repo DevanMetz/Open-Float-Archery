@@ -3,12 +3,17 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-import { put, getAll, generateUUID } from "../core/db.js?v=shot-store-98";
+import { put, get, getAll, generateUUID } from "../core/db.js?v=shot-store-98";
 import {
   buildShotTraceRecord,
   decodeFirmwareTraceBytes,
   extractMicWindow,
-} from "../protocol/trace.js";
+} from "../protocol/trace.js?v=shot-store-102";
+import {
+  computeFloatScoreFromTrace,
+  computeLiveFloatScore,
+  FLOAT_SCORE_VERSION,
+} from "./score.js?v=shot-store-99";
 
 export const MAX_TRACE_POINTS = 1000;
 
@@ -16,9 +21,9 @@ const ACCEL_TILT_MIN_G = 0.7;
 const ACCEL_TILT_MAX_G = 1.35;
 const ORIENTATION_CORRECTION_TIME_S = 0.45;
 const MAX_ORIENTATION_DT_S = 0.05;
-const LIVE_SCORE_WINDOW = 120;
 const BROWSER_SHOT_TRACE_RATES = [0, 208, 416, 832];
 const BROWSER_SHOT_TRACE_SECONDS = 20;
+const BROWSER_SHOT_PRE_MS = 3500;
 const DEFAULT_FOLLOW_THROUGH_MS = 1500;
 const MAX_FOLLOW_THROUGH_MS = 3000;
 const MIC_RING_PRE_MS = 500;
@@ -27,47 +32,6 @@ const MIC_RING_CAPACITY = 4000;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
-}
-
-function average(values) {
-  if (!values.length) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function stdDev(values) {
-  if (values.length < 2) return 0;
-  const mean = average(values);
-  const variance = average(values.map((value) => (value - mean) ** 2));
-  return Math.sqrt(variance);
-}
-
-function scoreFromMotion({ roll = 0, pitch = 0, gyroMag = 0, accelG = 1, trace = [] }) {
-  const window = trace.slice(-LIVE_SCORE_WINDOW);
-  const rollStd = stdDev(window.map((pt) => pt.roll || 0));
-  const pitchStd = stdDev(window.map((pt) => pt.pitch || 0));
-  const accelStd = stdDev(window.map((pt) => Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0)));
-
-  const holdStability = clamp(100 - (rollStd + pitchStd) * 18 - gyroMag * 0.7, 0, 100);
-  const releaseQuality = clamp(100 - gyroMag * 1.5 - Math.abs(accelG - 1) * 10, 0, 100);
-  const followThrough = clamp(100 - accelStd * 140 - Math.abs(pitch) * 1.2, 0, 100);
-  const cantScore = clamp(100 - Math.abs(roll) * 7, 0, 100);
-  const pitchScore = clamp(100 - Math.abs(pitch) * 3, 0, 100);
-  const formScore = clamp(
-    holdStability * 0.42 +
-      releaseQuality * 0.24 +
-      followThrough * 0.18 +
-      cantScore * 0.12 +
-      pitchScore * 0.04,
-    0,
-    100,
-  );
-
-  return {
-    formScore: Math.round(formScore),
-    holdStability: Math.round(holdStability),
-    releaseQuality: Math.round(releaseQuality),
-    followThrough: Math.round(followThrough),
-  };
 }
 
 export function coachForScore({ formScore, holdStability, releaseQuality, followThrough, roll }) {
@@ -236,6 +200,8 @@ export class TelemetryStore {
       holdStability: null,
       releaseQuality: null,
       followThrough: null,
+      levelConsistency: null,
+      scoreVersion: FLOAT_SCORE_VERSION,
       lastShotSummary: null,
       manualRecordingActive: false,
       manualRecordSamples: 0,
@@ -392,7 +358,7 @@ export class TelemetryStore {
     }
 
     const gyroMag = Math.hypot(sample.gxDps, sample.gyDps, sample.gzDps);
-    const score = scoreFromMotion({ roll, pitch, gyroMag, accelG, trace: this.trace });
+    const score = computeLiveFloatScore({ roll, pitch, gyroMag, accelG, trace: this.trace });
     const coaching = coachForScore({ ...score, roll });
 
     this.store.set({
@@ -467,6 +433,8 @@ export class TelemetryStore {
         hold_stability: activeState.holdStability != null ? activeState.holdStability : null,
         release_quality: activeState.releaseQuality != null ? activeState.releaseQuality : null,
         follow_through: activeState.followThrough != null ? activeState.followThrough : null,
+        level_consistency: activeState.levelConsistency != null ? activeState.levelConsistency : null,
+        score_version: activeState.scoreVersion || FLOAT_SCORE_VERSION,
         packet_loss_count: this.lost
       };
 
@@ -561,10 +529,13 @@ export class TelemetryStore {
     sampleRateHz,
     followThroughMs = configuredFollowThroughMs(),
   ) {
+    const startAtUs = shotTimeUs - BROWSER_SHOT_PRE_MS * 1000;
     const frozenWithTime = this.shotTraceBuffer
-      .filter((point) => point.tUs <= freezeAtUs)
-      .slice(-Math.max(1, Math.round(sampleRateHz * BROWSER_SHOT_TRACE_SECONDS)));
-    const frozen = frozenWithTime.map(({ tUs, ...point }) => ({ ...point }));
+      .filter((point) => point.tUs >= startAtUs && point.tUs <= freezeAtUs);
+    const frozen = frozenWithTime.map(({ tUs, ...point }) => ({
+      ...point,
+      tUs: tUs - shotTimeUs,
+    }));
 
     if (frozen.length === 0) {
       this.bus.emit("log", `No browser trace samples available for shot ID ${deviceShotId}.`);
@@ -587,6 +558,47 @@ export class TelemetryStore {
     });
 
     try {
+      const releaseIndex = frozenWithTime.findIndex((point) => point.tUs >= shotTimeUs);
+      const traceScore = computeFloatScoreFromTrace(frozen, {
+        sampleRateHz,
+        releaseIndex: releaseIndex >= 0 ? releaseIndex : undefined,
+      });
+      const shotRecord = await get("shots", localShotId);
+      if (shotRecord) {
+        const updatedShot = {
+          ...shotRecord,
+          shot_score: traceScore.formScore,
+          hold_stability: traceScore.holdStability,
+          release_quality: traceScore.releaseQuality,
+          follow_through: traceScore.followThrough,
+          level_consistency: traceScore.levelConsistency,
+          score_version: traceScore.scoreVersion,
+        };
+        await put("shots", updatedShot);
+        await put("sync_queue", {
+          table: "shots",
+          action: "UPDATE",
+          targetId: localShotId,
+          payload: updatedShot,
+          status: "pending",
+        });
+        this.store.set({
+          formScore: traceScore.formScore,
+          holdStability: traceScore.holdStability,
+          releaseQuality: traceScore.releaseQuality,
+          followThrough: traceScore.followThrough,
+          levelConsistency: traceScore.levelConsistency,
+          scoreVersion: traceScore.scoreVersion,
+          lastShotSummary: {
+            timestamp: updatedShot.timestamp,
+            score: updatedShot.shot_score,
+            peakG: updatedShot.peak_g,
+            cant: updatedShot.cant_angle_deg,
+            pitch: updatedShot.pitch_angle_deg,
+            yaw: updatedShot.yaw_angle_deg,
+          },
+        });
+      }
       await put("shot_traces", tracePayload);
       await put("sync_queue", {
         table: "shot_traces",
@@ -597,7 +609,7 @@ export class TelemetryStore {
       });
       this.bus.emit(
         "log",
-        `Browser trace saved for shot ID ${deviceShotId} (${frozen.length} motion samples @ ${sampleRateHz} Hz` +
+        `Browser trace saved for shot ID ${deviceShotId} (${frozen.length} motion samples, ${(BROWSER_SHOT_PRE_MS / 1000).toFixed(1)} s pre + ${(followThroughMs / 1000).toFixed(1)} s follow @ ${sampleRateHz} Hz` +
           `${micSeries.length ? `, ${micSeries.length} mic samples` : ""}).`,
       );
       this.bus.emit("shot-trace-saved", { localShotId, deviceShotId });
@@ -624,7 +636,7 @@ export class TelemetryStore {
       let maxG = 0;
       let sumStability = 0;
       
-      const parsedTrace = this.history30s.map(pt => {
+      const parsedTrace = this.history30s.map((pt, index) => {
         const g = Math.hypot(pt.ax, pt.ay, pt.az);
         if (g > maxG) maxG = g;
         
@@ -636,14 +648,19 @@ export class TelemetryStore {
           ax: pt.ax,
           ay: pt.ay,
           az: pt.az,
+          gx: pt.gx || 0,
+          gy: pt.gy || 0,
+          gz: pt.gz || 0,
           roll: pt.roll,
           pitch: pt.pitch,
           yaw: pt.yaw || 0,
           micAmp: pt.micAmp || 0,
+          tUs: Math.round((index * 1000000) / 52),
         };
       });
 
       const avgStability = Number((sumStability / this.history30s.length).toFixed(1));
+      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz: 52 });
 
       // 3. Save shot metadata (representing the manual capture)
       const manualShotId = generateUUID();
@@ -658,10 +675,12 @@ export class TelemetryStore {
         yaw_angle_deg: 0,
         roll_angle_deg: 0,
         stability_score: avgStability,
-        shot_score: this.store.get().formScore || avgStability,
-        hold_stability: avgStability,
-        release_quality: 100,
-        follow_through: 100,
+        shot_score: floatScore.formScore,
+        hold_stability: floatScore.holdStability,
+        release_quality: floatScore.releaseQuality,
+        follow_through: floatScore.followThrough,
+        level_consistency: floatScore.levelConsistency,
+        score_version: floatScore.scoreVersion,
         packet_loss_count: this.lost
       };
 
@@ -679,8 +698,8 @@ export class TelemetryStore {
         localShotId: manualShotId,
         sampleRateHz: 52,
         payload: parsedTrace,
-        micSeries: parsedTrace.map((point, index) => ({
-          tUs: Math.round((index * 1000000) / 52),
+        micSeries: parsedTrace.map((point) => ({
+          tUs: point.tUs,
           micAmp: point.micAmp || 0,
         })),
         source: "browser-manual-30s",
@@ -767,7 +786,7 @@ export class TelemetryStore {
       // 1. Compute metrics
       let maxG = 0;
       let sumStability = 0;
-      const parsedTrace = this.manualRecordingBuffer.map(pt => {
+      const parsedTrace = this.manualRecordingBuffer.map((pt, index) => {
         const g = Math.hypot(pt.ax, pt.ay, pt.az);
         if (g > maxG) maxG = g;
         
@@ -785,13 +804,17 @@ export class TelemetryStore {
           roll: pt.roll,
           pitch: pt.pitch,
           yaw: pt.yaw || 0,
-          micAmp: pt.micAmp || 0
+          micAmp: pt.micAmp || 0,
+          tUs: sampleRateHz > 0
+            ? Math.round((index * 1000000) / sampleRateHz)
+            : index * 19230,
         };
       });
 
       const avgStability = this.manualRecordingBuffer.length > 0
         ? Number((sumStability / this.manualRecordingBuffer.length).toFixed(1))
         : 100;
+      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz });
 
       // 2. Save shot record
       const manualShotId = generateUUID();
@@ -806,10 +829,12 @@ export class TelemetryStore {
         yaw_angle_deg: 0,
         roll_angle_deg: 0,
         stability_score: avgStability,
-        shot_score: avgStability,
-        hold_stability: avgStability,
-        release_quality: 100,
-        follow_through: 100,
+        shot_score: floatScore.formScore,
+        hold_stability: floatScore.holdStability,
+        release_quality: floatScore.releaseQuality,
+        follow_through: floatScore.followThrough,
+        level_consistency: floatScore.levelConsistency,
+        score_version: floatScore.scoreVersion,
         packet_loss_count: this.lost,
         label: label
       };
@@ -828,10 +853,8 @@ export class TelemetryStore {
         localShotId: manualShotId,
         sampleRateHz,
         payload: parsedTrace,
-        micSeries: parsedTrace.map((point, index) => ({
-          tUs: sampleRateHz > 0
-            ? Math.round((index * 1000000) / sampleRateHz)
-            : index * 19230,
+        micSeries: parsedTrace.map((point) => ({
+          tUs: point.tUs,
           micAmp: point.micAmp || 0,
         })),
         source: "browser-manual-recording",

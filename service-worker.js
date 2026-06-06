@@ -1,4 +1,4 @@
-const CACHE_NAME = "openfloat-v94";
+const CACHE_NAME = "openfloat-v104";
 const ASSETS = [
   "./",
   "./index.html",
@@ -13,6 +13,7 @@ const ASSETS = [
   "./app/protocol/frame.js",
   "./app/protocol/trace.js",
   "./app/telemetry/telemetry.js",
+  "./app/telemetry/score.js",
   "./app/telemetry/sync.js",
   "./app/ui/dashboard.js",
   "./app/ui/trace-preview.js",
@@ -43,30 +44,35 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Fetch Event with Stale-While-Revalidate and ignoreSearch
+function cacheResponse(request, response) {
+  if (!response || response.status !== 200) return response;
+  const responseToCache = response.clone();
+  caches.open(CACHE_NAME).then((cache) => {
+    cache.put(request, responseToCache);
+  });
+  return response;
+}
+
+async function cachedFallback(request) {
+  return (
+    (await caches.match(request)) ||
+    (await caches.match(request, { ignoreSearch: true })) ||
+    Response.error()
+  );
+}
+
+// Fetch Event: network-first for same-origin assets, cached fallback offline.
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
-  
+
   const url = new URL(event.request.url);
   const isLocal = url.origin === self.location.origin;
-  
+
   if (!isLocal) return;
 
   event.respondWith(
-    caches.match(event.request, { ignoreSearch: true }).then((cachedResponse) => {
-      const fetchPromise = fetch(event.request).then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200) {
-          const responseToCache = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseToCache);
-          });
-        }
-        return networkResponse;
-      }).catch(() => {
-        // Fallback to cache if network fails
-      });
-
-      return cachedResponse || fetchPromise;
-    })
+    fetch(event.request)
+      .then((networkResponse) => cacheResponse(event.request, networkResponse))
+      .catch(() => cachedFallback(event.request))
   );
 });

@@ -91,6 +91,11 @@ telemetry; connect it from the status badge in the header.
 - Pin Float shot review shows phase-colored traces (green aiming hold,
   amber/red release break, and gray follow-through), centered on the point of
   shot detection so the release reticle sits at the center of the target face.
+- **OpenFloat Float Score**: The browser computes an independent, open-source
+  0-100 form score from trace data. The score blends hold stability, release
+  quality, follow-through control, and level consistency. It is versioned in
+  saved shots as `openfloat-float-score-v1` so future scoring changes can be
+  compared safely.
 - The shot review canvas also renders a 1-sigma float ellipse, release reticle,
   and an animated replay marker. The replay controls live in their own sections
   below the target (not overlapping it): a Trace Review banner and a full-width
@@ -99,8 +104,17 @@ telemetry; connect it from the status badge in the header.
   (mobile) zoom directly on the trace.
 - **Live Shot Traces**: While the device is connected, the browser captures each
   shot's trace from the live stream and saves it shortly after the
-  follow-through window completes; the device itself only stores traces for
-  shots taken while disconnected, which then upload on reconnect.
+  follow-through window completes. Connected captures keep about 3.5 seconds of
+  pre-shot hold plus the configured follow-through window, while the 20-second
+  rolling buffer is only used as browser-side retention headroom. The device
+  itself only stores traces for shots taken while disconnected, which then
+  upload on reconnect.
+- **Session Review**: Saved shots are grouped into practice sessions and each
+  session summarizes average Float Score, best and worst shot, consistency
+  trend, shots by drill label, and the biggest recurring issue. A compact plot
+  shows Float Score progression across the session.
+- **Battery Badge**: When the BLE device exposes the standard Battery Service,
+  the dashboard reads Battery Level and displays it in the header.
 - **Stored-Shot Upload Indicator**: When a device that buffered shots while
   disconnected reconnects, an inline "Uploading N" status appears beside the
   live rate and shot counter and counts down as the backlog transfers.
@@ -208,7 +222,15 @@ alter table public.shots
   add column if not exists stored_upload boolean default false,
   add column if not exists hold_stability numeric,
   add column if not exists release_quality numeric,
-  add column if not exists follow_through numeric;
+  add column if not exists follow_through numeric,
+  add column if not exists level_consistency numeric,
+  add column if not exists score_version text;
+
+alter table public.shot_traces
+  add column if not exists source text,
+  add column if not exists has_mic boolean default false,
+  add column if not exists mic_sample_rate_hz numeric,
+  add column if not exists mic_series jsonb;
 
 create unique index if not exists shots_device_shot_id_unique
   on public.shots (device_id, device_shot_id)

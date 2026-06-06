@@ -2,7 +2,7 @@
 // Pure view code — it reads from the store and telemetry, never the device.
 
 import { MAX_TRACE_POINTS } from "../telemetry/telemetry.js";
-import { micChartPointsFromSeries } from "../protocol/trace.js";
+import { micChartPointsFromSeries } from "../protocol/trace.js?v=shot-store-102";
 
 function reviewMicChartData(state) {
   if (!state.reviewMode) return null;
@@ -11,9 +11,40 @@ function reviewMicChartData(state) {
   }
   const payload = state.reviewTrace || [];
   if (payload.some((point) => (point.micAmp || 0) > 0)) {
-    return payload.map((point) => ({ micAmp: point.micAmp || 0 }));
+    return payload.map((point) => ({
+      tUs: Number.isFinite(Number(point.tUs)) ? Number(point.tUs) : undefined,
+      micAmp: point.micAmp || 0,
+    }));
   }
   return null;
+}
+
+function reviewTraceTimeRangeUs(state, trace) {
+  if (!Array.isArray(trace) || trace.length < 2) return null;
+  const values = trace
+    .map((point) => Number(point.tUs))
+    .filter((value) => Number.isFinite(value));
+  if (values.length < 2) return null;
+  let start = Math.min(...values);
+  let end = Math.max(...values);
+  if (end <= start) return null;
+  return { start, end };
+}
+
+function fallbackReviewTimeRangeUs(state, trace) {
+  if (!Array.isArray(trace) || trace.length < 2) return null;
+  const sampleRateHz = Number(state.reviewSampleRateHz) > 0 ? Number(state.reviewSampleRateHz) : 52;
+  const dtUs = 1000000 / sampleRateHz;
+  const thresholdG = state.reviewThresholdG != null ? Number(state.reviewThresholdG) : 12;
+  const { releaseIdx } = findReleaseIndex(trace, true, thresholdG);
+  return {
+    start: -releaseIdx * dtUs,
+    end: (trace.length - 1 - releaseIdx) * dtUs,
+  };
+}
+
+function reviewTimeRangeUs(state, trace) {
+  return reviewTraceTimeRangeUs(state, trace) || fallbackReviewTimeRangeUs(state, trace);
 }
 
 const THREE_URL = "https://esm.sh/three@0.164.1";
@@ -1707,6 +1738,7 @@ export function mountDashboard({ store, telemetry, el }) {
 
       const reviewMic = reviewMicChartData(state);
       if (reviewMic?.length) {
+        const timeRangeUs = reviewTimeRangeUs(state, state.reviewTrace);
         drawMicSeries(
           ctx,
           reviewMic,
@@ -1715,7 +1747,7 @@ export function mountDashboard({ store, telemetry, el }) {
           "rgba(53, 199, 232, 0.22)",
           w,
           h,
-          { bandHeight: 0.2, label: "Audio" },
+          { bandHeight: 0.2, label: "Audio", timeRangeUs },
         );
       }
     } else {
@@ -1732,6 +1764,7 @@ export function mountDashboard({ store, telemetry, el }) {
       const state = store.get();
       const data = state.reviewMode ? (state.reviewTrace || []) : telemetry.getTrace();
       const micData = state.reviewMode ? (reviewMicChartData(state) || data) : data;
+      const timeRangeUs = state.reviewMode ? reviewTimeRangeUs(state, data) : null;
 
       // Draw raw mic channel in the background (bottom band)
       drawMicSeries(
@@ -1742,7 +1775,7 @@ export function mountDashboard({ store, telemetry, el }) {
         "rgba(53, 199, 232, 0.15)",
         w,
         h,
-        state.reviewMode ? { bandHeight: 0.3, label: "Audio" } : undefined,
+        state.reviewMode ? { bandHeight: 0.3, label: "Audio", timeRangeUs } : undefined,
       );
 
       drawSeries(ctx, data, "ax", cssVar("--green"), w, h);
@@ -1798,10 +1831,25 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
 
   ctx.beginPath();
   const maxIdx = data.length - 1;
+  const timeRangeUs = options.timeRangeUs || null;
+  const xForPoint = (point, index) => {
+    const tUs = Number(point.tUs);
+    if (
+      timeRangeUs &&
+      Number.isFinite(tUs) &&
+      timeRangeUs.end > timeRangeUs.start
+    ) {
+      return Math.max(
+        0,
+        Math.min(w, ((tUs - timeRangeUs.start) / (timeRangeUs.end - timeRangeUs.start)) * w),
+      );
+    }
+    return (index / maxIdx) * w;
+  };
   ctx.moveTo(0, bandBottom);
 
   for (let i = 0; i < data.length; i += 1) {
-    const x = (i / maxIdx) * w;
+    const x = xForPoint(data[i], i);
     const val = data[i][key] || 0;
     const valHeight = (val / 255) * bandPixelHeight;
     const y = bandBottom - valHeight;
@@ -1813,7 +1861,7 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
 
   ctx.beginPath();
   for (let i = 0; i < data.length; i += 1) {
-    const x = (i / maxIdx) * w;
+    const x = xForPoint(data[i], i);
     const val = data[i][key] || 0;
     const valHeight = (val / 255) * bandPixelHeight;
     const y = bandBottom - valHeight;

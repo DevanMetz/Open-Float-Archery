@@ -2,6 +2,7 @@
 // Manages the prep countdown, audio tones, live target tracing, scoring, and DB persistence.
 
 import { put, generateUUID } from "../core/db.js?v=shot-store-98";
+import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=shot-store-99";
 
 const TARGET_COLORS = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
 
@@ -528,6 +529,19 @@ export function mountTraining({ store, telemetry, el, bus }) {
       const sessionShotId = generateUUID();
       const timestamp = new Date().toISOString();
       const label = `Steady Aim Hold (${currentHoldDuration}s)`;
+      const traceForScore = trainingSamples.map((s) => ({
+        ax: s.ax,
+        ay: s.ay,
+        az: s.az,
+        gx: s.gx || 0,
+        gy: s.gy || 0,
+        gz: s.gz || 0,
+        roll: s.roll,
+        pitch: s.pitch,
+        yaw: s.yaw || 0,
+        micAmp: s.micAmp || 0,
+      }));
+      const floatScore = computeFloatScoreFromTrace(traceForScore, { sampleRateHz: 52 });
       
       const shotRecord = {
         id: sessionShotId,
@@ -540,10 +554,12 @@ export function mountTraining({ store, telemetry, el, bus }) {
         yaw_angle_deg: 0,
         roll_angle_deg: Number(avgRoll.toFixed(1)),
         stability_score: score,
-        shot_score: score,
-        hold_stability: score,
-        release_quality: 100,
-        follow_through: 100,
+        shot_score: floatScore.formScore,
+        hold_stability: floatScore.holdStability,
+        release_quality: floatScore.releaseQuality,
+        follow_through: floatScore.followThrough,
+        level_consistency: floatScore.levelConsistency,
+        score_version: floatScore.scoreVersion,
         packet_loss_count: 0,
         label: label
       };
@@ -560,18 +576,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
       const tracePayload = {
         shot_id: sessionShotId,
         sample_rate_hz: 52,
-        payload: trainingSamples.map(s => ({
-          ax: s.ax,
-          ay: s.ay,
-          az: s.az,
-          gx: s.gx,
-          gy: s.gy,
-          gz: s.gz,
-          roll: s.roll,
-          pitch: s.pitch,
-          yaw: s.yaw,
-          micAmp: s.micAmp || 0
-        }))
+        payload: traceForScore
       };
       
       await put("shot_traces", tracePayload);

@@ -2838,6 +2838,221 @@ canvas,
   color: var(--text);
 }
 
+.session-review {
+  margin-left: 10px;
+  padding: 12px;
+  border-left: 1px dashed var(--line);
+  background: rgba(255, 255, 255, 0.018);
+  border-radius: 0 8px 8px 0;
+}
+
+.session-group.collapsed .session-review {
+  display: none;
+}
+
+.session-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.session-review-head span,
+.session-review-drills-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.session-review-head strong {
+  color: var(--green);
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.session-review-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.session-review-stat {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-height: 78px;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--text);
+  text-align: left;
+}
+
+.session-review-stat.as-button {
+  width: 100%;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+
+.session-review-stat.as-button:hover {
+  border-color: rgba(48, 227, 155, 0.45);
+  background: rgba(48, 227, 155, 0.055);
+  transform: translateY(-1px);
+}
+
+.session-review-stat.issue {
+  grid-column: span 1;
+}
+
+.session-review-stat span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.035em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.session-review-stat strong {
+  color: var(--text);
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 18px;
+  line-height: 1.12;
+  overflow-wrap: anywhere;
+}
+
+.session-review-stat small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.session-review-drills {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.session-review-drills > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.session-review-drills span:not(.session-review-drills-label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.session-review-drills strong {
+  color: var(--text);
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+
+.session-float-plot {
+  margin-left: 10px;
+  padding: 10px 12px;
+  border-left: 1px dashed var(--line);
+  background: rgba(255, 255, 255, 0.015);
+  border-radius: 0 8px 8px 0;
+}
+
+.session-group.collapsed .session-float-plot {
+  display: none;
+}
+
+.session-float-plot-head,
+.session-float-plot-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.session-float-plot-head span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.session-float-plot-head strong {
+  color: var(--green);
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.session-float-plot svg {
+  display: block;
+  width: 100%;
+  height: 96px;
+  margin: 4px 0 2px;
+  overflow: visible;
+}
+
+.session-float-grid {
+  stroke: rgba(142, 166, 160, 0.18);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.session-float-grid.baseline {
+  stroke: rgba(142, 166, 160, 0.28);
+}
+
+.session-float-area {
+  fill: rgba(48, 227, 155, 0.1);
+}
+
+.session-float-line {
+  fill: none;
+  stroke: var(--green);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.session-float-dot {
+  fill: var(--panel);
+  stroke: var(--green);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.session-float-dot.best {
+  fill: var(--green);
+  stroke: var(--text);
+}
+
+.session-float-plot-foot span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 0;
+}
+
 .session-shots-container {
   display: flex;
   flex-direction: column;
@@ -2849,6 +3064,41 @@ canvas,
 
 .session-group.collapsed .session-shots-container {
   display: none;
+}
+
+@media (max-width: 920px) {
+  .session-review-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .session-review-stat.issue {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 620px) {
+  .session-review,
+  .session-float-plot,
+  .session-shots-container {
+    margin-left: 0;
+  }
+
+  .session-review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .session-review-stat.issue {
+    grid-column: auto;
+  }
+
+  .session-review-drills {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .session-review-drills > div {
+    justify-content: flex-start;
+  }
 }
 
 /* Manual Recording Workspace */
@@ -3122,4 +3372,3 @@ canvas,
   50% { transform: translateY(-8px); }
   100% { transform: translateY(0px); }
 }
-
