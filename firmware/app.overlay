@@ -14,6 +14,11 @@
 	clock-frequency = <1000000>;
 };
 
+&pdm20 {
+	/* 14-sample blocks arrive at ~1143/s; default queue-size=4 starves PDM. */
+	queue-size = <48>;
+};
+
 / {
 	chosen {
 		zephyr,console = &uart20;

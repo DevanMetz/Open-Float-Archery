@@ -10,6 +10,7 @@ export const BINARY_FRAME_LEN = 29;
 export const GYRO_Q4 = 16; // BLE gyro is deg/s in Q4 fixed point (LSB = 1/16 dps)
 export const GYRO_MDPS = 1000; // OFRAW gyro is milli-deg/s
 export const ANGLE_CDEG = 100; // OFRAW angles are centi-degrees
+// micAmp (byte 28): firmware noise-gated peak envelope / 3, range 0-255
 
 const MAGIC_O = 0x4f; // 'O'
 const MAGIC_F = 0x46; // 'F'

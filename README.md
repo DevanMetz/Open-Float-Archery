@@ -60,9 +60,11 @@ telemetry; connect it from the status badge in the header.
   envelope also carries shot, count-sync, storage-status, stored-shot, and
   trace-chunk frames.
 - **On-Chip Microphone Envelope**: The XIAO Sense PDM microphone runs at 16 kHz
-  in a dedicated audio thread. A noise-floor-subtracted peak follower packs a
-  scaled envelope byte into each live BLE frame (offset 28, scale 1/64) for
-  dashboard acoustic metering without extra bandwidth.
+  in a dedicated audio thread. Audio is read in **14-sample blocks** (~1143
+  envelope updates/s), aligned with the ~1110 Hz IMU/BLE stream. A
+  noise-floor-subtracted peak follower with a **5 ms decay** packs a scaled
+  envelope byte into each live BLE frame (offset 28, firmware scale divisor 3,
+  range 0–255) for dashboard acoustic metering without extra bandwidth.
 - Latest Windows/Bleak validation received 28,670 sequential frames with zero
   sequence loss over 25.5 s; warm-up-excluded rate was about 1129 Hz, with
   0 FIFO overruns, 0 resyncs, 0 outlier frames, and 100% distinct frames
@@ -82,7 +84,8 @@ telemetry; connect it from the status badge in the header.
 - **On-Device Orientation Processing**: Consumes high-rate Madgwick filter quaternions directly from BLE notifications, avoiding client-side complementary filter lag.
 - **Live Acoustic Envelope Meter**: When connected, the dashboard header shows a
   clicker/volume bar driven by the firmware microphone envelope byte in each live
-  frame.
+  frame (~1110/s). The meter reflects the on-device peak follower (5 ms decay),
+  not raw PCM.
 - Pin Float shot review shows phase-colored traces (green aiming hold,
   amber/red release break, and gray follow-through), centered on the point of
   shot detection so the release reticle sits at the center of the target face.
@@ -174,6 +177,14 @@ Run a steady-state throughput validation (~1100 Hz) after BLE warm-up:
 ```powershell
 $env:PYTHONPATH='C:\tmp\openfloat-pydeps'
 python tools\openfloat_ble_client.py --name-prefix OpenFloat --scan-timeout 12 --duration 20 --warmup 5 --reset-command start
+```
+
+Verify the on-chip microphone envelope (serial PDM banner + optional BLE
+`mic_amp` activity):
+
+```powershell
+$env:PYTHONPATH='C:\tmp\openfloat-pydeps'
+python tools\verify_mic_envelope_rate.py --serial-port COM10 --openocd-serial 09EC6223
 ```
 
 If the first firmware bring-up uses Nordic UART Service instead of the custom

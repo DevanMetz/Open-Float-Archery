@@ -44,7 +44,7 @@ The external board package at `C:\Users\metzd\Downloads\platform-seeedboards\zep
 ```text
 src\main.c       OpenFloat IMU loop, Madgwick math, PDM mic envelope, shot detection, LED/button UI, serial/BLE telemetry
 prj.conf         Zephyr/Kconfig settings (includes CONFIG_AUDIO / CONFIG_AUDIO_DMIC)
-app.overlay      IMU power and console routing overrides
+app.overlay      IMU power, PDM queue-size, and console routing overrides
 CMakeLists.txt   Zephyr app declaration
 ```
 
@@ -165,6 +165,41 @@ sync), `LSM6DSL_FIFO_WATERMARK_SAMPLES` (larger = lower CPU, larger batches),
 `SAMPLES_PER_OUTPUT` (averaging window / output rate). If `init_imu_interrupt()`
 fails, the loop automatically falls back to cooperative FIFO polling.
 
+### Microphone Envelope (current)
+
+The PDM mic runs in a dedicated audio thread at 16 kHz PCM. Current constants in
+`src/main.c`:
+
+```text
+AUDIO_SAMPLES_PER_BLOCK      14        (~1143 blocks/s; closest integer to ~1110 Hz IMU)
+AUDIO_ENVELOPE_TAU_S         0.005     5 ms exponential decay on release
+AUDIO_BLE_SCALE_DIVISOR      3.0       mic_amp = audio_peak_raw / 3, clamped 0-255
+AUDIO_BLOCK_COUNT            64        mem-slab pool depth
+app.overlay pdm20 queue-size 48        prevents PDM starvation at high block rates
+```
+
+Expected serial boot line:
+
+```text
+# PDM Audio initialized: 16000 Hz, 14 samples/block, ~1143 blocks/s
+```
+
+`# CPU_LOAD` also prints `audio_blocks`, `audio_failures`, and `audio_peak_raw`.
+In steady state, `audio_blocks` should climb at ~1150/s and `audio_failures`
+should stay at 0. The telemetry builder samples `audio_peak_raw` into each live
+BLE frame's `mic_amp` byte (~1110/s); it does not add client-side smoothing.
+
+Verify with:
+
+```powershell
+$env:PYTHONPATH='C:\tmp\openfloat-pydeps'
+python tools\verify_mic_envelope_rate.py --serial-port COM10 --openocd-serial 09EC6223
+```
+
+In a quiet room, BLE `mic_amp` may not change often enough for the script's
+optional transition-rate check even when the serial banner and `audio_blocks`
+counter confirm the envelope is live.
+
 PowerShell serial probe. Open COM11 with DTR/RTS asserted, then reset the target while the port is still open:
 
 ```powershell
@@ -247,6 +282,7 @@ event frames are sent as standalone notifications:
 type 1 (live):  magic[2]="OF", proto u8, type u8, seq u16, dt_us u16,
                 accel_mg int16[3], gyro_dps_q4 int16[3],
                 quat int16[4] scaled by 10000, mic_amp u8 at offset 28
+                (noise-gated peak envelope / 3.0, 0-255)
 type 2 (shot):  "OF", proto, type, shot_count u16, shot_id u16,
                 accel_mg int16[3], threshold_cg u16, roll/pitch/yaw cdeg,
                 clicker_dt_ms u16 @22, impact_dt_ms u16 @24 (reserved/0 today)
@@ -354,7 +390,7 @@ running FIFO health counters: `fifo_overruns` (FIFO overran and was reset) and
 a partial sample was discarded). Both should stay flat at 0 in steady state.
 
 ```text
-# CPU_LOAD,active_permille=364,active_pct=36.4,idle_pct=63.6,fifo_overruns=0,fifo_resyncs=0
+# CPU_LOAD,active_permille=364,active_pct=36.4,idle_pct=63.6,fifo_overruns=0,fifo_resyncs=0,audio_blocks=48238,audio_failures=0,audio_peak_raw=0
 ```
 
 Validated measurements on the XIAO nRF54L15 Sense at 3332 Hz ODR:

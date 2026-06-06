@@ -314,7 +314,7 @@ offset 6  dt_us u16      group window (~900 us = SAMPLES_PER_OUTPUT / ODR)
 offset 8  accel_mg int16[3]   milli-g, scale 1 mg/LSB
 offset 14 gyro int16[3]       deg/s in Q4 fixed point (LSB = 1/16 deg/s)
 offset 20 quat int16[4]       quaternion (qw, qx, qy, qz) scaled by 10000 (LSB = 1/10000)
-offset 28 mic_amp u8          raw peak amplitude, scale 1/64.0f (0..255)
+offset 28 mic_amp u8          noise-gated peak envelope, scale 1/3.0f (0..255)
 ```
 
 Each type-1 frame is the average of `SAMPLES_PER_OUTPUT` (3) raw IMU samples, so
@@ -331,14 +331,14 @@ same payload as type 2.
 ### Microphone Peak Envelope Follower
 
 To support bow-mounted acoustic events (such as clicker drops and bow releases) without exceeding BLE transmission bandwidth limits or causing excessive CPU load, the firmware implements a time-invariant, on-chip envelope follower:
-- **PDM Sampling**: The microphone captures raw audio via a PDM interface at 16 kHz. Audio data is read in 160-sample blocks by a dedicated audio processing thread. Runtime testing showed 14- and 16-sample blocks cause DMIC read failures on the current nrfx PDM path, while 160 samples gives a reliable 10 ms / 100 Hz audio update cadence.
-- **Block Peak Extraction**: For each audio block, the audio thread computes the block mean and then uses the peak absolute deviation from that mean. This removes DC/bias from the PDM stream before envelope tracking.
-- **Noise-Floor Subtraction**: A slow adaptive baseline tracks the steady acoustic/PDM noise floor. The published envelope subtracts that floor plus a small margin so idle noise does not pin the dashboard meter high.
+- **PDM Sampling**: The microphone captures raw audio via a PDM interface at 16 kHz. A dedicated audio thread reads **14-sample blocks** (~0.875 ms, ~1143 blocks/s). Exact 1110 Hz would need a non-integer block size at 16 kHz PCM; 14 samples is the closest integer match to the ~1110 Hz IMU/BLE stream. Early 14/16-sample experiments failed on the nrfx PDM path with the default shallow driver queue; the current build uses a deeper PDM queue (`queue-size = 48` in `app.overlay`) and a larger mem-slab pool (`AUDIO_BLOCK_COUNT = 64`) so high block rates stay healthy (0 read failures in steady-state testing).
+- **Block Peak Extraction**: For each audio block, the audio thread computes the block mean and then uses the peak absolute deviation from that mean. This removes DC/bias from the PDM stream before envelope tracking. Shorter blocks report lower peaks than the original 160-sample tuning reference, so the firmware multiplies by $\sqrt{160 / N}$ before gating and decay.
+- **Noise-Floor Subtraction**: An adaptive baseline tracks the steady acoustic/PDM noise floor (2.0 s attack, 0.15 s release). The published envelope subtracts that floor plus a block-scaled margin (`AUDIO_NOISE_MARGIN_BASE = 128` referenced to 160 samples) so idle noise does not pin the dashboard meter high.
 - **Time-Invariant RC Decay**: The audio thread updates the shared volatile float `audio_peak_raw` as a software peak-follower model:
   $$smooth\_mic_{t} = \max(peak\_raw, smooth\_mic_{t-dt} \cdot e^{-dt_s / \tau})$$
-  where $dt_s$ is the audio block duration in seconds, and $\tau$ is the decay time constant set to 35 ms.
-- **Continuous Tracking**: The telemetry builder does not clear the audio value or perform additional smoothing. Instead, the audio thread updates the envelope at roughly the live telemetry cadence. When the ambient volume is steady, the envelope remains flat. When the volume drops, the envelope decays smoothly without discrete spikes, zero gaps, or artificial sawtooth patterns.
-- **Serialization**: The tracked `smooth_mic` float is scaled by $1/64$ to fit in a single byte (0–255) and packed at byte offset 28 of the live binary frame.
+  where $dt_s$ is the audio block duration in seconds, and $\tau$ is the decay time constant set to **5 ms** (`AUDIO_ENVELOPE_TAU_S = 0.005`). Attack is instant; release is exponential, so clicker and release transients separate cleanly instead of smearing into a long tail.
+- **Continuous Tracking**: The telemetry builder does not clear the audio value or perform additional smoothing. The audio thread updates the envelope at ~1143 Hz; each ~1110 Hz live BLE frame samples the latest `audio_peak_raw` into `mic_amp`. The browser dashboard displays that byte directly (no extra client-side smoothing).
+- **Serialization**: The tracked `smooth_mic` float is scaled by $1/3$ (`AUDIO_BLE_SCALE_DIVISOR`) to fit in a single byte (0–255) and packed at byte offset 28 of the live binary frame.
 
 The serial `OFRAW` text line carries the same accel/gyro plus the on-device
 Euler angles, quaternion, and shot count; `OFSHOT` lines carry shot events.

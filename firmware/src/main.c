@@ -44,23 +44,31 @@ struct vec3 {
 #define AUDIO_SAMPLE_RATE 16000
 /*
  * The DMIC block size must be a whole number of PCM samples and must satisfy
- * the nrfx PDM driver's DMA/runtime constraints. 160 samples is a 10 ms block,
- * giving a 100 Hz audio envelope update cadence.
+ * the nrfx PDM driver's DMA/runtime constraints. At 16 kHz PCM, exact 1110 Hz
+ * would need 14.41 samples/block; 14 samples is the closest integer match
+ * (~1143 Hz), aligned with the ~1110 Hz IMU/BLE stream. Earlier 14/16-sample
+ * experiments failed before deeper PDM queues; this build retries 14 with
+ * expanded driver and mem-slab pools.
  */
-#define AUDIO_SAMPLES_PER_BLOCK 160
+#define AUDIO_SAMPLES_PER_BLOCK 14
+#define AUDIO_REF_SAMPLES_PER_BLOCK 160
 #define AUDIO_ACTUAL_BLOCK_RATE_HZ \
 	((AUDIO_SAMPLE_RATE + (AUDIO_SAMPLES_PER_BLOCK / 2)) / AUDIO_SAMPLES_PER_BLOCK)
 #define AUDIO_BYTES_PER_SAMPLE 2
 #define AUDIO_BLOCK_SIZE (AUDIO_SAMPLES_PER_BLOCK * AUDIO_BYTES_PER_SAMPLE)
-#define AUDIO_BLOCK_COUNT 8
-#define AUDIO_ENVELOPE_TAU_S 0.035f
+#define AUDIO_BLOCK_COUNT 64
+#define AUDIO_ENVELOPE_TAU_S 0.005f
 #define AUDIO_NOISE_FLOOR_ATTACK_TAU_S 2.0f
 #define AUDIO_NOISE_FLOOR_RELEASE_TAU_S 0.15f
-#define AUDIO_NOISE_MARGIN 512.0f
+#define AUDIO_NOISE_MARGIN_BASE 128.0f
+#define AUDIO_BLE_SCALE_DIVISOR 3.0f
+#define AUDIO_READ_FAIL_RECOVER_THRESHOLD 32
 
 K_MEM_SLAB_DEFINE_STATIC(audio_mem_slab, AUDIO_BLOCK_SIZE, AUDIO_BLOCK_COUNT, 4);
 
 static volatile float audio_peak_raw;
+static uint32_t audio_read_failures;
+static uint32_t audio_blocks_processed;
 
 static void start_pdm(void);
 static void stop_pdm(void);
@@ -119,11 +127,23 @@ static void audio_thread_entry(void *p1, void *p2, void *p3)
 		void *buffer;
 		uint32_t size;
 
-		err = dmic_read(dmic_dev, 0, &buffer, &size, 1000);
+		err = dmic_read(dmic_dev, 0, &buffer, &size, 100);
 		if (err < 0) {
-			audio_peak_raw = 0.0f;
+			audio_read_failures++;
+			if ((audio_read_failures % 50U) == 1U) {
+				printk("# AUDIO_ERR,read_fail=%d total=%u blocks=%u\n",
+				       err, audio_read_failures, audio_blocks_processed);
+			}
+			if (audio_read_failures == AUDIO_READ_FAIL_RECOVER_THRESHOLD) {
+				printk("# AUDIO_RECOVER,restarting PDM after read failures\n");
+				stop_pdm();
+				k_msleep(10);
+				start_pdm();
+			}
 			continue;
 		}
+
+		audio_read_failures = 0;
 
 		int16_t *samples = (int16_t *)buffer;
 		uint32_t num_samples = size / sizeof(int16_t);
@@ -152,6 +172,15 @@ static void audio_thread_entry(void *p1, void *p2, void *p3)
 		static float noise_floor;
 		float dt_s = (float)num_samples / (float)AUDIO_SAMPLE_RATE;
 		float peak_f = (float)peak;
+		/*
+		 * Shorter blocks report lower peak deviations than the 160-sample
+		 * tuning reference. Normalize so clicker/release sensitivity stays
+		 * comparable when doubling the envelope update rate.
+		 */
+		if (num_samples > 0U && num_samples < AUDIO_REF_SAMPLES_PER_BLOCK) {
+			peak_f *= sqrtf((float)AUDIO_REF_SAMPLES_PER_BLOCK /
+					(float)num_samples);
+		}
 		if (noise_floor <= 0.0f) {
 			noise_floor = peak_f;
 		} else {
@@ -162,7 +191,10 @@ static void audio_thread_entry(void *p1, void *p2, void *p3)
 			noise_floor += (peak_f - noise_floor) * floor_alpha;
 		}
 
-		float signal_peak = peak_f - noise_floor - AUDIO_NOISE_MARGIN;
+		float noise_margin = AUDIO_NOISE_MARGIN_BASE *
+			((float)AUDIO_SAMPLES_PER_BLOCK /
+			 (float)AUDIO_REF_SAMPLES_PER_BLOCK);
+		float signal_peak = peak_f - noise_floor - noise_margin;
 		if (signal_peak < 0.0f) {
 			signal_peak = 0.0f;
 		}
@@ -176,13 +208,14 @@ static void audio_thread_entry(void *p1, void *p2, void *p3)
 		}
 
 		audio_peak_raw = audio_envelope;
+		audio_blocks_processed++;
 
 		k_mem_slab_free(&audio_mem_slab, buffer);
 	}
 }
 
 #define AUDIO_THREAD_STACK_SIZE 2048
-#define AUDIO_THREAD_PRIORITY 5
+#define AUDIO_THREAD_PRIORITY 4
 K_THREAD_STACK_DEFINE(audio_thread_stack, AUDIO_THREAD_STACK_SIZE);
 struct k_thread audio_thread_data;
 
@@ -192,6 +225,7 @@ static void start_pdm(void)
 		int err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
 		if (err == 0) {
 			dmic_running = true;
+			audio_read_failures = 0;
 			printk("# PDM microphone sampling started\n");
 		} else {
 			printk("# Failed to start PDM: %d\n", err);
@@ -1846,7 +1880,7 @@ static void build_openfloat_live_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 	put_u16_le(frame, 24, (uint16_t)clamp_i16(scale_float(q->y, 10000.0f)));
 	put_u16_le(frame, 26, (uint16_t)clamp_i16(scale_float(q->z, 10000.0f)));
 
-	int val_raw = (int)(audio_peak_raw / 64.0f);
+	int val_raw = (int)(audio_peak_raw / AUDIO_BLE_SCALE_DIVISOR);
 	if (val_raw < 0) {
 		val_raw = 0;
 	}
@@ -2501,10 +2535,12 @@ static void print_cpu_load_if_due(uint64_t now_us)
 	}
 
 	printk("# CPU_LOAD,active_permille=%d,active_pct=%d.%01d,idle_pct=%d.%01d,"
-	       "fifo_overruns=%u,fifo_resyncs=%u\n",
+	       "fifo_overruns=%u,fifo_resyncs=%u,audio_blocks=%u,audio_failures=%u,"
+	       "audio_peak_raw=%u\n",
 	       load_permille, load_permille / 10, load_permille % 10,
 	       (1000 - load_permille) / 10, (1000 - load_permille) % 10,
-	       fifo_overrun_count, fifo_resync_count);
+	       fifo_overrun_count, fifo_resync_count, audio_blocks_processed,
+	       audio_read_failures, (uint32_t)audio_peak_raw);
 }
 
 int main(void)
