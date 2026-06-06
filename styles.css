@@ -510,6 +510,71 @@ input[type="range"] {
   display: none;
 }
 
+/* Microphone Volume Bars */
+.mic-volume-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mic-volume-item.hidden {
+  display: none !important;
+}
+
+.mic-label {
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: bold;
+}
+
+.vol-bar-container {
+  width: 38px;
+  height: 6px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+  display: inline-block;
+}
+
+.vol-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 2px;
+  transition: width 0.08s ease-out;
+}
+
+.vol-bar.clicker-bar {
+  background: var(--cyan);
+  box-shadow: 0 0 4px var(--cyan);
+}
+
+.vol-bar.impact-bar {
+  background: var(--violet);
+  box-shadow: 0 0 4px var(--violet);
+}
+
+.metric-dot.mic-active {
+  background: var(--cyan);
+  animation: pulse-mic 2s infinite;
+}
+
+@keyframes pulse-mic {
+  0% {
+    box-shadow: 0 0 0 0 rgba(53, 199, 232, 0.4);
+    background-color: var(--cyan);
+  }
+  70% {
+    box-shadow: 0 0 0 4px rgba(53, 199, 232, 0);
+    background-color: var(--cyan);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(53, 199, 232, 0);
+    background-color: var(--cyan);
+  }
+}
+
 .level-card {
   display: grid;
   align-content: space-between;
@@ -970,10 +1035,11 @@ td:last-child {
   
   .tab-navigation {
     grid-area: nav;
-    justify-content: space-between;
+    justify-content: stretch;
+    flex-wrap: wrap;
     width: 100%;
-    overflow-x: auto;
-    white-space: nowrap;
+    overflow-x: visible;
+    white-space: normal;
     gap: 6px;
     padding: 2px 0;
   }
@@ -981,7 +1047,7 @@ td:last-child {
   .nav-tab {
     padding: 6px 8px;
     font-size: 12px;
-    flex: 1;
+    flex: 1 1 calc(50% - 6px);
     justify-content: center;
   }
 }
@@ -2064,6 +2130,103 @@ canvas,
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* Bow Shop */
+.bow-shop-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: 16px;
+  padding: 2px 4px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.bow-shop-preview,
+.bow-shop-controls {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 12px;
+}
+
+.bow-shop-preview {
+  padding: 18px;
+}
+
+.bow-shop-controls {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bow-shop-controls h3 {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--cyan);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+#bowShopCanvas {
+  width: 100%;
+  height: 520px;
+  min-height: 360px;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(155, 140, 255, 0.08), rgba(6, 16, 20, 0.05)),
+    #061014;
+  cursor: grab;
+  touch-action: none;
+}
+
+#bowShopCanvas:active {
+  cursor: grabbing;
+}
+
+.bow-material-color-list {
+  display: grid;
+  gap: 12px;
+}
+
+.bow-color-control {
+  display: grid;
+  gap: 8px;
+}
+
+.bow-color-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.bow-color-row input[type="color"] {
+  width: 56px;
+  height: 42px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  cursor: pointer;
+}
+
+.bow-color-row span {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text);
+  font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 /* Settings Workspace Grid Styling */
 .settings-workspace {
   display: grid;
@@ -2457,6 +2620,14 @@ canvas,
 
 /* Media Queries for Mobile Workspace */
 @media (max-width: 920px) {
+  .bow-shop-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  #bowShopCanvas {
+    height: 360px;
+  }
+
   .settings-workspace {
     grid-template-columns: 1fr;
   }
@@ -2816,4 +2987,139 @@ canvas,
   font-weight: 700;
 }
 
+/* --- Steady Aim Training Workspace ---------------------------------------- */
+.training-workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 16px;
+  padding: 2px 4px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+@media (max-width: 768px) {
+  .training-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+.training-control-card,
+.training-display-card,
+.training-results-card {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.training-control-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: fit-content;
+}
+
+.training-display-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 400px;
+}
+
+.training-results-card {
+  grid-column: 1 / -1;
+  animation: slide-up-enter 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slide-up-enter {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.timer-circle-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 120px;
+  height: 120px;
+  position: relative;
+  margin: 0 auto;
+}
+
+.timer-svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.timer-bg {
+  fill: none;
+  stroke: var(--panel-soft);
+  stroke-width: 6;
+}
+
+.timer-progress {
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-dasharray: 339.3; /* 2 * PI * r (where r = 54) */
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 0.1s linear;
+}
+
+.countdown-val {
+  font-size: 38px;
+  font-weight: 900;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  color: var(--text);
+  z-index: 2;
+}
+
+.phase-label {
+  font-size: 16px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--cyan);
+  text-align: center;
+  margin-top: 10px;
+}
+
+.training-target-wrapper {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cant-badge {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(11, 22, 27, 0.85);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  color: var(--cyan);
+  pointer-events: none;
+  z-index: 10;
+}
+
+.target-graphic-placeholder {
+  font-size: 64px;
+  animation: float-slow 3s ease-in-out infinite;
+}
+
+@keyframes float-slow {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+  100% { transform: translateY(0px); }
+}
 

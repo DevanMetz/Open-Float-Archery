@@ -13,12 +13,12 @@ https://openfloatarchery.com
 ## Repository Shape
 
 - `index.html` is the web app shell (markup only); it loads `styles.css` and `app/main.js` as a native ES module.
-- `app/` holds the browser app as plain ES modules (no build step, no npm): `protocol/` (frame parsing), `core/` (event bus + reactive store), `device/` (Serial/BLE/Demo adapters), `telemetry/` (metrics + loss tracking), `ui/` (rendering), and `main.js` (wiring).
+- `app/` holds the browser app as plain ES modules (no build step, no npm): `protocol/` (frame parsing), `core/` (event bus + reactive store), `device/` (Serial/BLE/Demo adapters), `telemetry/` (metrics + loss tracking), `ui/` (dashboard, trace preview, Steady Aim training), and `main.js` (wiring).
 - `Blueprint.md` describes the intended hardware, firmware, BLE, browser, and cloud architecture.
 - `firmware/` is the Zephyr/NCS firmware app for the Seeed XIAO nRF54L15 Sense (IMU loop, shot detection, serial/BLE telemetry). See `firmware/AGENTS.md` for build, flash, and verification notes.
 - `tools/` holds host-side utilities, including `openfloat_ble_client.py`, the Python/Bleak BLE test client.
 - `FreeCAD/` holds enclosure/mechanical CAD work.
-- `README.md` is currently minimal and may need expansion as the project matures.
+- `README.md` is the contributor-facing quick start: local serve instructions, firmware/browser status, BLE test client usage, and safety/license notes.
 - `LICENSE` defines the open-source license terms.
 
 This repo is intentionally lightweight at the moment. Prefer small, understandable changes over introducing a build system or framework unless the project clearly needs one. The `app/` modules are deliberately framework-free: native ES modules, no bundler, no npm, no transpile step.

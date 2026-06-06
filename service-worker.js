@@ -1,4 +1,4 @@
-const CACHE_NAME = "openfloat-v86";
+const CACHE_NAME = "openfloat-v93";
 const ASSETS = [
   "./",
   "./index.html",
@@ -14,7 +14,8 @@ const ASSETS = [
   "./app/telemetry/telemetry.js",
   "./app/telemetry/sync.js",
   "./app/ui/dashboard.js",
-  "./app/ui/trace-preview.js"
+  "./app/ui/trace-preview.js",
+  "./app/ui/training.js"
 ];
 
 // Install Event

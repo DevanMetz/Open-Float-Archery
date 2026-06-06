@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-86">
+  <link rel="stylesheet" href="styles.css?v=shot-store-97">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="apple-touch-icon" href="icon.svg">
@@ -26,8 +26,14 @@
         <button id="navDashboardBtn" class="nav-tab active">
           <span class="nav-icon">📈</span> Dashboard
         </button>
+        <button id="navTrainingBtn" class="nav-tab">
+          <span class="nav-icon">🏹</span> Steady Aim
+        </button>
         <button id="navHistoryBtn" class="nav-tab">
           <span class="nav-icon">🎯</span> Saved Shots
+        </button>
+        <button id="navBowShopBtn" class="nav-tab">
+          <span class="nav-icon">B</span> Bow Shop
         </button>
         <button id="navSettingsBtn" class="nav-tab">
           <span class="nav-icon">⚙️</span> Settings
@@ -138,6 +144,12 @@
                     <strong>Shots:</strong> <span id="shotCountValue">0</span>
                   </span>
                   <span class="metric-divider">/</span>
+                  <span id="micVolumeItem" class="inline-metric-item mic-volume-item hidden" title="Acoustic Envelope">
+                    <span class="metric-dot mic-active"></span>
+                    <strong>Mic:</strong>
+                    <div class="vol-bar-container"><div id="volBar" class="vol-bar clicker-bar"></div></div>
+                  </span>
+                  <span class="metric-divider">/</span>
                   <span id="uploadStatusItem" class="inline-metric-item upload-status hidden" title="Uploading shots that were saved on the device before connecting">
                     <span class="metric-dot upload"></span>
                     <span class="upload-label">Uploading</span>&nbsp;<span id="uploadCountValue">0</span>
@@ -155,8 +167,8 @@
                 </button>
                 <button id="discardRecordBtn" class="toggle-btn discard-btn hidden" title="Discard recording">Discard</button>
                 <span class="chart-toggle-divider"></span>
-                <button id="viewTraceBtn" class="toggle-btn active">Motion</button>
-                <button id="viewTargetBtn" class="toggle-btn">Pin Float</button>
+                <button id="viewTraceBtn" class="toggle-btn">Motion</button>
+                <button id="viewTargetBtn" class="toggle-btn active">Pin Float</button>
               </div>
             </div>
             <canvas id="traceCanvas"></canvas>
@@ -213,6 +225,105 @@
         </section>
       </div>
 
+      <!-- Training View (Hidden by default) -->
+      <div id="tabTraining" class="tab-view hidden-view">
+        <section class="training-workspace">
+          <!-- Training Setup & Controls -->
+          <div class="panel training-control-card">
+            <div class="panel-head">
+              <h2>Steady Aim Trainer</h2>
+              <p class="note">Practice holding your bow as steady as possible over a configured time window.</p>
+            </div>
+
+            <div class="training-settings-group" style="margin-top: 14px;">
+              <div class="field">
+                <label for="trainingDurationSelect">Hold Duration</label>
+                <select id="trainingDurationSelect">
+                  <option value="5">5 Seconds</option>
+                  <option value="10" selected>10 Seconds</option>
+                  <option value="15">15 Seconds</option>
+                  <option value="20">20 Seconds</option>
+                  <option value="30">30 Seconds</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="training-status-box" style="margin-top: 16px; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); display: flex; flex-direction: column; gap: 4px; align-items: center; text-align: center;">
+              <div id="trainingStatusText" class="training-status-text" style="font-weight: 800; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--red);">Disconnected</div>
+              <p id="trainingStatusDesc" class="note" style="margin: 0; font-size: 11px;">Connect a sensor or start demo mode to train.</p>
+            </div>
+
+            <div class="training-actions" style="margin-top: 18px; display: flex; flex-direction: column; gap: 8px;">
+              <button id="startTrainingBtn" class="primary start-btn" disabled style="width: 100%;">Start Training</button>
+              <button id="cancelTrainingBtn" class="danger cancel-btn hidden" style="width: 100%;">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Training Display & Canvas -->
+          <div class="panel training-display-card">
+            <div id="trainingDisplayDefault" class="training-display-default" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; height: 360px; gap: 12px;">
+              <div class="target-graphic-placeholder" style="font-size: 64px;">🎯</div>
+              <h3>Ready to Begin</h3>
+              <p class="note" style="max-width: 280px; margin: 0;">Set your hold duration and click Start. Make sure your bow sensor is connected and calibrated.</p>
+            </div>
+
+            <div id="trainingDisplayActive" class="training-display-active hidden" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 360px; gap: 24px;">
+              <div class="timer-circle-container" style="position: relative; width: 120px; height: 120px; display: flex; align-items: center; justify-content: center;">
+                <svg class="timer-svg" viewBox="0 0 120 120" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: rotate(-90deg);">
+                  <circle class="timer-bg" cx="60" cy="60" r="54" style="fill: none; stroke: var(--line); stroke-width: 6;"></circle>
+                  <circle id="timerProgress" class="timer-progress" cx="60" cy="60" r="54" style="fill: none; stroke: var(--cyan); stroke-width: 6; stroke-linecap: round; stroke-dasharray: 339.3; stroke-dashoffset: 0; transition: stroke-dashoffset 0.1s linear;"></circle>
+                </svg>
+                <div id="trainingCountdownVal" class="countdown-val" style="font-size: 38px; font-weight: 900; font-family: 'JetBrains Mono', monospace; color: var(--text);">5</div>
+              </div>
+              <div id="trainingPhaseLabel" class="phase-label" style="font-size: 16px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; color: var(--cyan);">Draw Your Bow</div>
+            </div>
+
+            <div id="trainingTargetWrapper" class="training-target-wrapper hidden" style="display: flex; flex-direction: column; gap: 12px;">
+              <div class="canvas-container" style="position: relative; width: 100%; height: 360px;">
+                <canvas id="trainingTargetCanvas" style="width: 100%; height: 100%; display: block; border-radius: 8px; border: 1px solid var(--line); background: #061014;"></canvas>
+                <div id="trainingCantBadge" class="cant-badge" style="position: absolute; bottom: 12px; left: 12px; padding: 4px 10px; border-radius: 6px; background: rgba(11, 22, 27, 0.85); border: 1px solid var(--line); font-size: 12px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--cyan);">Cant: 0.0°</div>
+                <div id="trainingHoldTimerBadge" style="position: absolute; top: 12px; right: 12px; padding: 4px 10px; border-radius: 6px; background: rgba(11, 22, 27, 0.85); border: 1px solid var(--line); font-size: 14px; font-weight: 800; font-family: 'JetBrains Mono', monospace; color: var(--cyan);">0.0s</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Results Summary (Overlay/Appended panel) -->
+          <div id="trainingResultsCard" class="panel training-results-card hidden">
+            <div class="panel-head" style="margin-bottom: 12px;">
+              <h3>Session Results</h3>
+            </div>
+            <div class="results-grid" style="display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 16px;">
+              <div class="result-badge-large" style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; border-radius: 8px; border: 1px solid rgba(53, 199, 232, 0.25); background: rgba(53, 199, 232, 0.05); text-align: center;">
+                <span class="label" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Steadiness Score</span>
+                <span id="resultSteadinessScore" class="val" style="font-size: 48px; font-weight: 900; color: var(--cyan); line-height: 1;">--</span>
+              </div>
+              <div class="result-stats" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+                <div class="stat-item" style="display: flex; flex-direction: column; align-items: center; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); text-align: center;">
+                  <span class="label" style="font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Avg Cant Dev</span>
+                  <span id="resultAvgCantDev" class="val" style="font-size: 14px; font-weight: 800; color: var(--text); font-family: 'JetBrains Mono', monospace;">--</span>
+                </div>
+                <div class="stat-item" style="display: flex; flex-direction: column; align-items: center; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); text-align: center;">
+                  <span class="label" style="font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Avg Pitch Dev</span>
+                  <span id="resultAvgPitchDev" class="val" style="font-size: 14px; font-weight: 800; color: var(--text); font-family: 'JetBrains Mono', monospace;">--</span>
+                </div>
+                <div class="stat-item" style="display: flex; flex-direction: column; align-items: center; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); text-align: center;">
+                  <span class="label" style="font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Max Float Span</span>
+                  <span id="resultMaxFloat" class="val" style="font-size: 14px; font-weight: 800; color: var(--text); font-family: 'JetBrains Mono', monospace;">--</span>
+                </div>
+              </div>
+            </div>
+            <div class="coaching-box" style="padding: 12px; border-radius: 8px; border-left: 3px solid var(--cyan); background: rgba(53, 199, 232, 0.04); margin-bottom: 16px;">
+              <strong id="resultCoachingTitle" style="display: block; font-size: 13px; color: var(--text); margin-bottom: 4px;">--</strong>
+              <p id="resultCoachingText" class="note" style="margin: 0; font-size: 12px; line-height: 1.4;">--</p>
+            </div>
+            <div class="actions" style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 8px;">
+              <button id="saveTrainingShotBtn" class="primary" style="min-height: 38px;">Save Session Shot</button>
+              <button id="discardTrainingShotBtn" class="secondary" style="min-height: 38px;">Dismiss</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
       <!-- 2. Shot History View (Hidden by default) -->
       <div id="tabHistory" class="tab-view hidden-view">
         <section class="history-workspace">
@@ -230,7 +341,28 @@
         </section>
       </div>
 
-      <!-- 3. Sensor Settings View (Hidden by default) -->
+      <!-- 3. Bow Shop View (Hidden by default) -->
+      <div id="tabBowShop" class="tab-view hidden-view">
+        <section class="bow-shop-workspace">
+          <div class="panel bow-shop-preview">
+            <div class="panel-head">
+              <div>
+                <h2>Bow Shop</h2>
+                <p class="note">Customize the 3D bow model used across the dashboard and alignment views.</p>
+              </div>
+            </div>
+            <canvas id="bowShopCanvas" aria-label="Customizable 3D bow model preview"></canvas>
+          </div>
+
+          <div class="panel bow-shop-controls">
+            <h3>Bow Materials</h3>
+            <div id="bowMaterialColorList" class="bow-material-color-list" aria-label="Bow material colors"></div>
+            <p class="note">Uses named Blender materials from the compound bow model. Sights and electronics stay separate for future attachment controls.</p>
+          </div>
+        </section>
+      </div>
+
+      <!-- 4. Sensor Settings View (Hidden by default) -->
       <div id="tabSettings" class="tab-view hidden-view">
         <section class="settings-workspace">
           <!-- Card C: Sensor Power Settings (full width, top) -->
@@ -528,6 +660,6 @@
     </div>
   </div>
 
-  <script type="module" src="app/main.js?v=shot-store-86"></script>
+  <script type="module" src="app/main.js?v=shot-store-97"></script>
 </body>
 </html>

@@ -3,7 +3,7 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-import { put, getAll, generateUUID } from "../core/db.js?v=shot-store-86";
+import { put, getAll, generateUUID } from "../core/db.js?v=shot-store-97";
 
 export const MAX_TRACE_POINTS = 1000;
 
@@ -318,7 +318,8 @@ export class TelemetryStore {
       gz: sample.gzDps,
       roll,
       pitch,
-      yaw
+      yaw,
+      micAmp: sample.micAmp || 0
     };
 
     this.trace.push(tracePoint);
@@ -586,6 +587,7 @@ export class TelemetryStore {
           roll: pt.roll,
           pitch: pt.pitch,
           yaw: pt.yaw || 0,
+          micAmp: pt.micAmp || 0,
         };
       });
 
@@ -725,7 +727,8 @@ export class TelemetryStore {
           gz: pt.gz || 0,
           roll: pt.roll,
           pitch: pt.pitch,
-          yaw: pt.yaw || 0
+          yaw: pt.yaw || 0,
+          micAmp: pt.micAmp || 0
         };
       });
 

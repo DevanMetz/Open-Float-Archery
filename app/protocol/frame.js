@@ -1,12 +1,12 @@
 // OpenFloat telemetry frame parsing.
 //
 // Single source of truth for the on-wire formats shared by every transport:
-//   - BLE:    a fixed 28-byte binary "live" frame (firmware v1).
+//   - BLE:    a fixed 29-byte binary "live" frame (firmware v1).
 //   - Serial: human-readable OFRAW / OFSHOT text lines plus "#" banner lines.
 //
 // See Blueprint.md section 6 "Implemented v1 Live Frame" for the byte layout.
 
-export const BINARY_FRAME_LEN = 28;
+export const BINARY_FRAME_LEN = 29;
 export const GYRO_Q4 = 16; // BLE gyro is deg/s in Q4 fixed point (LSB = 1/16 dps)
 export const GYRO_MDPS = 1000; // OFRAW gyro is milli-deg/s
 export const ANGLE_CDEG = 100; // OFRAW angles are centi-degrees
@@ -14,7 +14,7 @@ export const ANGLE_CDEG = 100; // OFRAW angles are centi-degrees
 const MAGIC_O = 0x4f; // 'O'
 const MAGIC_F = 0x46; // 'F'
 
-// Decode one 28-byte binary live frame. Returns a Sample or null.
+// Decode one 29-byte binary live frame. Returns a Sample or null.
 export function parseBinaryFrame(bytes, offset = 0) {
   if (bytes.length - offset < BINARY_FRAME_LEN) return null;
   if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
@@ -67,10 +67,11 @@ export function parseBinaryFrame(bytes, offset = 0) {
     pitchDeg: pitch,
     yawDeg: yaw,
     flags: 0,
+    micAmp: view.getUint8(28),
   };
 }
 
-// Decode one 28-byte binary shot-event frame (type=2 live, type=4 stored).
+// Decode one 29-byte binary shot-event frame (type=2 live, type=4 stored).
 // Returns a Shot or null.
 export function parseBinaryShotFrame(bytes, offset = 0) {
   if (bytes.length - offset < BINARY_FRAME_LEN) return null;
@@ -94,11 +95,13 @@ export function parseBinaryShotFrame(bytes, offset = 0) {
     rollDeg: view.getInt16(16, true) / ANGLE_CDEG,
     pitchDeg: view.getInt16(18, true) / ANGLE_CDEG,
     yawDeg: view.getInt16(20, true) / ANGLE_CDEG,
+    clickerDtMs: view.getUint16(22, true),
+    impactDtMs: view.getUint16(24, true),
     stored: type === 4,
   };
 }
 
-// Decode one 28-byte count-sync frame (type=3). Returns { count } or null.
+// Decode one 29-byte count-sync frame (type=3). Returns { count } or null.
 // Sent by the device on subscribe so the persisted lifetime count displays
 // immediately, without being logged as a new shot.
 export function parseBinaryCountFrame(bytes, offset = 0) {
@@ -212,6 +215,7 @@ export function parseOfrawLine(line) {
     yawDeg: n(13) / ANGLE_CDEG,
     flags: 0,
     shotCount: n(18),
+    micAmp: 0,
   };
 }
 

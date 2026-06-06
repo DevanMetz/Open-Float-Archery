@@ -33,6 +33,185 @@
 #include <zephyr/drivers/adc.h>
 #include <zephyr/drivers/regulator.h>
 
+struct vec3 {
+	float x;
+	float y;
+	float z;
+};
+
+#include <zephyr/audio/dmic.h>
+
+#define AUDIO_SAMPLE_RATE 16000
+/*
+ * The DMIC block size must be a whole number of PCM samples and must satisfy
+ * the nrfx PDM driver's DMA/runtime constraints. 160 samples is a 10 ms block,
+ * giving a 100 Hz audio envelope update cadence.
+ */
+#define AUDIO_SAMPLES_PER_BLOCK 160
+#define AUDIO_ACTUAL_BLOCK_RATE_HZ \
+	((AUDIO_SAMPLE_RATE + (AUDIO_SAMPLES_PER_BLOCK / 2)) / AUDIO_SAMPLES_PER_BLOCK)
+#define AUDIO_BYTES_PER_SAMPLE 2
+#define AUDIO_BLOCK_SIZE (AUDIO_SAMPLES_PER_BLOCK * AUDIO_BYTES_PER_SAMPLE)
+#define AUDIO_BLOCK_COUNT 8
+#define AUDIO_ENVELOPE_TAU_S 0.035f
+#define AUDIO_NOISE_FLOOR_ATTACK_TAU_S 2.0f
+#define AUDIO_NOISE_FLOOR_RELEASE_TAU_S 0.15f
+#define AUDIO_NOISE_MARGIN 512.0f
+
+K_MEM_SLAB_DEFINE_STATIC(audio_mem_slab, AUDIO_BLOCK_SIZE, AUDIO_BLOCK_COUNT, 4);
+
+static volatile float audio_peak_raw;
+
+static void start_pdm(void);
+static void stop_pdm(void);
+
+static const struct device *const dmic_dev = DEVICE_DT_GET(DT_NODELABEL(dmic_dev));
+static volatile bool dmic_running;
+
+static void audio_thread_entry(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	if (!device_is_ready(dmic_dev)) {
+		printk("# DMIC device not ready!\n");
+		return;
+	}
+
+	struct pcm_stream_cfg stream = {
+		.pcm_width = 16,
+		.mem_slab  = &audio_mem_slab,
+	};
+	struct dmic_cfg cfg = {
+		.io = {
+			.min_pdm_clk_freq = 1000000,
+			.max_pdm_clk_freq = 3500000,
+			.min_pdm_clk_dc   = 40,
+			.max_pdm_clk_dc   = 60,
+		},
+		.streams = &stream,
+		.channel = {
+			.req_num_streams = 1,
+		},
+	};
+
+	cfg.channel.req_num_chan = 1;
+	cfg.channel.req_chan_map_lo = dmic_build_channel_map(0, 0, PDM_CHAN_LEFT);
+	cfg.streams[0].pcm_rate = AUDIO_SAMPLE_RATE;
+	cfg.streams[0].block_size = AUDIO_BLOCK_SIZE;
+
+	int err = dmic_configure(dmic_dev, &cfg);
+	if (err < 0) {
+		printk("# Failed to configure DMIC: %d\n", err);
+		return;
+	}
+
+	printk("# PDM Audio initialized: %u Hz, %u samples/block, ~%u blocks/s\n",
+	       AUDIO_SAMPLE_RATE, AUDIO_SAMPLES_PER_BLOCK, AUDIO_ACTUAL_BLOCK_RATE_HZ);
+	start_pdm();
+
+	while (1) {
+		while (!dmic_running) {
+			k_sleep(K_MSEC(100));
+		}
+
+		void *buffer;
+		uint32_t size;
+
+		err = dmic_read(dmic_dev, 0, &buffer, &size, 1000);
+		if (err < 0) {
+			audio_peak_raw = 0.0f;
+			continue;
+		}
+
+		int16_t *samples = (int16_t *)buffer;
+		uint32_t num_samples = size / sizeof(int16_t);
+
+		int32_t sum = 0;
+		for (uint32_t i = 0; i < num_samples; i++) {
+			sum += samples[i];
+		}
+
+		int32_t mean = num_samples > 0 ? (sum / (int32_t)num_samples) : 0;
+		int32_t peak = 0;
+		for (uint32_t i = 0; i < num_samples; i++) {
+			int32_t val = (int32_t)samples[i] - mean;
+			if (val < 0) {
+				val = -val;
+			}
+			if (val > peak) {
+				peak = val;
+			}
+		}
+		if (peak > INT16_MAX) {
+			peak = INT16_MAX;
+		}
+
+		static float audio_envelope;
+		static float noise_floor;
+		float dt_s = (float)num_samples / (float)AUDIO_SAMPLE_RATE;
+		float peak_f = (float)peak;
+		if (noise_floor <= 0.0f) {
+			noise_floor = peak_f;
+		} else {
+			float floor_tau = peak_f > noise_floor ?
+				AUDIO_NOISE_FLOOR_ATTACK_TAU_S :
+				AUDIO_NOISE_FLOOR_RELEASE_TAU_S;
+			float floor_alpha = 1.0f - expf(-dt_s / floor_tau);
+			noise_floor += (peak_f - noise_floor) * floor_alpha;
+		}
+
+		float signal_peak = peak_f - noise_floor - AUDIO_NOISE_MARGIN;
+		if (signal_peak < 0.0f) {
+			signal_peak = 0.0f;
+		}
+
+		float decay = expf(-dt_s / AUDIO_ENVELOPE_TAU_S);
+
+		if (signal_peak > audio_envelope) {
+			audio_envelope = signal_peak;
+		} else {
+			audio_envelope *= decay;
+		}
+
+		audio_peak_raw = audio_envelope;
+
+		k_mem_slab_free(&audio_mem_slab, buffer);
+	}
+}
+
+#define AUDIO_THREAD_STACK_SIZE 2048
+#define AUDIO_THREAD_PRIORITY 5
+K_THREAD_STACK_DEFINE(audio_thread_stack, AUDIO_THREAD_STACK_SIZE);
+struct k_thread audio_thread_data;
+
+static void start_pdm(void)
+{
+	if (!dmic_running && device_is_ready(dmic_dev)) {
+		int err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
+		if (err == 0) {
+			dmic_running = true;
+			printk("# PDM microphone sampling started\n");
+		} else {
+			printk("# Failed to start PDM: %d\n", err);
+		}
+	}
+}
+
+static void stop_pdm(void)
+{
+	if (dmic_running && device_is_ready(dmic_dev)) {
+		int err = dmic_trigger(dmic_dev, DMIC_TRIGGER_STOP);
+		if (err == 0) {
+			dmic_running = false;
+			printk("# PDM microphone sampling stopped\n");
+		} else {
+			printk("# Failed to stop PDM: %d\n", err);
+		}
+	}
+}
+
 #define IMU_ODR_HZ 3332
 #define IMU_ACCEL_FS_G 16
 #define IMU_GYRO_FS_DPS 2000
@@ -48,8 +227,8 @@
 #define OUTPUT_DT_US ((uint32_t)((SAMPLES_PER_OUTPUT * 1000000UL) / IMU_ODR_HZ))
 #define SERIAL_PRINT_DIVIDER 100
 #define BLE_NOTIFY_DIVIDER 1
-#define OPENFLOAT_BLE_FRAME_SIZE 28
-#define OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION 7
+#define OPENFLOAT_BLE_FRAME_SIZE 29
+#define OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION 6
 #define OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE \
 	(OPENFLOAT_BLE_FRAME_SIZE * OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION)
 #define TRACE_CHUNK_PAYLOAD_SIZE (OPENFLOAT_BLE_FRAME_SIZE - 9)
@@ -215,11 +394,7 @@ static struct bt_uuid_128 openfloat_control_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x8f3f3b10, 0x0f5a, 0x4f4c, 0x9a2d,
 			   0x000000000003));
 
-struct vec3 {
-	float x;
-	float y;
-	float z;
-};
+
 
 struct quat {
 	float w;
@@ -243,6 +418,8 @@ struct stored_shot {
 	int16_t roll_cdeg;
 	int16_t pitch_cdeg;
 	int16_t yaw_cdeg;
+	uint16_t clicker_dt_ms;
+	uint16_t impact_dt_ms;
 };
 
 struct stored_shot_log {
@@ -747,6 +924,9 @@ static void enter_deep_sleep(void)
 	/* 1. Turn off user LED if active */
 	gpio_pin_set_dt(&user_led, 0);
 
+	/* Stop PDM audio capture */
+	stop_pdm();
+
 	/* 2. Disconnect BLE and stop advertising */
 	if (current_conn) {
 		bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_POWER_OFF);
@@ -1054,43 +1234,7 @@ static bool detect_shot(const struct vec3 *accel, const struct vec3 *gyro, uint6
 	float min_gyro_rad_s2 = min_gyro_rad_s * min_gyro_rad_s;
 
 	if (mag2 > thresh2 && gyro_mag2 > min_gyro_rad_s2 && (now_ms - last_shot_ms) > SHOT_REFRACTORY_MS) {
-		shot_count++;
-		shot_id++;
 		last_shot_ms = now_ms;
-		last_shot_accel = *accel;
-		last_shot_queued_for_storage = false;
-		last_shot_record = (struct stored_shot){
-			.shot_count = (uint16_t)shot_count,
-			.shot_id = (uint16_t)shot_id,
-			.ax_mg = clamp_i16(scale_float(accel->x, SCALE_MG)),
-			.ay_mg = clamp_i16(scale_float(accel->y, SCALE_MG)),
-			.az_mg = clamp_i16(scale_float(accel->z, SCALE_MG)),
-			.threshold_cg = (uint16_t)scale_float(
-				shot_accel_threshold_mps2 / MPS2_PER_G,
-				100.0f),
-			.roll_cdeg = clamp_i16(
-				scale_float(roll_deg - cant_offset_deg,
-					    SCALE_CDEG)),
-			.pitch_cdeg = clamp_i16(
-				scale_float(pitch_deg - pitch_offset_deg,
-					    SCALE_CDEG)),
-			.yaw_cdeg = clamp_i16(scale_float(yaw_deg, SCALE_CDEG)),
-		};
-		if (!ble_notify_enabled) {
-			stored_shot_append(&last_shot_record);
-			last_shot_queued_for_storage = true;
-			if (buffer_rate_hz > 0) {
-				schedule_trace_freeze((uint16_t)shot_id);
-			}
-		}
-		led_shot_until_ms = now_ms + LED_SHOT_PULSE_MS;
-		printk("OFSHOT,1,%u,%llu,%d,%d,%d,%d\n",
-		       shot_id,
-		       (unsigned long long)now_us,
-		       scale_float(accel->x, SCALE_MG),
-		       scale_float(accel->y, SCALE_MG),
-		       scale_float(accel->z, SCALE_MG),
-		       shot_count);
 		return true;
 	}
 
@@ -1122,6 +1266,43 @@ static int openfloat_settings_set(const char *name, size_t len,
 		ssize_t rc;
 
 		if (len != sizeof(value)) {
+			/* Backward compatible migration for older smaller stored_shot_log format */
+			if (len == 2 + 18 * STORED_SHOT_CAPACITY) {
+				static struct {
+					uint16_t count;
+					struct {
+						uint16_t shot_count;
+						uint16_t shot_id;
+						int16_t ax_mg;
+						int16_t ay_mg;
+						int16_t az_mg;
+						uint16_t threshold_cg;
+						int16_t roll_cdeg;
+						int16_t pitch_cdeg;
+						int16_t yaw_cdeg;
+					} shots[STORED_SHOT_CAPACITY];
+				} old_log;
+				if (len == sizeof(old_log)) {
+					rc = read_cb(cb_arg, &old_log, sizeof(old_log));
+					if (rc >= 0) {
+						stored_shot_log.count = old_log.count;
+						for (int i = 0; i < old_log.count; i++) {
+							stored_shot_log.shots[i].shot_count = old_log.shots[i].shot_count;
+							stored_shot_log.shots[i].shot_id = old_log.shots[i].shot_id;
+							stored_shot_log.shots[i].ax_mg = old_log.shots[i].ax_mg;
+							stored_shot_log.shots[i].ay_mg = old_log.shots[i].ay_mg;
+							stored_shot_log.shots[i].az_mg = old_log.shots[i].az_mg;
+							stored_shot_log.shots[i].threshold_cg = old_log.shots[i].threshold_cg;
+							stored_shot_log.shots[i].roll_cdeg = old_log.shots[i].roll_cdeg;
+							stored_shot_log.shots[i].pitch_cdeg = old_log.shots[i].pitch_cdeg;
+							stored_shot_log.shots[i].yaw_cdeg = old_log.shots[i].yaw_cdeg;
+							stored_shot_log.shots[i].clicker_dt_ms = 0;
+							stored_shot_log.shots[i].impact_dt_ms = 0;
+						}
+						return 0;
+					}
+				}
+			}
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
@@ -1664,6 +1845,15 @@ static void build_openfloat_live_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 	put_u16_le(frame, 22, (uint16_t)clamp_i16(scale_float(q->x, 10000.0f)));
 	put_u16_le(frame, 24, (uint16_t)clamp_i16(scale_float(q->y, 10000.0f)));
 	put_u16_le(frame, 26, (uint16_t)clamp_i16(scale_float(q->z, 10000.0f)));
+
+	int val_raw = (int)(audio_peak_raw / 64.0f);
+	if (val_raw < 0) {
+		val_raw = 0;
+	}
+	if (val_raw > 255) {
+		val_raw = 255;
+	}
+	frame[28] = (uint8_t)val_raw;
 }
 
 /*
@@ -1699,6 +1889,10 @@ static void build_openfloat_shot_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 		   type == 2 ? (uint16_t)last_shot_record.pitch_cdeg : 0);
 	put_u16_le(frame, 20,
 		   type == 2 ? (uint16_t)last_shot_record.yaw_cdeg : 0);
+	put_u16_le(frame, 22,
+		   type == 2 ? last_shot_record.clicker_dt_ms : 0);
+	put_u16_le(frame, 24,
+		   type == 2 ? last_shot_record.impact_dt_ms : 0);
 }
 
 static void build_openfloat_stored_shot_binary(
@@ -1719,6 +1913,8 @@ static void build_openfloat_stored_shot_binary(
 	put_u16_le(frame, 16, (uint16_t)shot->roll_cdeg);
 	put_u16_le(frame, 18, (uint16_t)shot->pitch_cdeg);
 	put_u16_le(frame, 20, (uint16_t)shot->yaw_cdeg);
+	put_u16_le(frame, 22, shot->clicker_dt_ms);
+	put_u16_le(frame, 24, shot->impact_dt_ms);
 }
 
 static void build_openfloat_storage_status_binary(
@@ -2388,6 +2584,11 @@ int main(void)
 
 	bool imu_int_ready = (init_imu_interrupt() == 0);
 
+	k_thread_create(&audio_thread_data, audio_thread_stack,
+			K_THREAD_STACK_SIZEOF(audio_thread_stack),
+			audio_thread_entry, NULL, NULL, NULL,
+			AUDIO_THREAD_PRIORITY, 0, K_NO_WAIT);
+
 	last_activity_time_ms = k_uptime_get();
 
 	(void)cpu_load_get(true);
@@ -2517,6 +2718,45 @@ int main(void)
 					pitch_deg, yaw_deg)) {
 				shot_detected = true;
 				last_activity_time_ms = k_uptime_get();
+
+				shot_count++;
+				shot_id++;
+
+				last_shot_accel = avg_accel;
+				last_shot_queued_for_storage = false;
+				last_shot_record = (struct stored_shot){
+					.shot_count = (uint16_t)shot_count,
+					.shot_id = (uint16_t)shot_id,
+					.ax_mg = clamp_i16(scale_float(avg_accel.x, SCALE_MG)),
+					.ay_mg = clamp_i16(scale_float(avg_accel.y, SCALE_MG)),
+					.az_mg = clamp_i16(scale_float(avg_accel.z, SCALE_MG)),
+					.threshold_cg = (uint16_t)scale_float(
+						shot_accel_threshold_mps2 / MPS2_PER_G, 100.0f),
+					.roll_cdeg = clamp_i16(scale_float(roll_deg - cant_offset_deg, SCALE_CDEG)),
+					.pitch_cdeg = clamp_i16(scale_float(pitch_deg - pitch_offset_deg, SCALE_CDEG)),
+					.yaw_cdeg = clamp_i16(scale_float(yaw_deg, SCALE_CDEG)),
+					.clicker_dt_ms = 0,
+					.impact_dt_ms = 0,
+				};
+
+				if (!ble_notify_enabled) {
+					stored_shot_append(&last_shot_record);
+					last_shot_queued_for_storage = true;
+					if (buffer_rate_hz > 0) {
+						schedule_trace_freeze((uint16_t)shot_id);
+					}
+				}
+
+				led_shot_until_ms = k_uptime_get() + LED_SHOT_PULSE_MS;
+
+				printk("OFSHOT,1,%u,%llu,%d,%d,%d,%d,0,0\n",
+				       shot_id,
+				       (unsigned long long)uptime_us(),
+				       scale_float(avg_accel.x, SCALE_MG),
+				       scale_float(avg_accel.y, SCALE_MG),
+				       scale_float(avg_accel.z, SCALE_MG),
+				       shot_count);
+
 				(void)notify_openfloat_shot_event(2);
 				k_work_submit(&shot_persist_work);
 				if (last_shot_queued_for_storage) {

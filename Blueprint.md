@@ -31,8 +31,8 @@ hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
 - Two telemetry transports carrying the same data:
   - **USB / Web Serial**: human-readable `OFRAW` text lines at ~11 Hz
     (every 100th output frame) plus `#` comment/banner lines and `OFSHOT` events.
-  - **BLE**: a custom GATT service notifying compact 28-byte binary frames (including on-device quaternions).
-    Live-sample frames are batched seven per 196-byte notification; shot-event and
+  - **BLE**: a custom GATT service notifying compact 29-byte binary frames (including on-device quaternions).
+    Live-sample frames are batched six per 174-byte notification; shot-event and
     count-sync frames are sent as standalone notifications.
 - Browser dashboard: `index.html` connects over Web Bluetooth (BLE) from the
   header status badge. (The serial `OFRAW` decoder and demo adapter remain in
@@ -48,6 +48,9 @@ hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
   (circular play/pause button, phase-colored timeline, 0.25x-4x replay speed,
   and scroll-wheel / pinch zoom on the trace).
 - Button-triggered zeroing of cant and pitch offsets.
+- On-chip PDM microphone envelope follower packed into each live BLE frame for
+  bow-mounted acoustic events (clicker drops, release transients).
+- Browser dashboard acoustic envelope meter in the live metrics header.
 
 Verified test clients: `tools/openfloat_ble_client.py` (BLE + serial decoder)
 and the Web Serial dashboard in `index.html`.
@@ -220,7 +223,7 @@ configures **3332 Hz** accel + gyro ODR through raw LSM6DSL registers and reads
 the FIFO via an INT1 watermark interrupt, averaging each group of 3 raw samples
 into one distinct fixed-point frame (`dt_us=900`) over BLE. The latest
 Windows/Bleak run received a continuous frame sequence with **0 lost frames
-across 28,670 frames** (warm-up-excluded host delivery **1129 Hz** with 200-byte
+across 28,670 frames** (warm-up-excluded host delivery **1129 Hz** with 174-byte
 notifications), and **0 FIFO overruns / 0 resyncs / 0 outlier frames / 100%
 distinct frames**. An earlier 6664 Hz experiment hit similar throughput but
 overran the 1 MHz I2C bus ~1/s, corrupting a sample around each overrun. The IMU
@@ -298,9 +301,9 @@ The browser converts fixed-point values into physical units using scale factors 
 ### Implemented v1 Live Frame
 
 The CRC-footed packet above is the longer-term target. The current firmware
-   ships a **fixed 28-byte** frame (carrying on-board quaternions) whose meaning is selected
-   by the type byte. Live-sample frames (type 1) are batched seven per BLE notification
-   (a **196-byte payload**); text serial emits `OFRAW` lines instead:
+   ships a **fixed 29-byte** frame (carrying on-board quaternions and raw audio envelope) whose meaning is selected
+   by the type byte. Live-sample frames (type 1) are batched six per BLE notification
+   (a **174-byte payload**); text serial emits `OFRAW` lines instead:
 
 ```text
 offset 0  magic[2]      "OF"
@@ -311,18 +314,31 @@ offset 6  dt_us u16      group window (~900 us = SAMPLES_PER_OUTPUT / ODR)
 offset 8  accel_mg int16[3]   milli-g, scale 1 mg/LSB
 offset 14 gyro int16[3]       deg/s in Q4 fixed point (LSB = 1/16 deg/s)
 offset 20 quat int16[4]       quaternion (qw, qx, qy, qz) scaled by 10000 (LSB = 1/10000)
+offset 28 mic_amp u8          raw peak amplitude, scale 1/64.0f (0..255)
 ```
 
 Each type-1 frame is the average of `SAMPLES_PER_OUTPUT` (3) raw IMU samples, so
 `dt_us` is the fixed group window rather than a per-sample delta. There is **no
 CRC and no flags field** in the frame; sequence is `u16`, not `u32`.
 
-The same 28-byte envelope carries other frame types, demultiplexed by the type
+The same 29-byte envelope carries other frame types, demultiplexed by the type
 byte (see section 8): **type 2** live shot events (shot_count u16 @4, shot_id
-u16 @6, accel_mg int16[3] @8, threshold_cg u16 @14, roll/pitch/yaw cdeg @16/@18/@20, padded to 28 bytes)
+u16 @6, accel_mg int16[3] @8, threshold_cg u16 @14, roll/pitch/yaw cdeg @16/@18/@20, clicker_dt_ms u16 @22 (unused/0), impact_dt_ms u16 @24 (unused/0), padded to 29 bytes)
 sent on each detected shot, **type 3** count-sync (same shot_count/shot_id
 fields) sent on subscribe, and **type 4** stored-shot upload frames with the
 same payload as type 2.
+
+### Microphone Peak Envelope Follower
+
+To support bow-mounted acoustic events (such as clicker drops and bow releases) without exceeding BLE transmission bandwidth limits or causing excessive CPU load, the firmware implements a time-invariant, on-chip envelope follower:
+- **PDM Sampling**: The microphone captures raw audio via a PDM interface at 16 kHz. Audio data is read in 160-sample blocks by a dedicated audio processing thread. Runtime testing showed 14- and 16-sample blocks cause DMIC read failures on the current nrfx PDM path, while 160 samples gives a reliable 10 ms / 100 Hz audio update cadence.
+- **Block Peak Extraction**: For each audio block, the audio thread computes the block mean and then uses the peak absolute deviation from that mean. This removes DC/bias from the PDM stream before envelope tracking.
+- **Noise-Floor Subtraction**: A slow adaptive baseline tracks the steady acoustic/PDM noise floor. The published envelope subtracts that floor plus a small margin so idle noise does not pin the dashboard meter high.
+- **Time-Invariant RC Decay**: The audio thread updates the shared volatile float `audio_peak_raw` as a software peak-follower model:
+  $$smooth\_mic_{t} = \max(peak\_raw, smooth\_mic_{t-dt} \cdot e^{-dt_s / \tau})$$
+  where $dt_s$ is the audio block duration in seconds, and $\tau$ is the decay time constant set to 35 ms.
+- **Continuous Tracking**: The telemetry builder does not clear the audio value or perform additional smoothing. Instead, the audio thread updates the envelope at roughly the live telemetry cadence. When the ambient volume is steady, the envelope remains flat. When the volume drops, the envelope decays smoothly without discrete spikes, zero gaps, or artificial sawtooth patterns.
+- **Serialization**: The tracked `smooth_mic` float is scaled by $1/64$ to fit in a single byte (0–255) and packed at byte offset 28 of the live binary frame.
 
 The serial `OFRAW` text line carries the same accel/gyro plus the on-device
 Euler angles, quaternion, and shot count; `OFSHOT` lines carry shot events.
@@ -371,7 +387,7 @@ flags: uint16
 initial **12 g** threshold with an **800 ms** refractory window. The threshold is
 runtime-configurable over BLE with `thresh:<g>` and is clamped to 2-30 g. A
 detected shot increments a shot counter, pulses the user LED, emits a serial
-event, and notifies a 28-byte BLE shot-event frame (type 2) to the browser:
+event, and notifies a 29-byte BLE shot-event frame (type 2) to the browser:
 
 ```text
 OFSHOT,proto,shot_id,uptime_us,ax_mg,ay_mg,az_mg,shot_count
@@ -435,14 +451,14 @@ Command Characteristic
 
 ```text
 Service          8f3f3b10-0f5a-4f4c-9a2d-000000000001 (Custom OpenFloat Service)
-Live             8f3f3b10-0f5a-4f4c-9a2d-000000000002  notify  (28-byte frames, typed)
+Live             8f3f3b10-0f5a-4f4c-9a2d-000000000002  notify  (29-byte frames, typed)
 Control          8f3f3b10-0f5a-4f4c-9a2d-000000000003  write   (ASCII commands)
 Battery Service  0000180f-0000-1000-8000-00805f9b34fb (Standard BLE BAS)
   Level Char     00002a19-0000-1000-8000-00805f9b34fb  read/notify (0-100%)
 ```
 
-The live characteristic carries six 28-byte frame types, demultiplexed by the
-type byte: type 1 live sample (batched 7/notification), type 2 shot event (sent
+The live characteristic carries six 29-byte frame types, demultiplexed by the
+type byte: type 1 live sample (batched 6/notification), type 2 shot event (sent
 on each detected shot), type 3 count sync (sent on subscribe so the persisted
 lifetime count displays immediately without logging a shot), type 4 stored
 shot upload (sent one at a time until the web app acknowledges each save), type 5
@@ -522,12 +538,19 @@ CloudSyncAdapter
   - never required for live telemetry
 
 UI
-  - live dashboard (inline stream rate & shot counter metrics, dynamic target
-    trace, inline Record button, and a stored-shot "Uploading N" indicator)
+  - live dashboard (inline stream rate & shot counter metrics, live acoustic
+    envelope meter, dynamic target trace, inline Record button, and a
+    stored-shot "Uploading N" indicator)
   - shot review (aiming hold, release, follow-through phases)
+  - Steady Aim training tab (countdown, configurable hold drill, live target
+    trace, steadiness scoring, coaching feedback, save to IndexedDB)
+  - Bow Shop 3D customization tab that loads named materials from
+    `Blender/BowModel.glb`, generates color controls for the compound bow
+    materials, and applies those colors to every 3D bow preview
   - settings workspace: full-width Power Management and Telemetry & Buffer
     cards, plus a combined collapsible Sensor & 3D Alignment section (sensor
-    mount axis mapping and 3D model display) sharing one 3D preview
+    mount axis mapping and 3D model display) sharing one 3D preview with axis
+    labels for the model/mount rotation controls
   - calibrated glassmorphic spirit bubble level (custom range & tolerance sweet-spot sliders)
   - low-pass filtered (EMA) bubble visualizer for smooth and responsive tracking
   - real-time recent shots grid list (syncing with device shot events & manual recordings)
@@ -544,17 +567,49 @@ device, protocol, telemetry, ui) and connects over **Web Bluetooth (BLE)** from
 the header status badge. (The serial `OFRAW` decoder and demo adapter remain in
 `app/device` but are no longer surfaced in the dashboard UI; the serial decoder
 still backs `tools/openfloat_ble_client.py`.) Web Bluetooth
-decodes the 28-byte binary frames (live samples batched in 196-byte
+decodes the 29-byte binary frames (live samples batched in 174-byte
 notifications, plus shot-event, count-sync, storage-status, stored-shot, and
 trace-chunk frames); those BLE frames carry the on-board Madgwick filter
 quaternion, allowing the browser to extract and convert it to Euler angles
 directly, aligning it with the serial stream. The app also includes local bow
 profiles, timestamp-derived practice sessions, manual trace recording, saved
-shot review/compare, and an optional Supabase-backed sync queue configured from
-the Cloud modal. Additionally, a Progressive Web App (PWA) service worker
+shot review/compare, Steady Aim hold training (`app/ui/training.js`), Bow Shop
+3D customization, and an optional Supabase-backed sync queue configured from the
+Cloud modal. Additionally, a Progressive Web App (PWA) service worker
 (`service-worker.js`) is registered to cache all core markup, styling, modules,
 and the 3D bow model, ensuring the application is usable offline at remote
 archery ranges after it has been loaded once.
+
+### 3D Model Asset Contract
+
+`Blender/BowModel.glb` is the browser model library for the current web app.
+The exporter may flatten Blender collections, so browser code relies on stable
+object and material names rather than collection membership alone.
+
+Current compound-bow objects:
+
+- `String`
+- `Top_Cam`
+- `Bottom_Cam`
+- `Riser`
+- `Top_Text`
+- `BOW_PIVOT`
+
+Current compound-bow materials exposed in Bow Shop:
+
+- `string`
+- `cam`
+- `riser`
+- `grip`
+- `text`
+
+Attachment/electronics objects remain separate from compound-bow material
+customization. `Sight_Arm` and `Sight_Pin` currently keep their own sight
+materials. A named `MCU` object is detached from the loaded GLB and attached as
+the live module preview (`bow.userData.xiaoModule`) so mount orientation,
+position, and rotation controls affect the Blender MCU model instead of a
+procedural placeholder. If the GLB omits `MCU`, the app falls back to the
+procedural XIAO module.
 
 ### Real-time UI & Database Updates
 The Recent Shots list is reactive. When a connection is active (serial or BLE) and the device detects a shot, the adapter parses and relays the event onto the global `EventBus` as a `"shot"` event. The `TelemetryStore` listens to this event, deduplicates against the set of device shot IDs already handled **this connection** (the device's `shot_id` restarts at 0 after a `shotreset`/reflash, so all-time deduplication by ID is unsafe), writes the shot to IndexedDB with `session_id: null`, and emits a `"shot-saved"` event. The dashboard UI listens to `"shot-saved"` and instantly updates the Recent Shots grid. Practice sessions are no longer tracked live — they are derived from shot timestamps when the Saved Shots history is rendered (any gap over 30 minutes starts a new session), and the user can rename a session and assign its bow, stored as a per-group override.
@@ -744,10 +799,10 @@ not begun. See the Implementation Status section near the top for detail.
 
 ### Phase 3: Full-Rate BLE Live Stream  [partial]
 
-- Implement packed binary live packets. (28-byte v1 frames containing quaternions; firmware batches 7
-  distinct averaged frames into 196-byte notifications, read via INT1 watermark.)
+- Implement packed binary live packets. (29-byte v1 frames containing quaternions; firmware batches 6
+  distinct averaged frames into 174-byte notifications, read via INT1 watermark.)
 - Tune BLE connection interval and MTU. (212-byte L2CAP TX MTU, 217-byte ACL
-  TX/RX buffers, and 7.5 ms preferred interval are in use; 196-byte BLE
+  TX/RX buffers, and 7.5 ms preferred interval are in use; 174-byte BLE
   payloads verified on Windows/Bleak at about 161 notifications/s with zero
   sequence loss.)
 - Detect packet loss in the browser and Python client. (Both use the sequence

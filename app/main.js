@@ -2,40 +2,48 @@
 // own the transport lifecycle (connect / disconnect).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-86";
-import { createAdapter } from "./device/adapters.js?v=shot-store-86";
+import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-97";
+import { createAdapter } from "./device/adapters.js?v=shot-store-97";
 import {
   cloneMountAxes,
+  mountBowShop,
   mountDashboard,
   mountLog,
   mountOrientationById,
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/dashboard.js?v=shot-store-86";
+} from "./ui/dashboard.js?v=shot-store-97";
 import {
   drawEmptyTargetPreview,
   drawTraceTargetPreview,
   watchTracePreviewResize,
-} from "./ui/trace-preview.js?v=shot-store-86";
-import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS, exportAllData, importAllData } from "./core/db.js?v=shot-store-86";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-86";
+} from "./ui/trace-preview.js?v=shot-store-97";
+import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS, exportAllData, importAllData } from "./core/db.js?v=shot-store-97";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-97";
+import { mountTraining } from "./ui/training.js?v=shot-store-97";
 
-const APP_BUILD = "shot-store-86";
+const APP_BUILD = "shot-store-97";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
   "statusBadge", "statusText",
   "protocolValue", "typeValue", "sourceValue", "seqValue", "lossValue",
-  "dtValue", "hzValue", "frameCountValue",
+  "dtValue", "hzValue", "frameCountValue", "micVolumeItem", "volBar",
   "shotCountValue", "uploadStatusItem", "uploadCountValue", "eventLog", "traceCanvas",
   "orientationCanvas", "orientationRollValue", "orientationPitchValue", "orientationYawValue",
   "syncBadge", "syncText", "cloudModal", "closeCloudModalBtn",
   "sbUrlInput", "sbKeyInput", "saveCloudSettingsBtn", "clearCloudSettingsBtn",
   "chartTitle", "reviewBanner", "reviewInfo", "reviewCompareSelect",
   "reviewCompareField", "reviewCompareLegend", "exitReviewBtn",
-  "navDashboardBtn", "navHistoryBtn", "navSettingsBtn",
-  "tabDashboard", "tabHistory", "tabSettings", "historyList",
+  "navDashboardBtn", "navTrainingBtn", "navHistoryBtn", "navBowShopBtn", "navSettingsBtn",
+  "tabDashboard", "tabTraining", "tabHistory", "tabBowShop", "tabSettings", "historyList",
+  "trainingDurationSelect", "startTrainingBtn", "cancelTrainingBtn",
+  "trainingStatusText", "trainingStatusDesc", "trainingDisplayDefault", "trainingDisplayActive",
+  "timerProgress", "trainingCountdownVal", "trainingPhaseLabel", "trainingTargetWrapper",
+  "trainingTargetCanvas", "trainingCantBadge", "trainingHoldTimerBadge", "trainingResultsCard",
+  "resultSteadinessScore", "resultAvgCantDev", "resultAvgPitchDev", "resultMaxFloat",
+  "resultCoachingTitle", "resultCoachingText", "saveTrainingShotBtn", "discardTrainingShotBtn",
   "recordToggleBtn", "recordToggleLabel", "recordStatusItem",
   "recordTimeText", "recordSamplesText", "discardRecordBtn",
   "thresholdSlider", "thresholdValue",
@@ -58,6 +66,7 @@ const ELEMENT_IDS = [
   "modelRotateXBtn", "modelRotateYBtn", "modelRotateZBtn", "modelResetBtn",
   "modelInvertRollToggle", "modelInvertPitchToggle", "modelSwapRollPitchToggle", "modelIgnoreYawToggle",
   "modelAxisXValue", "modelAxisYValue", "modelAxisZValue",
+  "bowShopCanvas", "bowMaterialColorList",
   "bufferRateSlider", "bufferRateValue", "bufferNVSToggle",
   "followThroughSlider", "followThroughValueMs",
   "streamRateSlider", "streamRateValue",
@@ -105,6 +114,25 @@ const cachedViewRoll = Number.isFinite(Number(cached.viewRoll)) ? Number(cached.
 const cachedModelAlignmentRotation = Array.isArray(cached.modelAlignmentRotation) && cached.modelAlignmentRotation.length === 3
   ? cached.modelAlignmentRotation.map((value) => Number.isFinite(Number(value)) ? Number(value) : 0)
   : [0, 0, 0];
+const cachedBowRiserColor = /^#[0-9a-f]{6}$/i.test(String(cached.bowRiserColor || ""))
+  ? String(cached.bowRiserColor)
+  : "#c7d5d0";
+const cachedBowHandleColor = /^#[0-9a-f]{6}$/i.test(String(cached.bowHandleColor || ""))
+  ? String(cached.bowHandleColor)
+  : "#1a1a1a";
+const cachedBowMaterialColors = cached.bowMaterialColors && typeof cached.bowMaterialColors === "object"
+  ? Object.fromEntries(
+      Object.entries(cached.bowMaterialColors)
+        .filter(([, value]) => /^#[0-9a-f]{6}$/i.test(String(value || "")))
+        .map(([key, value]) => [String(key), String(value)]),
+    )
+  : {};
+if (!cachedBowMaterialColors.riser && cached.bowRiserColor) {
+  cachedBowMaterialColors.riser = cachedBowRiserColor;
+}
+if (!cachedBowMaterialColors.grip && cached.bowHandleColor) {
+  cachedBowMaterialColors.grip = cachedBowHandleColor;
+}
 const modelAttitudeMigrated = Number(cached.modelAttitudeVersion || 0) < MODEL_ATTITUDE_VERSION;
 const store = createStore({
   statusMode: "",
@@ -134,7 +162,7 @@ const store = createStore({
   compareTrace: null,
   compareShotLabel: "",
   compareThresholdG: 12,
-  chartView: "line",
+  chartView: "target",
   formScore: null,
   holdStability: null,
   releaseQuality: null,
@@ -168,6 +196,7 @@ const store = createStore({
   modelInvertPitch: modelAttitudeMigrated ? false : !!cached.modelInvertPitch,
   modelSwapRollPitch: modelAttitudeMigrated ? false : !!cached.modelSwapRollPitch,
   modelIgnoreYaw: modelAttitudeMigrated ? false : !!cached.modelIgnoreYaw,
+  bowMaterialColors: cachedBowMaterialColors,
   bufferRate: cached.bufferRate !== undefined ? (Number(cached.bufferRate) === 0 ? 0 : Number(cached.bufferRate) === 1 ? 52 : Number(cached.bufferRate) === 2 ? 104 : 208) : 52,
   followThroughMs: cached.followThrough !== undefined ? Number(cached.followThrough) : 1500,
   streamRate: cached.streamRate !== undefined ? (Number(cached.streamRate) === 0 ? 55 : Number(cached.streamRate) === 1 ? 111 : Number(cached.streamRate) === 2 ? 222 : Number(cached.streamRate) === 3 ? 555 : 1110) : 1110,
@@ -205,7 +234,8 @@ function saveSettingsToCache() {
       modelInvertRoll: store.get().modelInvertRoll,
       modelInvertPitch: store.get().modelInvertPitch,
       modelSwapRollPitch: store.get().modelSwapRollPitch,
-      modelIgnoreYaw: store.get().modelIgnoreYaw
+      modelIgnoreYaw: store.get().modelIgnoreYaw,
+      bowMaterialColors: store.get().bowMaterialColors
     };
     localStorage.setItem("openfloat_settings", JSON.stringify(settings));
   } catch (err) {
@@ -291,8 +321,10 @@ const syncAdapter = new CloudSyncAdapter(bus, store);
 telemetry.syncAdapter = syncAdapter; // Register sync on telemetry store
 
 mountDashboard({ store, telemetry, el });
+mountTraining({ store, telemetry, el, bus });
 mountLog(bus, el.eventLog);
 mountOrientationSettings({ store, el });
+mountBowShop({ store, el, saveSettingsToCache });
 
 // Initialize settings fields from localStorage cache on load
 initSettingsFromCache();
@@ -947,18 +979,21 @@ el.modelIgnoreYawToggle.addEventListener("change", () => {
   bus.emit("log", `${el.modelIgnoreYawToggle.checked ? "Enabled" : "Disabled"} ignoring model yaw.`);
   saveSettingsToCache();
 });
-
 // Tab Switching Navigation Logic
 function selectViewTab(targetId) {
-  const tabs = ["tabDashboard", "tabHistory", "tabSettings"];
+  const tabs = ["tabDashboard", "tabTraining", "tabHistory", "tabBowShop", "tabSettings"];
   const navButtons = {
     tabDashboard: el.navDashboardBtn,
+    tabTraining: el.navTrainingBtn,
     tabHistory: el.navHistoryBtn,
+    tabBowShop: el.navBowShopBtn,
     tabSettings: el.navSettingsBtn,
   };
   const panels = {
     tabDashboard: el.tabDashboard,
+    tabTraining: el.tabTraining,
     tabHistory: el.tabHistory,
+    tabBowShop: el.tabBowShop,
     tabSettings: el.tabSettings,
   };
 
@@ -983,9 +1018,11 @@ function selectViewTab(targetId) {
   }
 }
 
-if (el.navDashboardBtn && el.navHistoryBtn && el.navSettingsBtn) {
+if (el.navDashboardBtn && el.navTrainingBtn && el.navHistoryBtn && el.navBowShopBtn && el.navSettingsBtn) {
   el.navDashboardBtn.addEventListener("click", () => selectViewTab("tabDashboard"));
+  el.navTrainingBtn.addEventListener("click", () => selectViewTab("tabTraining"));
   el.navHistoryBtn.addEventListener("click", () => selectViewTab("tabHistory"));
+  el.navBowShopBtn.addEventListener("click", () => selectViewTab("tabBowShop"));
   el.navSettingsBtn.addEventListener("click", () => selectViewTab("tabSettings"));
 }
 

@@ -8,6 +8,26 @@ const GLTF_LOADER_URL = "https://esm.sh/three@0.164.1/examples/jsm/loaders/GLTFL
 const ORBIT_CONTROLS_URL = "https://esm.sh/three@0.164.1/examples/jsm/controls/OrbitControls.js";
 const BOW_MODEL_URL = "Blender/BowModel.glb";
 const BOW_MODEL_TARGET_SIZE = 3.35;
+const MCU_MODEL_NAMES = [
+  "MCU",
+  "MCU_XIAO",
+  "MCU_XIAO_NRF54L15",
+  "MCU_XIAO_nRF54L15",
+  "XIAO",
+  "XIAO_MODULE",
+];
+const RISER_MODEL_NAMES = [
+  "Riser",
+  "Bow_Riser",
+  "Bow_Compound_Riser",
+];
+const BOW_COMPOUND_PART_NAMES = [
+  "String",
+  "Top_Cam",
+  "Bottom_Cam",
+  "Riser",
+  "Top_Text",
+];
 
 export const MOUNT_ORIENTATIONS = [
   {
@@ -398,6 +418,83 @@ function makeLine(THREE, points, color, opacity = 1) {
   );
 }
 
+function makeAxisLabel(THREE, text, color) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 96;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.font = "800 38px Inter, Arial, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = "rgba(6, 16, 20, 0.9)";
+  ctx.strokeText(text, canvas.width / 2, canvas.height / 2);
+  ctx.fillStyle = color;
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  const label = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  label.scale.set(0.86, 0.32, 1);
+  label.renderOrder = 10;
+  return label;
+}
+
+function makeAxisGuide(THREE, options = {}) {
+  const {
+    size = 1.45,
+    xLabel = "+X",
+    yLabel = "+Y",
+    zLabel = "+Z",
+    showNegativeLabels = false,
+  } = options;
+  const guide = new THREE.Group();
+  const colors = {
+    x: 0x30e39b,
+    y: 0xe6f4ef,
+    z: 0xffbe5c,
+  };
+  const labelColors = {
+    x: "#30E39B",
+    y: "#E6F4EF",
+    z: "#FFBE5C",
+  };
+
+  guide.add(makeLine(THREE, [[-size, 0, 0], [size, 0, 0]], colors.x, 0.72));
+  guide.add(makeLine(THREE, [[0, -size, 0], [0, size, 0]], colors.y, 0.44));
+  guide.add(makeLine(THREE, [[0, 0, -size], [0, 0, size]], colors.z, 0.58));
+
+  const labelOffset = size + 0.18;
+  const labels = [
+    [xLabel, labelColors.x, [labelOffset, 0, 0]],
+    [yLabel, labelColors.y, [0, labelOffset, 0]],
+    [zLabel, labelColors.z, [0, 0, labelOffset]],
+  ];
+  if (showNegativeLabels) {
+    labels.push(
+      ["-X", labelColors.x, [-labelOffset, 0, 0]],
+      ["-Y", labelColors.y, [0, -labelOffset, 0]],
+      ["-Z", labelColors.z, [0, 0, -labelOffset]],
+    );
+  }
+
+  for (const [text, color, position] of labels) {
+    const label = makeAxisLabel(THREE, text, color);
+    label.position.set(...position);
+    guide.add(label);
+  }
+
+  return guide;
+}
+
 function addCylinderBetween(THREE, group, start, end, radius, material) {
   const a = new THREE.Vector3(...start);
   const b = new THREE.Vector3(...end);
@@ -549,6 +646,171 @@ function degreesLabel(radiansValue) {
   return `${Math.round(radiansValue * (180 / Math.PI))} deg`;
 }
 
+function normalizedHexColor(value, fallback = "#c7d5d0") {
+  const text = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(text) ? text : fallback;
+}
+
+function materialKey(name) {
+  return String(name || "material")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "material";
+}
+
+function materialLabel(name) {
+  return String(name || "Material")
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function materialList(material) {
+  if (!material) return [];
+  return Array.isArray(material) ? material : [material];
+}
+
+function cloneMeshMaterials(mesh) {
+  if (!mesh || mesh.userData.materialsClonedForOpenFloat) return;
+  if (Array.isArray(mesh.material)) {
+    mesh.material = mesh.material.map((material) => material.clone());
+  } else if (mesh.material) {
+    mesh.material = mesh.material.clone();
+  }
+  mesh.userData.materialsClonedForOpenFloat = true;
+}
+
+function materialLuminance(material) {
+  if (!material?.color) return 1;
+  return material.color.r * 0.2126 + material.color.g * 0.7152 + material.color.b * 0.0722;
+}
+
+function captureBaseMaterialColor(material) {
+  if (!material?.color || material.userData.openFloatBaseColor) return;
+  material.userData.openFloatBaseColor = `#${material.color.getHexString()}`;
+  material.userData.openFloatBaseLuminance = materialLuminance(material);
+}
+
+function isBowCompoundMesh(mesh) {
+  const partNames = new Set(BOW_COMPOUND_PART_NAMES);
+  if (partNames.has(mesh.name)) return true;
+  let node = mesh;
+  while (node) {
+    if (node.name === "Bow_Compound_Default") return true;
+    if (partNames.has(node.name)) return true;
+    node = node.parent;
+  }
+  return false;
+}
+
+function isRiserMesh(mesh) {
+  const names = new Set(RISER_MODEL_NAMES);
+  if (names.has(mesh.name)) return true;
+  let node = mesh;
+  while (node) {
+    if (String(node.name || "").toLowerCase().includes("riser")) return true;
+    node = node.parent;
+  }
+  return materialList(mesh.material).some((material) => String(material.name || "").toLowerCase().includes("riser"));
+}
+
+function bowMaterialColors(state = {}) {
+  const colors = state.bowMaterialColors && typeof state.bowMaterialColors === "object"
+    ? { ...state.bowMaterialColors }
+    : {};
+  if (state.bowRiserColor && !colors.riser) {
+    colors.riser = state.bowRiserColor;
+  }
+  if (state.bowHandleColor && !colors.grip) {
+    colors.grip = state.bowHandleColor;
+  }
+  return colors;
+}
+
+function collectBowMaterials(modelRoot) {
+  const materialsByKey = new Map();
+  if (!modelRoot) return [];
+  modelRoot.traverse((child) => {
+    if (!child.isMesh || !isBowCompoundMesh(child)) return;
+    for (const material of materialList(child.material)) {
+      if (!material?.color) continue;
+      captureBaseMaterialColor(material);
+      const name = material.name || child.name || "material";
+      const key = materialKey(name);
+      if (!materialsByKey.has(key)) {
+        materialsByKey.set(key, {
+          key,
+          label: materialLabel(name),
+          defaultColor: material.userData.openFloatBaseColor || `#${material.color.getHexString()}`,
+        });
+      }
+    }
+  });
+  return [...materialsByKey.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function applyBowCustomization(modelRoot, state = {}) {
+  if (!modelRoot) return;
+  const colors = bowMaterialColors(state);
+  modelRoot.traverse((child) => {
+    if (!child.isMesh || !isBowCompoundMesh(child)) return;
+    cloneMeshMaterials(child);
+    const materials = materialList(child.material);
+    for (const material of materials) {
+      if (!material?.color) continue;
+      captureBaseMaterialColor(material);
+      const key = materialKey(material.name || child.name);
+      const defaultColor = material.userData.openFloatBaseColor || `#${material.color.getHexString()}`;
+      material.color.set(normalizedHexColor(colors[key], defaultColor));
+      material.needsUpdate = true;
+    }
+  });
+}
+
+function renderBowMaterialColorControls(materials, store, el, saveSettingsToCache = null) {
+  if (!el.bowMaterialColorList) return;
+  const currentColors = bowMaterialColors(store.get());
+  el.bowMaterialColorList.replaceChildren();
+
+  for (const material of materials) {
+    const control = document.createElement("div");
+    control.className = "bow-color-control";
+
+    const label = document.createElement("label");
+    const inputId = `bowMaterialColor-${material.key}`;
+    label.htmlFor = inputId;
+    label.textContent = material.label;
+
+    const row = document.createElement("div");
+    row.className = "bow-color-row";
+
+    const input = document.createElement("input");
+    input.type = "color";
+    input.id = inputId;
+    input.value = normalizedHexColor(currentColors[material.key], material.defaultColor);
+
+    const value = document.createElement("span");
+    value.textContent = input.value.toUpperCase();
+
+    input.addEventListener("input", () => {
+      const nextColors = {
+        ...bowMaterialColors(store.get()),
+        [material.key]: input.value,
+      };
+      store.set({ bowMaterialColors: nextColors });
+      value.textContent = input.value.toUpperCase();
+      if (typeof saveSettingsToCache === "function") {
+        saveSettingsToCache();
+      }
+    });
+
+    row.append(input, value);
+    control.append(label, row);
+    el.bowMaterialColorList.append(control);
+  }
+}
+
 function findNamedMountPoint(root) {
   const mountNames = new Set([
     "XIAO_MOUNT_POINT",
@@ -582,9 +844,40 @@ function findNamedPivotPoint(root) {
   return pivotPoint;
 }
 
-function attachXiaoModule(THREE, bow, mountPoint = null) {
-  const xiaoModule = buildXiaoModule(THREE);
-  xiaoModule.scale.setScalar(0.86);
+function findNamedModelPart(root, names) {
+  const nameSet = new Set(names);
+  const directChild = root.children.find((child) => nameSet.has(child.name));
+  if (directChild) return directChild;
+
+  let match = null;
+  root.traverse((child) => {
+    if (!match && nameSet.has(child.name)) {
+      match = child;
+    }
+  });
+  return match;
+}
+
+function detachModelPart(THREE, root, names) {
+  const source = findNamedModelPart(root, names);
+  if (!source || !source.parent) return null;
+
+  root.updateMatrixWorld(true);
+  source.updateWorldMatrix(true, true);
+  const detached = source.clone(true);
+  source.matrixWorld.decompose(detached.position, detached.quaternion, detached.scale);
+  detached.name = source.name;
+  detached.userData.importedModelPart = source.name;
+  source.parent.remove(source);
+  return detached;
+}
+
+function attachXiaoModule(THREE, bow, mountPoint = null, moduleModel = null) {
+  const xiaoModule = moduleModel || buildXiaoModule(THREE);
+  xiaoModule.rotation.order = "XYZ";
+  if (!moduleModel) {
+    xiaoModule.scale.setScalar(0.86);
+  }
 
   if (mountPoint) {
     bow.updateMatrixWorld(true);
@@ -595,7 +888,7 @@ function attachXiaoModule(THREE, bow, mountPoint = null) {
     bow.worldToLocal(mountPosition);
     xiaoModule.position.copy(mountPosition);
     xiaoModule.quaternion.copy(mountQuaternion);
-  } else {
+  } else if (!moduleModel) {
     xiaoModule.position.set(-0.22, 0.0, 0.16);
   }
   xiaoModule.userData.basePosition = xiaoModule.position.clone();
@@ -630,6 +923,7 @@ function buildProceduralBowModel(THREE) {
     new THREE.BoxGeometry(0.18, 2.25, 0.16),
     riserMaterial,
   );
+  riser.name = "Riser";
   bow.add(riser);
 
   addCylinderBetween(THREE, bow, [0, 1.08, 0], [0.24, 1.62, 0], 0.045, limbMaterial);
@@ -707,9 +1001,11 @@ async function loadBowModel(THREE) {
       }
     });
 
-  bow.add(model);
+    const mcuModel = detachModelPart(THREE, model, MCU_MODEL_NAMES);
+
+    bow.add(model);
     bow.userData.modelRoot = model;
-    attachXiaoModule(THREE, bow, mountPoint);
+    attachXiaoModule(THREE, bow, mountPoint, mcuModel);
     return bow;
   } catch (error) {
     console.warn(`Unable to load ${BOW_MODEL_URL}; using procedural bow fallback.`, error);
@@ -790,6 +1086,7 @@ async function initOrientationVisualizer(el, store) {
     applyModuleOrientation(bow.userData.xiaoModule, state);
     applyModulePosition(bow.userData.xiaoModule, state);
     applyModelAlignment(bow.userData.modelRoot, state);
+    applyBowCustomization(bow.userData.modelRoot, state);
     viewRoll = viewRollDegrees(state);
     modelRollSign = state.modelInvertRoll ? -1 : 1;
     modelPitchSign = state.modelInvertPitch ? 1 : -1;
@@ -887,9 +1184,12 @@ export async function mountOrientationSettings({ store, el }) {
   keyLight.position.set(3, 4, 5);
   scene.add(keyLight);
 
-  const guide = new THREE.Group();
-  guide.add(makeLine(THREE, [[-1.35, 0, 0], [1.35, 0, 0]], 0x30e39b, 0.62));
-  guide.add(makeLine(THREE, [[0, -1.35, 0], [0, 1.35, 0]], 0xe6f4ef, 0.28));
+  const guide = makeAxisGuide(THREE, {
+    size: 1.18,
+    xLabel: "X axis",
+    yLabel: "Y axis",
+    zLabel: "Z axis",
+  });
   scene.add(guide);
 
   const bow = await loadBowModel(THREE);
@@ -902,6 +1202,7 @@ export async function mountOrientationSettings({ store, el }) {
     applyModuleOrientation(bow.userData.xiaoModule, state);
     applyModulePosition(bow.userData.xiaoModule, state);
     applyModelAlignment(bow.userData.modelRoot, state);
+    applyBowCustomization(bow.userData.modelRoot, state);
     if (el.mountOrientationDescription) {
       el.mountOrientationDescription.textContent = orientation.description;
     }
@@ -965,6 +1266,96 @@ export async function mountOrientationSettings({ store, el }) {
   animate();
 }
 
+export async function mountBowShop({ store, el, saveSettingsToCache = null }) {
+  if (!el.bowShopCanvas) return;
+
+  let THREE;
+  try {
+    THREE = await import(THREE_URL);
+  } catch (error) {
+    el.bowShopCanvas.classList.add("orientation-unavailable");
+    return;
+  }
+
+  const canvas = el.bowShopCanvas;
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    alpha: true,
+  });
+  renderer.setClearColor(0x000000, 0);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
+  camera.position.set(3.2, 1.35, 4.25);
+  camera.lookAt(0, 0, 0);
+  const controls = await createOrbitControls(camera, canvas, new THREE.Vector3(0, 0, 0));
+
+  scene.add(new THREE.AmbientLight(0xe6f4ef, 1.15));
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.8);
+  keyLight.position.set(3, 4, 5);
+  scene.add(keyLight);
+
+  const fillLight = new THREE.DirectionalLight(0x35c7e8, 0.55);
+  fillLight.position.set(-3, 1.5, 2);
+  scene.add(fillLight);
+
+  const guide = makeAxisGuide(THREE, {
+    size: 1.1,
+    xLabel: "X",
+    yLabel: "Y",
+    zLabel: "Z",
+  });
+  scene.add(guide);
+
+  const bow = await loadBowModel(THREE);
+  bow.rotation.y = radians(12);
+  scene.add(bow);
+  renderBowMaterialColorControls(
+    collectBowMaterials(bow.userData.modelRoot),
+    store,
+    el,
+    saveSettingsToCache,
+  );
+
+  function updateCustomization(state) {
+    applyModuleOrientation(bow.userData.xiaoModule, state);
+    applyModulePosition(bow.userData.xiaoModule, state);
+    applyModelAlignment(bow.userData.modelRoot, state);
+    applyBowCustomization(bow.userData.modelRoot, state);
+  }
+
+  store.subscribe(updateCustomization);
+  updateCustomization(store.get());
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+  }
+
+  function animate() {
+    const rect = canvas.getBoundingClientRect();
+    if (canvas.width !== Math.round(rect.width * renderer.getPixelRatio()) ||
+        canvas.height !== Math.round(rect.height * renderer.getPixelRatio())) {
+      resize();
+    }
+
+    bow.rotation.y = radians(12);
+    if (controls) controls.update();
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+  }
+
+  window.addEventListener("resize", resize);
+  resize();
+  animate();
+}
+
 export function mountDashboard({ store, telemetry, el }) {
   const ctx = el.traceCanvas.getContext("2d");
   initOrientationVisualizer(el, store);
@@ -1011,6 +1402,15 @@ export function mountDashboard({ store, telemetry, el }) {
     el.lossValue.textContent = s.reviewMode ? "--" : String(s.lost || 0);
     el.frameCountValue.textContent = s.reviewMode ? "--" : String(s.frameCount || 0);
     el.shotCountValue.textContent = String(s.shotCount || 0);
+
+    const hasMic = s.connected && !s.reviewMode && s.sample && s.sample.micAmp !== undefined;
+    if (el.micVolumeItem) {
+      el.micVolumeItem.classList.toggle("hidden", !hasMic);
+      if (hasMic) {
+        const pct = Math.round((s.sample.micAmp / 255) * 100);
+        if (el.volBar) el.volBar.style.width = `${pct}%`;
+      }
+    }
 
     const uploadPending = s.reviewMode ? 0 : s.uploadPending || 0;
     if (el.uploadStatusItem) {
@@ -1287,6 +1687,9 @@ export function mountDashboard({ store, telemetry, el }) {
       const state = store.get();
       const data = state.reviewMode ? (state.reviewTrace || []) : telemetry.getTrace();
 
+      // Draw raw mic channel in the background (bottom 30% area)
+      drawMicSeries(ctx, data, "micAmp", "rgba(53, 199, 232, 0.45)", "rgba(53, 199, 232, 0.15)", w, h);
+
       drawSeries(ctx, data, "ax", cssVar("--green"), w, h);
       drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h);
       drawSeries(ctx, data, "az", cssVar("--amber"), w, h);
@@ -1316,6 +1719,52 @@ function drawSeries(ctx, data, key, color, w, h) {
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+}
+
+function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h) {
+  if (data.length < 2) return;
+
+  let hasData = false;
+  for (let i = 0; i < data.length; i++) {
+    if (data[i][key] !== undefined && data[i][key] > 0) {
+      hasData = true;
+      break;
+    }
+  }
+  if (!hasData) return;
+
+  ctx.save();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = borderColor;
+  ctx.fillStyle = fillColor;
+
+  ctx.beginPath();
+  const maxIdx = data.length - 1;
+  ctx.moveTo(0, h);
+
+  for (let i = 0; i < data.length; i += 1) {
+    const x = (i / maxIdx) * w;
+    const val = data[i][key] || 0;
+    const valHeight = (val / 255) * (h * 0.3);
+    const y = h - valHeight;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(w, h);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.beginPath();
+  for (let i = 0; i < data.length; i += 1) {
+    const x = (i / maxIdx) * w;
+    const val = data[i][key] || 0;
+    const valHeight = (val / 255) * (h * 0.3);
+    const y = h - valHeight;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 function drawSequenceMarkers(ctx, data, w, h, reviewMode) {

@@ -26,7 +26,8 @@ telemetry; connect it from the status badge in the header.
 - `index.html`, `styles.css`, `manifest.json`, and `service-worker.js` are the
   static browser app shell and PWA assets.
 - `app/` contains native ES modules with no build step: protocol parsing,
-  device adapters, IndexedDB storage, telemetry scoring/sync, and UI rendering.
+  device adapters, IndexedDB storage, telemetry scoring/sync, and UI modules
+  (dashboard, Steady Aim training, trace preview).
 - `firmware/` is the Zephyr/NCS app for the Seeed XIAO nRF54L15 Sense.
 - `tools/` contains host-side validation utilities, including the BLE client and
   follow-through trace verifier.
@@ -54,9 +55,14 @@ telemetry; connect it from the status badge in the header.
 - Fresh firmware defaults disconnected deep sleep to 300 s. Existing persisted
   settings can override it; update devices with `sleeptime:<s>` or the dashboard
   sleep slider.
-- BLE notifications batch seven 28-byte frames (containing on-board quaternions)
-  into 196-byte notifications. The same 28-byte envelope also carries shot,
-  count-sync, storage-status, stored-shot, and trace-chunk frames.
+- BLE notifications batch six 29-byte frames (on-board quaternions plus a
+  microphone peak-envelope byte) into 174-byte notifications. The same 29-byte
+  envelope also carries shot, count-sync, storage-status, stored-shot, and
+  trace-chunk frames.
+- **On-Chip Microphone Envelope**: The XIAO Sense PDM microphone runs at 16 kHz
+  in a dedicated audio thread. A noise-floor-subtracted peak follower packs a
+  scaled envelope byte into each live BLE frame (offset 28, scale 1/64) for
+  dashboard acoustic metering without extra bandwidth.
 - Latest Windows/Bleak validation received 28,670 sequential frames with zero
   sequence loss over 25.5 s; warm-up-excluded rate was about 1129 Hz, with
   0 FIFO overruns, 0 resyncs, 0 outlier frames, and 100% distinct frames
@@ -74,6 +80,9 @@ telemetry; connect it from the status badge in the header.
   orientation visualizer. Both apply the current zero offsets before rendering,
   so a properly zeroed bow appears level.
 - **On-Device Orientation Processing**: Consumes high-rate Madgwick filter quaternions directly from BLE notifications, avoiding client-side complementary filter lag.
+- **Live Acoustic Envelope Meter**: When connected, the dashboard header shows a
+  clicker/volume bar driven by the firmware microphone envelope byte in each live
+  frame.
 - Pin Float shot review shows phase-colored traces (green aiming hold,
   amber/red release break, and gray follow-through), centered on the point of
   shot detection so the release reticle sits at the center of the target face.
@@ -99,6 +108,16 @@ telemetry; connect it from the status badge in the header.
 - **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
+- **Steady Aim Training**: The Steady Aim tab runs a guided hold drill with a
+  5-second draw countdown, configurable hold duration (5–30 s), live Pin Float
+  tracing, steadiness scoring (sigma ellipse, cant/pitch deviation, max float),
+  coaching feedback, and optional save to IndexedDB as a labeled practice shot.
+- **Bow Shop 3D Customization**: The Bow Shop tab loads `Blender/BowModel.glb`
+  and creates color pickers from the named compound-bow materials in the GLB.
+  Current bow materials are `string`, `cam`, `riser`, `grip`, and `text`; color
+  choices are cached locally and applied to the dashboard and alignment 3D
+  previews. The GLB also contains a named `MCU` object, which the app detaches
+  from the scene and uses as the live XIAO module preview.
 - **Consolidated Settings**: Full-width Power Management and Telemetry & Buffer cards sit at the top, followed by a combined, collapsible **Sensor & 3D Alignment** card that pairs the sensor mount axis mapping (which changes the data) with the 3D model display (visual only) under one shared 3D preview. Connecting and zeroing live on the header badge and dashboard, so a separate connection card is no longer needed.
 - **Offline PWA Support**: Registers a service worker to cache application assets (markup, styling, scripts, and the 3D model GLB), enabling full offline operation at remote archery ranges.
 - **Local Data Backup & Restore**: A Settings card exports every locally stored shot, trace, session override, and bow profile to a single JSON file, and imports one back (merging by key). Fully local — no account needed — so field-test data is portable between devices and easy to back up.

@@ -27,8 +27,8 @@ NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
-FRAME_SIZE = 28
-FRAME_STRUCT = struct.Struct("<2sBBHHhhhhhhhhhh")
+FRAME_SIZE = 29
+FRAME_STRUCT = struct.Struct("<2sBBHHhhhhhhhhhhB")
 
 
 @dataclass
@@ -50,6 +50,7 @@ class Sample:
     qz: float
     flags: int
     checksum_ok: bool
+    mic_amp: int = 0
     shot_count: Optional[int] = None
 
     @property
@@ -143,6 +144,7 @@ def parse_binary_frame(frame: bytes) -> Optional[Sample]:
         qx_q10k,
         qy_q10k,
         qz_q10k,
+        mic_raw,
     ) = FRAME_STRUCT.unpack(frame)
 
     # type 1 = live sample; type 2 = shot event; type 3 = count sync. Only live
@@ -178,6 +180,7 @@ def parse_binary_frame(frame: bytes) -> Optional[Sample]:
         qz=qz_q10k / 10000.0,
         flags=0,
         checksum_ok=True,
+        mic_amp=mic_raw,
     )
 
 
@@ -223,6 +226,7 @@ def format_sample(sample: Sample, rate_hz: float, lost: int) -> str:
         f"accel=({sample.ax_mg:5d},{sample.ay_mg:5d},{sample.az_mg:5d}) mg "
         f"|a|={sample.accel_g:5.2f} g "
         f"gyro=({sample.gx_dps:7.1f},{sample.gy_dps:7.1f},{sample.gz_dps:7.1f}) dps "
+        f"mic={sample.mic_amp:3d} "
         f"ok={sample.checksum_ok}"
     )
 

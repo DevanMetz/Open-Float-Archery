@@ -42,8 +42,8 @@ The external board package at `C:\Users\metzd\Downloads\platform-seeedboards\zep
 ## Important Files
 
 ```text
-src\main.c       OpenFloat IMU loop, Madgwick math, shot detection, LED/button UI, serial/BLE telemetry
-prj.conf         Zephyr/Kconfig settings
+src\main.c       OpenFloat IMU loop, Madgwick math, PDM mic envelope, shot detection, LED/button UI, serial/BLE telemetry
+prj.conf         Zephyr/Kconfig settings (includes CONFIG_AUDIO / CONFIG_AUDIO_DMIC)
 app.overlay      IMU power and console routing overrides
 CMakeLists.txt   Zephyr app declaration
 ```
@@ -86,7 +86,7 @@ CONFIG_BT_BUF_ACL_TX_SIZE=217
 CONFIG_BT_L2CAP_TX_MTU=212
 ```
 
-Leaving these at the tiny defaults (`BT_BUF_ACL_RX_SIZE=27`, `BT_BUF_ACL_TX_SIZE=27`, `BT_L2CAP_TX_MTU=23`) fragments or prevents the intended high-rate notification path. Very large 251-byte ACL/data-length settings caused net buffer faults in earlier bring-up. The current 217/212 settings build, boot, advertise, and stream 196-byte notifications on Windows/Bleak; retest boot and BLE any time these values move.
+Leaving these at the tiny defaults (`BT_BUF_ACL_RX_SIZE=27`, `BT_BUF_ACL_TX_SIZE=27`, `BT_L2CAP_TX_MTU=23`) fragments or prevents the intended high-rate notification path. Very large 251-byte ACL/data-length settings caused net buffer faults in earlier bring-up. The current 217/212 settings build, boot, advertise, and stream 174-byte notifications on Windows/Bleak; retest boot and BLE any time these values move.
 
 ## Flash With OpenOCD
 
@@ -237,18 +237,19 @@ Battery: 0000180f-0000-1000-8000-00805f9b34fb (Standard Battery Service / BAS)
   Level: 00002a19-0000-1000-8000-00805f9b34fb (Battery Level 0-100%)
 ```
 
-The BLE live characteristic notifies 28-byte binary frames. Live samples are
-batched seven per notification (196-byte payload, ~161 notifications/s at the
+The BLE live characteristic notifies 29-byte binary frames. Live samples are
+batched six per notification (174-byte payload, ~185 notifications/s at the
 maximum stream rate). Shot, count, storage-status, stored-shot, and trace frames
-reuse the same 28-byte envelope, demultiplexed by the type byte, and control/
+reuse the same 29-byte envelope, demultiplexed by the type byte, and control/
 event frames are sent as standalone notifications:
 
 ```text
 type 1 (live):  magic[2]="OF", proto u8, type u8, seq u16, dt_us u16,
                 accel_mg int16[3], gyro_dps_q4 int16[3],
-                quat int16[4] scaled by 10000
+                quat int16[4] scaled by 10000, mic_amp u8 at offset 28
 type 2 (shot):  "OF", proto, type, shot_count u16, shot_id u16,
-                accel_mg int16[3], threshold_cg u16, roll/pitch cdeg
+                accel_mg int16[3], threshold_cg u16, roll/pitch/yaw cdeg,
+                clicker_dt_ms u16 @22, impact_dt_ms u16 @24 (reserved/0 today)
                 -- sent on each real shot
 type 3 (count): "OF", proto, type, shot_count u16, shot_id u16, ...
                 -- count sync sent on subscribe so the persisted lifetime
@@ -324,10 +325,10 @@ Current BLE verification status:
 ```text
 Windows found OpenFloat-463D at DB:92:7D:1C:E9:DA.
 The client connected to the custom live UUID.
-Decoded 196-byte notifications were received; each contained seven distinct 28-byte frames (dt_us=900).
+Decoded 174-byte notifications were received; each contained six distinct 29-byte frames (dt_us=900).
 Serial banner confirmed imu_odr_hz=3332, ~1110 averaged frames/s, INT1 watermark FTH=15.
 Raw-register FIFO IMU path configured the LSM6DS3TR-C directly over I2C at 3332 Hz ODR, accel +/-16 g, gyro +/-2000 dps, read via INT1 watermark.
-Current run: frames=28670, lost=0, elapsed=25.5s, rate=1123.2 Hz, bytes_per_s approximately 31 KB/s with 28-byte frames.
+Current run: frames=28670, lost=0, elapsed=25.5s, rate=1123.2 Hz, bytes_per_s approximately 32 KB/s with 29-byte frames.
 Warm-up-excluded window: frames=23180, lost=0, elapsed=20.5s, rate=1129.3 Hz.
 FIFO health: fifo_overruns=0, fifo_resyncs=0, severe accel-misalignment frames=0, distinct frames=100% (|a| held 0.814-1.179 g), CPU ~35% active.
 Earlier 6664 Hz experiment (for comparison): frames=40080, lost=0, rate=991.9 Hz, but ~1 FIFO overrun/s and ~16 corrupted frames per 25 s.
