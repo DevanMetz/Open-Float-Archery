@@ -106,9 +106,11 @@ telemetry; connect it from the status badge in the header.
   shot's trace from the live stream and saves it shortly after the
   follow-through window completes. Connected captures keep about 3.5 seconds of
   pre-shot hold plus the configured follow-through window, while the 20-second
-  rolling buffer is only used as browser-side retention headroom. The device
-  itself only stores traces for shots taken while disconnected, which then
-  upload on reconnect.
+  rolling buffer is only used as browser-side retention headroom. BLE shot
+  events include the live sample sequence from detection, so connected traces
+  align motion and microphone envelope data to the device-side release sample
+  instead of browser notification receipt time. The device itself only stores
+  traces for shots taken while disconnected, which then upload on reconnect.
 - **Session Review**: Saved shots are grouped into practice sessions and each
   session summarizes average Float Score, best and worst shot, consistency
   trend, shots by drill label, and the biggest recurring issue. A compact plot

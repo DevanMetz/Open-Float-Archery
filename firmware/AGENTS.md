@@ -285,7 +285,8 @@ type 1 (live):  magic[2]="OF", proto u8, type u8, seq u16, dt_us u16,
                 (noise-gated peak envelope / 3.0, 0-255)
 type 2 (shot):  "OF", proto, type, shot_count u16, shot_id u16,
                 accel_mg int16[3], threshold_cg u16, roll/pitch/yaw cdeg,
-                clicker_dt_ms u16 @22, impact_dt_ms u16 @24 (reserved/0 today)
+                clicker_dt_ms u16 @22, impact_dt_ms u16 @24 (reserved/0 today),
+                shot_sequence u16 @26 for release-time anchoring
                 -- sent on each real shot
 type 3 (count): "OF", proto, type, shot_count u16, shot_id u16, ...
                 -- count sync sent on subscribe so the persisted lifetime

@@ -151,7 +151,12 @@ def parse_binary_frame(frame: bytes) -> Optional[Sample]:
     # frames are samples — the others reuse the envelope with different fields,
     # so report them and skip so they do not pollute sequence-loss tracking.
     if frame_type == 2:
-        print(f"OFSHOT(ble) shot_count={sequence_u16} shot_id={dt_us}")
+        shot_sequence = int.from_bytes(frame[26:28], "little")
+        print(
+            "OFSHOT(ble) "
+            f"shot_count={sequence_u16} shot_id={dt_us} "
+            f"shot_sequence={shot_sequence}"
+        )
         return None
     if frame_type == 3:
         print(f"OFCOUNT(ble) shot_count={sequence_u16}")

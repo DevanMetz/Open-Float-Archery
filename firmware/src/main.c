@@ -464,6 +464,7 @@ struct stored_shot_log {
 /* Accel of the most recent detected shot, reported in BLE shot-event frames. */
 static struct vec3 last_shot_accel;
 static struct stored_shot last_shot_record;
+static uint16_t last_shot_sequence;
 static struct stored_shot_log stored_shot_log;
 
 #define TRACE_CAPACITY 1000
@@ -1942,6 +1943,7 @@ static void build_openfloat_shot_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 		   type == 2 ? last_shot_record.clicker_dt_ms : 0);
 	put_u16_le(frame, 24,
 		   type == 2 ? last_shot_record.impact_dt_ms : 0);
+	put_u16_le(frame, 26, type == 2 ? last_shot_sequence : 0);
 }
 
 static void build_openfloat_stored_shot_binary(
@@ -2777,6 +2779,7 @@ int main(void)
 				shot_id++;
 
 				last_shot_accel = avg_accel;
+				last_shot_sequence = (uint16_t)telemetry_sequence;
 				last_shot_queued_for_storage = false;
 				last_shot_record = (struct stored_shot){
 					.shot_count = (uint16_t)shot_count,

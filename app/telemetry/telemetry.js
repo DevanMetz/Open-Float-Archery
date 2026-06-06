@@ -112,6 +112,18 @@ function accelTiltDeg(ax, ay, az) {
   };
 }
 
+function sequenceDistance(a, b) {
+  const left = Number(a);
+  const right = Number(b);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return Infinity;
+  const diff = Math.abs((left & 0xffff) - (right & 0xffff));
+  return Math.min(diff, 0x10000 - diff);
+}
+
+function angleDistanceDeg(a, b) {
+  return Math.abs(wrapAngleDeg(Number(a) - Number(b)));
+}
+
 export class TelemetryStore {
   constructor(bus, store) {
     this.bus = bus;
@@ -318,7 +330,12 @@ export class TelemetryStore {
       (this.shotTraceBuffer.length === 0 ||
         this.elapsedUs - this.lastShotTracePushUs >= this.shotTraceDtUs)
     ) {
-      this.shotTraceBuffer.push({ ...tracePoint, tUs: this.elapsedUs });
+      this.shotTraceBuffer.push({
+        ...tracePoint,
+        tUs: this.elapsedUs,
+        sequence: sample.sequence,
+        deviceUptimeUs: sample.uptimeUs,
+      });
       this.lastShotTracePushUs = this.elapsedUs;
       if (this.shotTraceBuffer.length > this.shotTraceCapacity) {
         this.shotTraceBuffer.shift();
@@ -457,6 +474,7 @@ export class TelemetryStore {
           localShotId,
           shot.shotId,
           shotTimeUs,
+          shot,
           followThroughMs,
           browserTraceRateHz,
         );
@@ -496,8 +514,81 @@ export class TelemetryStore {
     }
   }
 
-  scheduleBrowserShotTraceCapture(localShotId, deviceShotId, shotTimeUs, followThroughMs, sampleRateHz) {
-    const freezeAtUs = shotTimeUs + followThroughMs * 1000;
+  resolveShotTimeUs(shot, fallbackUs = this.elapsedUs) {
+    if (!shot || !this.shotTraceBuffer.length) return fallbackUs;
+
+    const uptimeUs = Number(shot.uptimeUs);
+    if (Number.isFinite(uptimeUs)) {
+      let best = null;
+      let bestDiff = Infinity;
+      for (const point of this.shotTraceBuffer) {
+        const pointUptimeUs = Number(point.deviceUptimeUs);
+        if (!Number.isFinite(pointUptimeUs)) continue;
+        const diff = Math.abs(pointUptimeUs - uptimeUs);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = point;
+        }
+      }
+      if (best && bestDiff <= 50000) {
+        return best.tUs;
+      }
+    }
+
+    const shotSequence = Number(shot.shotSequence);
+    if (Number.isFinite(shotSequence) && shotSequence > 0) {
+      let best = null;
+      let bestDiff = Infinity;
+      for (const point of this.shotTraceBuffer) {
+        const diff = sequenceDistance(point.sequence, shotSequence);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = point;
+        }
+      }
+      if (best && bestDiff <= 24) {
+        return best.tUs;
+      }
+    }
+
+    const shotAx = Number(shot.axMg) / 1000;
+    const shotAy = Number(shot.ayMg) / 1000;
+    const shotAz = Number(shot.azMg) / 1000;
+    const hasAccel =
+      Number.isFinite(shotAx) &&
+      Number.isFinite(shotAy) &&
+      Number.isFinite(shotAz) &&
+      Math.hypot(shotAx, shotAy, shotAz) >= 2;
+
+    if (hasAccel) {
+      let best = null;
+      let bestError = Infinity;
+      for (const point of this.shotTraceBuffer) {
+        const accelError =
+          Math.abs((point.ax || 0) - shotAx) +
+          Math.abs((point.ay || 0) - shotAy) +
+          Math.abs((point.az || 0) - shotAz);
+        const rollError = Number.isFinite(Number(shot.rollDeg))
+          ? angleDistanceDeg(point.roll || 0, shot.rollDeg) / 10
+          : 0;
+        const pitchError = Number.isFinite(Number(shot.pitchDeg))
+          ? angleDistanceDeg(point.pitch || 0, shot.pitchDeg) / 10
+          : 0;
+        const error = accelError + rollError + pitchError;
+        if (error < bestError) {
+          bestError = error;
+          best = point;
+        }
+      }
+      if (best && bestError <= 1.5) {
+        return best.tUs;
+      }
+    }
+
+    return fallbackUs;
+  }
+
+  scheduleBrowserShotTraceCapture(localShotId, deviceShotId, shotTimeUs, shot, followThroughMs, sampleRateHz) {
     const delayMs = Math.max(0, followThroughMs + 100);
 
     setTimeout(() => {
@@ -505,7 +596,7 @@ export class TelemetryStore {
         localShotId,
         deviceShotId,
         shotTimeUs,
-        freezeAtUs,
+        shot,
         sampleRateHz,
         followThroughMs,
       );
@@ -525,16 +616,18 @@ export class TelemetryStore {
     localShotId,
     deviceShotId,
     shotTimeUs,
-    freezeAtUs,
+    shot,
     sampleRateHz,
     followThroughMs = configuredFollowThroughMs(),
   ) {
-    const startAtUs = shotTimeUs - BROWSER_SHOT_PRE_MS * 1000;
+    const resolvedShotTimeUs = this.resolveShotTimeUs(shot, shotTimeUs);
+    const resolvedFreezeAtUs = resolvedShotTimeUs + followThroughMs * 1000;
+    const startAtUs = resolvedShotTimeUs - BROWSER_SHOT_PRE_MS * 1000;
     const frozenWithTime = this.shotTraceBuffer
-      .filter((point) => point.tUs >= startAtUs && point.tUs <= freezeAtUs);
-    const frozen = frozenWithTime.map(({ tUs, ...point }) => ({
+      .filter((point) => point.tUs >= startAtUs && point.tUs <= resolvedFreezeAtUs);
+    const frozen = frozenWithTime.map(({ tUs, sequence, deviceUptimeUs, ...point }) => ({
       ...point,
-      tUs: tUs - shotTimeUs,
+      tUs: tUs - resolvedShotTimeUs,
     }));
 
     if (frozen.length === 0) {
@@ -542,10 +635,10 @@ export class TelemetryStore {
       return;
     }
 
-    let micSeries = this.buildMicSeriesForShot(shotTimeUs, followThroughMs);
+    let micSeries = this.buildMicSeriesForShot(resolvedShotTimeUs, followThroughMs);
     if (micSeries.length === 0 && frozenWithTime.length > 0) {
       micSeries = frozenWithTime.map((point) => ({
-        tUs: point.tUs - shotTimeUs,
+        tUs: point.tUs - resolvedShotTimeUs,
         micAmp: point.micAmp || 0,
       }));
     }
@@ -558,7 +651,7 @@ export class TelemetryStore {
     });
 
     try {
-      const releaseIndex = frozenWithTime.findIndex((point) => point.tUs >= shotTimeUs);
+      const releaseIndex = frozenWithTime.findIndex((point) => point.tUs >= resolvedShotTimeUs);
       const traceScore = computeFloatScoreFromTrace(frozen, {
         sampleRateHz,
         releaseIndex: releaseIndex >= 0 ? releaseIndex : undefined,

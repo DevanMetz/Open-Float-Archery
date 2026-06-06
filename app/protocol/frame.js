@@ -98,6 +98,7 @@ export function parseBinaryShotFrame(bytes, offset = 0) {
     yawDeg: view.getInt16(20, true) / ANGLE_CDEG,
     clickerDtMs: view.getUint16(22, true),
     impactDtMs: view.getUint16(24, true),
+    shotSequence: view.getUint16(26, true),
     stored: type === 4,
   };
 }

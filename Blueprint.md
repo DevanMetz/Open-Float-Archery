@@ -323,7 +323,7 @@ CRC and no flags field** in the frame; sequence is `u16`, not `u32`.
 
 The same 29-byte envelope carries other frame types, demultiplexed by the type
 byte (see section 8): **type 2** live shot events (shot_count u16 @4, shot_id
-u16 @6, accel_mg int16[3] @8, threshold_cg u16 @14, roll/pitch/yaw cdeg @16/@18/@20, clicker_dt_ms u16 @22 (unused/0), impact_dt_ms u16 @24 (unused/0), padded to 29 bytes)
+u16 @6, accel_mg int16[3] @8, threshold_cg u16 @14, roll/pitch/yaw cdeg @16/@18/@20, clicker_dt_ms u16 @22 (unused/0), impact_dt_ms u16 @24 (unused/0), shot_sequence u16 @26, padded to 29 bytes)
 sent on each detected shot, **type 3** count-sync (same shot_count/shot_id
 fields) sent on subscribe, and **type 4** stored-shot upload frames with the
 same payload as type 2.
@@ -392,6 +392,11 @@ event, and notifies a 29-byte BLE shot-event frame (type 2) to the browser:
 ```text
 OFSHOT,proto,shot_id,uptime_us,ax_mg,ay_mg,az_mg,shot_count
 ```
+
+BLE shot frames also carry `shot_sequence` at bytes 26-27, matching the live
+sample sequence from the detection loop. The browser uses that sequence, or the
+serial `uptime_us` field when available, to anchor connected shot traces to the
+device-side release sample instead of to browser notification receipt time.
 
 The lifetime shot count is **persisted to RRAM** via the Zephyr Settings
 subsystem (ZMS backend, key `openfloat/shots`) on each increment — written off
@@ -621,7 +626,7 @@ procedural XIAO module.
 ### Real-time UI & Database Updates
 The Recent Shots list is reactive. When a connection is active (serial or BLE) and the device detects a shot, the adapter parses and relays the event onto the global `EventBus` as a `"shot"` event. The `TelemetryStore` listens to this event, deduplicates against the set of device shot IDs already handled **this connection** (the device's `shot_id` restarts at 0 after a `shotreset`/reflash, so all-time deduplication by ID is unsafe), writes the shot to IndexedDB with `session_id: null`, and emits a `"shot-saved"` event. The dashboard UI listens to `"shot-saved"` and instantly updates the Recent Shots grid. Practice sessions are no longer tracked live — they are derived from shot timestamps when the Saved Shots history is rendered (any gap over 30 minutes starts a new session), and the user can rename a session and assign its bow, stored as a per-group override.
 
-While the device is connected it does **not** persist a trace for each shot; the browser captures the trace from the live stream and saves it to IndexedDB shortly after the configurable follow-through window, then emits `"shot-trace-saved"`. Connected browser captures keep about 3.5 seconds of pre-shot hold plus the configured follow-through window; the 20-second live trace buffer is retention headroom, not the saved shot duration. (Shots taken while disconnected are stored on-device and their traces upload on reconnect.) Trace payload points carry `tUs` relative to release so motion and audio envelopes share the same review time axis. Because a just-detected shot becomes clickable before its browser trace is persisted, opening a recent shot polls briefly for the trace before reporting it unavailable. Manual captures also trigger `"shot-saved"` upon save.
+While the device is connected it does **not** persist a trace for each shot; the browser captures the trace from the live stream and saves it to IndexedDB shortly after the configurable follow-through window, then emits `"shot-trace-saved"`. Connected browser captures keep about 3.5 seconds of pre-shot hold plus the configured follow-through window; the 20-second live trace buffer is retention headroom, not the saved shot duration. (Shots taken while disconnected are stored on-device and their traces upload on reconnect.) Trace payload points carry `tUs` relative to release so motion and audio envelopes share the same review time axis. For BLE, the browser aligns that release time with the `shot_sequence` embedded in the type-2 frame; for serial it aligns with `OFSHOT.uptime_us`; older firmware falls back to the closest matching buffered release sample. Because a just-detected shot becomes clickable before its browser trace is persisted, opening a recent shot polls briefly for the trace before reporting it unavailable. Manual captures also trigger `"shot-saved"` upon save.
 
 Saved-shot history derives practice sessions from timestamp gaps. Each session renders a review summary: average Float Score, best shot, worst shot, consistency trend, shots by drill label, biggest recurring issue, and a compact Float Score plot across the session. The score is an OpenFloat-specific v1 metric (`openfloat-float-score-v1`) derived from hold stability, release quality, follow-through control, and level consistency; it is not modeled on a commercial scoring system.
 

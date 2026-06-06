@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { BINARY_FRAME_LEN, decodeBinaryFrame, TextLineParser } from "../protocol/frame.js?v=shot-store-98";
+import { BINARY_FRAME_LEN, decodeBinaryFrame, TextLineParser } from "../protocol/frame.js?v=shot-store-105";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
