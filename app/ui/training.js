@@ -1,7 +1,7 @@
 // Steady Aim Training Game UI Module
 // Manages the prep countdown, audio tones, live target tracing, scoring, and DB persistence.
 
-import { put, generateUUID } from "../core/db.js?v=shot-store-97";
+import { put, generateUUID } from "../core/db.js?v=shot-store-98";
 
 const TARGET_COLORS = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
 

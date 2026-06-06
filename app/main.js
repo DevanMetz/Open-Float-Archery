@@ -2,8 +2,8 @@
 // own the transport lifecycle (connect / disconnect).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-97";
-import { createAdapter } from "./device/adapters.js?v=shot-store-97";
+import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-98";
+import { createAdapter } from "./device/adapters.js?v=shot-store-98";
 import {
   cloneMountAxes,
   mountBowShop,
@@ -13,15 +13,16 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/dashboard.js?v=shot-store-97";
+} from "./ui/dashboard.js?v=shot-store-98";
 import {
   drawEmptyTargetPreview,
   drawTraceTargetPreview,
   watchTracePreviewResize,
-} from "./ui/trace-preview.js?v=shot-store-97";
-import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS, exportAllData, importAllData } from "./core/db.js?v=shot-store-97";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-97";
-import { mountTraining } from "./ui/training.js?v=shot-store-97";
+} from "./ui/trace-preview.js?v=shot-store-98";
+import { resolveReviewMicSeries } from "./protocol/trace.js?v=shot-store-98";
+import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS, exportAllData, importAllData } from "./core/db.js?v=shot-store-98";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-98";
+import { mountTraining } from "./ui/training.js?v=shot-store-98";
 
 const APP_BUILD = "shot-store-97";
 const MODEL_ATTITUDE_VERSION = 3;
@@ -1676,7 +1677,7 @@ async function reviewShotTrace(shot) {
       reviewMode: true,
       reviewShotId: shot.id,
       reviewTrace: trace.payload,
-      reviewMicSeries: trace.mic_series || null,
+      reviewMicSeries: resolveReviewMicSeries(trace, trace.sample_rate_hz || 52),
       reviewSampleRateHz: trace.sample_rate_hz || 52,
       reviewThresholdG: shot.threshold_g != null ? Number(shot.threshold_g) : 12,
       reviewInfo: info,

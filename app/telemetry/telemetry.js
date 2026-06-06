@@ -3,7 +3,7 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-import { put, getAll, generateUUID } from "../core/db.js?v=shot-store-97";
+import { put, getAll, generateUUID } from "../core/db.js?v=shot-store-98";
 import {
   buildShotTraceRecord,
   decodeFirmwareTraceBytes,
@@ -561,17 +561,23 @@ export class TelemetryStore {
     sampleRateHz,
     followThroughMs = configuredFollowThroughMs(),
   ) {
-    const frozen = this.shotTraceBuffer
+    const frozenWithTime = this.shotTraceBuffer
       .filter((point) => point.tUs <= freezeAtUs)
-      .slice(-Math.max(1, Math.round(sampleRateHz * BROWSER_SHOT_TRACE_SECONDS)))
-      .map(({ tUs, ...point }) => ({ ...point }));
+      .slice(-Math.max(1, Math.round(sampleRateHz * BROWSER_SHOT_TRACE_SECONDS)));
+    const frozen = frozenWithTime.map(({ tUs, ...point }) => ({ ...point }));
 
     if (frozen.length === 0) {
       this.bus.emit("log", `No browser trace samples available for shot ID ${deviceShotId}.`);
       return;
     }
 
-    const micSeries = this.buildMicSeriesForShot(shotTimeUs, followThroughMs);
+    let micSeries = this.buildMicSeriesForShot(shotTimeUs, followThroughMs);
+    if (micSeries.length === 0 && frozenWithTime.length > 0) {
+      micSeries = frozenWithTime.map((point) => ({
+        tUs: point.tUs - shotTimeUs,
+        micAmp: point.micAmp || 0,
+      }));
+    }
     const tracePayload = buildShotTraceRecord({
       localShotId,
       sampleRateHz,

@@ -71,6 +71,28 @@ export function estimateMicSampleRateHz(micSeries) {
   return Math.round(((micSeries.length - 1) * 1000000) / spanUs);
 }
 
+export function micSeriesFromPayload(payload, sampleRateHz = 52) {
+  if (!Array.isArray(payload) || payload.length === 0) return [];
+  const dtUs = sampleRateHz > 0 ? Math.round(1000000 / sampleRateHz) : 19230;
+  return payload.map((point, index) => ({
+    tUs: index * dtUs,
+    micAmp: point.micAmp || 0,
+  }));
+}
+
+export function resolveReviewMicSeries(trace, sampleRateHz = 52) {
+  if (!trace) return [];
+  if (Array.isArray(trace.mic_series) && trace.mic_series.length > 0) {
+    return trace.mic_series;
+  }
+  return micSeriesFromPayload(trace.payload, sampleRateHz);
+}
+
+export function micChartPointsFromSeries(micSeries) {
+  if (!Array.isArray(micSeries) || micSeries.length === 0) return [];
+  return micSeries.map((point) => ({ micAmp: point.micAmp || 0 }));
+}
+
 export function buildShotTraceRecord({
   localShotId,
   sampleRateHz,
@@ -80,7 +102,11 @@ export function buildShotTraceRecord({
 }) {
   const hasMicInPayload = Array.isArray(payload) &&
     payload.some((point) => (point.micAmp || 0) > 0);
-  const hasMicSeries = Array.isArray(micSeries) && micSeries.length > 0;
+  let resolvedMicSeries = Array.isArray(micSeries) ? micSeries : [];
+  if (resolvedMicSeries.length === 0 && hasMicInPayload) {
+    resolvedMicSeries = micSeriesFromPayload(payload, sampleRateHz);
+  }
+  const hasMicSeries = resolvedMicSeries.length > 0;
 
   return {
     shot_id: localShotId,
@@ -88,7 +114,7 @@ export function buildShotTraceRecord({
     payload,
     source,
     has_mic: hasMicInPayload || hasMicSeries,
-    mic_sample_rate_hz: hasMicSeries ? estimateMicSampleRateHz(micSeries) : 0,
-    mic_series: hasMicSeries ? micSeries : null,
+    mic_sample_rate_hz: hasMicSeries ? estimateMicSampleRateHz(resolvedMicSeries) : 0,
+    mic_series: hasMicSeries ? resolvedMicSeries : null,
   };
 }

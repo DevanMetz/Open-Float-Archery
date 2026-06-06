@@ -2,6 +2,19 @@
 // Pure view code — it reads from the store and telemetry, never the device.
 
 import { MAX_TRACE_POINTS } from "../telemetry/telemetry.js";
+import { micChartPointsFromSeries } from "../protocol/trace.js";
+
+function reviewMicChartData(state) {
+  if (!state.reviewMode) return null;
+  if (state.reviewMicSeries?.length) {
+    return micChartPointsFromSeries(state.reviewMicSeries);
+  }
+  const payload = state.reviewTrace || [];
+  if (payload.some((point) => (point.micAmp || 0) > 0)) {
+    return payload.map((point) => ({ micAmp: point.micAmp || 0 }));
+  }
+  return null;
+}
 
 const THREE_URL = "https://esm.sh/three@0.164.1";
 const GLTF_LOADER_URL = "https://esm.sh/three@0.164.1/examples/jsm/loaders/GLTFLoader.js";
@@ -1403,12 +1416,30 @@ export function mountDashboard({ store, telemetry, el }) {
     el.frameCountValue.textContent = s.reviewMode ? "--" : String(s.frameCount || 0);
     el.shotCountValue.textContent = String(s.shotCount || 0);
 
-    const hasMic = s.connected && !s.reviewMode && s.sample && s.sample.micAmp !== undefined;
+    let hasMic = s.connected && !s.reviewMode && s.sample && s.sample.micAmp !== undefined;
+    let micPct = hasMic ? Math.round((s.sample.micAmp / 255) * 100) : 0;
+    if (s.reviewMode && s.reviewMicSeries?.length) {
+      hasMic = true;
+      const replayProgress = Math.max(0, Math.min(1, s.replayProgress ?? 1));
+      const endIdx = Math.max(
+        0,
+        Math.min(s.reviewMicSeries.length - 1, Math.floor(replayProgress * (s.reviewMicSeries.length - 1))),
+      );
+      const peak = s.reviewMicSeries
+        .slice(0, endIdx + 1)
+        .reduce((max, point) => Math.max(max, point.micAmp || 0), 0);
+      micPct = Math.round((peak / 255) * 100);
+    } else if (s.reviewMode && s.reviewTrace?.length) {
+      const peak = s.reviewTrace.reduce((max, point) => Math.max(max, point.micAmp || 0), 0);
+      if (peak > 0) {
+        hasMic = true;
+        micPct = Math.round((peak / 255) * 100);
+      }
+    }
     if (el.micVolumeItem) {
       el.micVolumeItem.classList.toggle("hidden", !hasMic);
-      if (hasMic) {
-        const pct = Math.round((s.sample.micAmp / 255) * 100);
-        if (el.volBar) el.volBar.style.width = `${pct}%`;
+      if (hasMic && el.volBar) {
+        el.volBar.style.width = `${micPct}%`;
       }
     }
 
@@ -1673,6 +1704,20 @@ export function mountDashboard({ store, telemetry, el }) {
           ctx.fillText(phaseHint + compareHint, 12, h - 12);
         }
       }
+
+      const reviewMic = reviewMicChartData(state);
+      if (reviewMic?.length) {
+        drawMicSeries(
+          ctx,
+          reviewMic,
+          "micAmp",
+          "rgba(53, 199, 232, 0.55)",
+          "rgba(53, 199, 232, 0.22)",
+          w,
+          h,
+          { bandHeight: 0.2, label: "Audio" },
+        );
+      }
     } else {
       ctx.strokeStyle = "rgba(142, 166, 160, 0.22)";
       ctx.lineWidth = 1;
@@ -1686,12 +1731,19 @@ export function mountDashboard({ store, telemetry, el }) {
 
       const state = store.get();
       const data = state.reviewMode ? (state.reviewTrace || []) : telemetry.getTrace();
-      const micData = state.reviewMode && state.reviewMicSeries?.length
-        ? state.reviewMicSeries.map((point) => ({ micAmp: point.micAmp || 0 }))
-        : data;
+      const micData = state.reviewMode ? (reviewMicChartData(state) || data) : data;
 
-      // Draw raw mic channel in the background (bottom 30% area)
-      drawMicSeries(ctx, micData, "micAmp", "rgba(53, 199, 232, 0.45)", "rgba(53, 199, 232, 0.15)", w, h);
+      // Draw raw mic channel in the background (bottom band)
+      drawMicSeries(
+        ctx,
+        micData,
+        "micAmp",
+        "rgba(53, 199, 232, 0.45)",
+        "rgba(53, 199, 232, 0.15)",
+        w,
+        h,
+        state.reviewMode ? { bandHeight: 0.3, label: "Audio" } : undefined,
+      );
 
       drawSeries(ctx, data, "ax", cssVar("--green"), w, h);
       drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h);
@@ -1724,17 +1776,20 @@ function drawSeries(ctx, data, key, color, w, h) {
   ctx.stroke();
 }
 
-function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h) {
+function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {}) {
   if (data.length < 2) return;
 
-  let hasData = false;
+  let peak = 0;
   for (let i = 0; i < data.length; i++) {
-    if (data[i][key] !== undefined && data[i][key] > 0) {
-      hasData = true;
-      break;
-    }
+    const val = data[i][key];
+    if (val !== undefined && val > peak) peak = val;
   }
-  if (!hasData) return;
+  if (peak <= 0) return;
+
+  const bandHeight = options.bandHeight ?? 0.3;
+  const bandTop = options.bandTop ?? h * (1 - bandHeight);
+  const bandBottom = bandTop + h * bandHeight;
+  const bandPixelHeight = bandBottom - bandTop;
 
   ctx.save();
   ctx.lineWidth = 1.5;
@@ -1743,16 +1798,16 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h) {
 
   ctx.beginPath();
   const maxIdx = data.length - 1;
-  ctx.moveTo(0, h);
+  ctx.moveTo(0, bandBottom);
 
   for (let i = 0; i < data.length; i += 1) {
     const x = (i / maxIdx) * w;
     const val = data[i][key] || 0;
-    const valHeight = (val / 255) * (h * 0.3);
-    const y = h - valHeight;
+    const valHeight = (val / 255) * bandPixelHeight;
+    const y = bandBottom - valHeight;
     ctx.lineTo(x, y);
   }
-  ctx.lineTo(w, h);
+  ctx.lineTo(w, bandBottom);
   ctx.closePath();
   ctx.fill();
 
@@ -1760,12 +1815,20 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h) {
   for (let i = 0; i < data.length; i += 1) {
     const x = (i / maxIdx) * w;
     const val = data[i][key] || 0;
-    const valHeight = (val / 255) * (h * 0.3);
-    const y = h - valHeight;
+    const valHeight = (val / 255) * bandPixelHeight;
+    const y = bandBottom - valHeight;
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+
+  if (options.label) {
+    ctx.fillStyle = "rgba(230, 244, 239, 0.72)";
+    ctx.font = "600 10px ui-monospace, Consolas, monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(options.label, 8, bandTop + 4);
+  }
 
   ctx.restore();
 }

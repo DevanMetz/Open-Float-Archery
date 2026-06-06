@@ -1,4 +1,4 @@
-const CACHE_NAME = "openfloat-v93";
+const CACHE_NAME = "openfloat-v94";
 const ASSETS = [
   "./",
   "./index.html",
@@ -11,6 +11,7 @@ const ASSETS = [
   "./app/core/store.js",
   "./app/device/adapters.js",
   "./app/protocol/frame.js",
+  "./app/protocol/trace.js",
   "./app/telemetry/telemetry.js",
   "./app/telemetry/sync.js",
   "./app/ui/dashboard.js",
