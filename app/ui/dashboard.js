@@ -1686,9 +1686,12 @@ export function mountDashboard({ store, telemetry, el }) {
 
       const state = store.get();
       const data = state.reviewMode ? (state.reviewTrace || []) : telemetry.getTrace();
+      const micData = state.reviewMode && state.reviewMicSeries?.length
+        ? state.reviewMicSeries.map((point) => ({ micAmp: point.micAmp || 0 }))
+        : data;
 
       // Draw raw mic channel in the background (bottom 30% area)
-      drawMicSeries(ctx, data, "micAmp", "rgba(53, 199, 232, 0.45)", "rgba(53, 199, 232, 0.15)", w, h);
+      drawMicSeries(ctx, micData, "micAmp", "rgba(53, 199, 232, 0.45)", "rgba(53, 199, 232, 0.15)", w, h);
 
       drawSeries(ctx, data, "ax", cssVar("--green"), w, h);
       drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h);

@@ -408,7 +408,12 @@ type-4 frames. The web app writes each shot to IndexedDB and only then sends
 RRAM-backed storage. `shotreset` also clears the stored-shot queue.
 Buffered traces freeze after a configurable post-release follow-through delay
 (default 1.5 s, stored as `openfloat/followms`) so the saved window contains
-both the pre-shot hold and the recovery after the release impulse.
+both the pre-shot hold and the recovery after the release impulse. Each
+firmware trace point is a 7-byte record (`roll/pitch/yaw` in centi-degrees plus
+`mic_amp` u8). The browser stores the same motion trace in IndexedDB
+`shot_traces.payload` and, for connected shots, a full-rate `mic_series`
+window (`[{ tUs, micAmp }]`, microseconds relative to the shot) for acoustic
+timing work in the web app.
 
 The high-pass filtering, post-trigger vibration verification, and the structured
 multi-field shot-event payload (peak_g, timestamps, sample windows) are still to

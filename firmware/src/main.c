@@ -472,6 +472,7 @@ struct trace_point {
 	int16_t roll_cdeg;
 	int16_t pitch_cdeg;
 	int16_t yaw_cdeg;
+	uint8_t mic_amp;
 };
 struct stored_trace {
 	uint16_t shot_id;
@@ -508,12 +509,26 @@ static bool trace_upload_in_progress;
 static int trace_upload_slot;
 static int trace_upload_chunk_idx;
 
+static uint8_t trace_mic_amp_byte(void)
+{
+	int val_raw = (int)(audio_peak_raw / AUDIO_BLE_SCALE_DIVISOR);
+
+	if (val_raw < 0) {
+		val_raw = 0;
+	}
+	if (val_raw > 255) {
+		val_raw = 255;
+	}
+	return (uint8_t)val_raw;
+}
+
 static void ram_trace_push(int16_t roll_cdeg, int16_t pitch_cdeg,
 			   int16_t yaw_cdeg)
 {
 	ram_trace_buffer[ram_trace_write_idx].roll_cdeg = roll_cdeg;
 	ram_trace_buffer[ram_trace_write_idx].pitch_cdeg = pitch_cdeg;
 	ram_trace_buffer[ram_trace_write_idx].yaw_cdeg = yaw_cdeg;
+	ram_trace_buffer[ram_trace_write_idx].mic_amp = trace_mic_amp_byte();
 	ram_trace_write_idx = (ram_trace_write_idx + 1) % TRACE_CAPACITY;
 	if (ram_trace_count < TRACE_CAPACITY) {
 		ram_trace_count++;
@@ -2247,6 +2262,9 @@ static void trace_upload_work_handler(struct k_work *work)
 	uint16_t rem = total_bytes - offset;
 	uint8_t chunk_len = rem > TRACE_CHUNK_PAYLOAD_SIZE ? TRACE_CHUNK_PAYLOAD_SIZE : (uint8_t)rem;
 	frame[8] = chunk_len;
+	if (trace_upload_chunk_idx == 0) {
+		frame[28] = (uint8_t)sizeof(struct trace_point);
+	}
 
 	uint8_t *raw_bytes = (uint8_t *)trace->points;
 	memcpy(&frame[9], raw_bytes + offset, chunk_len);

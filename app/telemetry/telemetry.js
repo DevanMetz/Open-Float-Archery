@@ -4,6 +4,11 @@
 // state into the reactive store.
 
 import { put, getAll, generateUUID } from "../core/db.js?v=shot-store-97";
+import {
+  buildShotTraceRecord,
+  decodeFirmwareTraceBytes,
+  extractMicWindow,
+} from "../protocol/trace.js";
 
 export const MAX_TRACE_POINTS = 1000;
 
@@ -16,6 +21,9 @@ const BROWSER_SHOT_TRACE_RATES = [0, 208, 416, 832];
 const BROWSER_SHOT_TRACE_SECONDS = 20;
 const DEFAULT_FOLLOW_THROUGH_MS = 1500;
 const MAX_FOLLOW_THROUGH_MS = 3000;
+const MIC_RING_PRE_MS = 500;
+const MIC_RING_POST_PAD_MS = 500;
+const MIC_RING_CAPACITY = 4000;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -146,6 +154,7 @@ export class TelemetryStore {
     this.store = store;
     this.trace = [];
     this.shotTraceBuffer = [];
+    this.micRingBuffer = [];
     this.history30s = []; // Rolling 30s telemetry buffer for manual captures
     this.pendingTraces = new Map();
     this.reset();
@@ -187,6 +196,7 @@ export class TelemetryStore {
     this.filteredYaw = 0;
     this.trace.length = 0;
     this.shotTraceBuffer.length = 0;
+    this.micRingBuffer.length = 0;
     this.history30s.length = 0; // Reset history buffer
     this.elapsedUs = 0;
     this.lastShotTracePushUs = 0;
@@ -353,6 +363,14 @@ export class TelemetryStore {
     this.history30s.push(tracePoint);
     if (this.history30s.length > 1600) this.history30s.shift();
 
+    this.micRingBuffer.push({
+      tUs: this.elapsedUs,
+      micAmp: sample.micAmp || 0,
+    });
+    if (this.micRingBuffer.length > MIC_RING_CAPACITY) {
+      this.micRingBuffer.shift();
+    }
+
     if (this.isRecordingManual) {
       this.manualRecordingBuffer.push({
         ax,
@@ -363,7 +381,8 @@ export class TelemetryStore {
         gz: sample.gzDps,
         roll,
         pitch,
-        yaw
+        yaw,
+        micAmp: sample.micAmp || 0,
       });
       this.manualRecordingDurationUs += (sample.dtUs || 19230);
       this.store.set({
@@ -514,11 +533,34 @@ export class TelemetryStore {
     const delayMs = Math.max(0, followThroughMs + 100);
 
     setTimeout(() => {
-      this.saveBrowserShotTrace(localShotId, deviceShotId, freezeAtUs, sampleRateHz);
+      this.saveBrowserShotTrace(
+        localShotId,
+        deviceShotId,
+        shotTimeUs,
+        freezeAtUs,
+        sampleRateHz,
+        followThroughMs,
+      );
     }, delayMs);
   }
 
-  async saveBrowserShotTrace(localShotId, deviceShotId, freezeAtUs, sampleRateHz) {
+  buildMicSeriesForShot(shotTimeUs, followThroughMs = configuredFollowThroughMs()) {
+    return extractMicWindow(
+      this.micRingBuffer,
+      shotTimeUs,
+      MIC_RING_PRE_MS,
+      followThroughMs + MIC_RING_POST_PAD_MS,
+    );
+  }
+
+  async saveBrowserShotTrace(
+    localShotId,
+    deviceShotId,
+    shotTimeUs,
+    freezeAtUs,
+    sampleRateHz,
+    followThroughMs = configuredFollowThroughMs(),
+  ) {
     const frozen = this.shotTraceBuffer
       .filter((point) => point.tUs <= freezeAtUs)
       .slice(-Math.max(1, Math.round(sampleRateHz * BROWSER_SHOT_TRACE_SECONDS)))
@@ -529,11 +571,14 @@ export class TelemetryStore {
       return;
     }
 
-    const tracePayload = {
-      shot_id: localShotId,
-      sample_rate_hz: sampleRateHz,
+    const micSeries = this.buildMicSeriesForShot(shotTimeUs, followThroughMs);
+    const tracePayload = buildShotTraceRecord({
+      localShotId,
+      sampleRateHz,
       payload: frozen,
-    };
+      micSeries,
+      source: "browser",
+    });
 
     try {
       await put("shot_traces", tracePayload);
@@ -546,7 +591,8 @@ export class TelemetryStore {
       });
       this.bus.emit(
         "log",
-        `Browser trace saved for shot ID ${deviceShotId} (${frozen.length} samples, ${sampleRateHz} Hz).`,
+        `Browser trace saved for shot ID ${deviceShotId} (${frozen.length} motion samples @ ${sampleRateHz} Hz` +
+          `${micSeries.length ? `, ${micSeries.length} mic samples` : ""}).`,
       );
       this.bus.emit("shot-trace-saved", { localShotId, deviceShotId });
       if (this.syncAdapter) {
@@ -623,11 +669,16 @@ export class TelemetryStore {
       });
 
       // 4. Save trace payload (the full history buffer)
-      const tracePayload = {
-        shot_id: manualShotId,
-        sample_rate_hz: 52,
-        payload: parsedTrace
-      };
+      const tracePayload = buildShotTraceRecord({
+        localShotId: manualShotId,
+        sampleRateHz: 52,
+        payload: parsedTrace,
+        micSeries: parsedTrace.map((point, index) => ({
+          tUs: Math.round((index * 1000000) / 52),
+          micAmp: point.micAmp || 0,
+        })),
+        source: "browser-manual-30s",
+      });
 
       await put("shot_traces", tracePayload);
       await put("sync_queue", {
@@ -767,11 +818,18 @@ export class TelemetryStore {
       });
 
       // 4. Save trace record
-      const tracePayload = {
-        shot_id: manualShotId,
-        sample_rate_hz: sampleRateHz,
-        payload: parsedTrace
-      };
+      const tracePayload = buildShotTraceRecord({
+        localShotId: manualShotId,
+        sampleRateHz,
+        payload: parsedTrace,
+        micSeries: parsedTrace.map((point, index) => ({
+          tUs: sampleRateHz > 0
+            ? Math.round((index * 1000000) / sampleRateHz)
+            : index * 19230,
+          micAmp: point.micAmp || 0,
+        })),
+        source: "browser-manual-recording",
+      });
 
       await put("shot_traces", tracePayload);
       await put("sync_queue", {
@@ -828,12 +886,16 @@ export class TelemetryStore {
     if (!this.pendingTraces.has(chunk.shotId)) {
       this.pendingTraces.set(chunk.shotId, {
         chunks: new Map(),
-        totalChunks: chunk.totalChunks
+        totalChunks: chunk.totalChunks,
+        pointStride: 0,
       });
     }
 
     const pending = this.pendingTraces.get(chunk.shotId);
     pending.chunks.set(chunk.chunkIndex, chunk.payload);
+    if (chunk.pointStride > 0) {
+      pending.pointStride = chunk.pointStride;
+    }
 
     this.bus.emit("log", `Received trace chunk ${pending.chunks.size}/${pending.totalChunks} for shot ID ${chunk.shotId}.`);
 
@@ -850,28 +912,7 @@ export class TelemetryStore {
       }
 
       const rawBytes = new Uint8Array(bytesList);
-
-      // 2. Decode trace points. New firmware sends roll/pitch/yaw as 6-byte
-      // records; old firmware sent roll/pitch as 4-byte records.
-      const trace = [];
-      const view = new DataView(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength);
-      const bytesPerPoint = rawBytes.byteLength % 6 === 0 ? 6 : 4;
-      const numPoints = Math.floor(rawBytes.byteLength / bytesPerPoint);
-
-      for (let i = 0; i < numPoints; i++) {
-        const offset = i * bytesPerPoint;
-        const roll = view.getInt16(offset, true) / 100;
-        const pitch = view.getInt16(offset + 2, true) / 100;
-        const yaw = bytesPerPoint >= 6 ? view.getInt16(offset + 4, true) / 100 : 0;
-        
-        // Mock ax, ay, az for target centering logic (recoil spike at the end)
-        const isLast = (i === numPoints - 1);
-        const ax = 0;
-        const ay = 0;
-        const az = isLast ? 5.0 : 1.0;
-        
-        trace.push({ ax, ay, az, roll, pitch, yaw });
-      }
+      const { trace } = decodeFirmwareTraceBytes(rawBytes, pending.pointStride);
 
       // 3. Save to database
       try {
@@ -888,11 +929,12 @@ export class TelemetryStore {
           .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
 
         if (shotRecord) {
-          const tracePayload = {
-            shot_id: shotRecord.id,
-            sample_rate_hz: 52, // Decimated offline rate
-            payload: trace
-          };
+          const tracePayload = buildShotTraceRecord({
+            localShotId: shotRecord.id,
+            sampleRateHz: 52,
+            payload: trace,
+            source: "firmware",
+          });
 
           await put("shot_traces", tracePayload);
           await put("sync_queue", {
@@ -903,13 +945,21 @@ export class TelemetryStore {
             status: "pending"
           });
 
-          this.bus.emit("log", `Trace for shot ID ${chunk.shotId} successfully reassembled and saved.`);
+          const micCount = trace.filter((point) => (point.micAmp || 0) > 0).length;
+          this.bus.emit(
+            "log",
+            `Trace for shot ID ${chunk.shotId} saved (${trace.length} samples` +
+              `${micCount ? `, ${micCount} with mic` : ""}).`,
+          );
           this.bus.emit("shot-trace-saved", { localShotId: shotRecord.id, deviceShotId: chunk.shotId });
 
           // Trigger a UI redraw if this is the currently selected shot in review mode
           const activeState = this.store.get();
           if (activeState.reviewMode && activeState.reviewTrace && activeState.lastShotSummary && activeState.lastShotSummary.shotId === chunk.shotId) {
-            this.store.set({ reviewTrace: trace });
+            this.store.set({
+              reviewTrace: trace,
+              reviewMicSeries: tracePayload.mic_series || null,
+            });
           }
         } else {
           this.bus.emit("log", `Failed to associate trace: shot ID ${chunk.shotId} not found in DB.`);

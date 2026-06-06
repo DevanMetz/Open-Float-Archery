@@ -298,7 +298,9 @@ type 5 (storage status):
                 requested u16; sent on subscribe/request
 type 6 (trace chunk):
                 shot_id u16, chunk_index u8, total_chunks u8, len u8,
-                up to 19 payload bytes; sent after tracereq:<shot_id>
+                up to 20 payload bytes; chunk 0 also sets byte 28 to the
+                trace-point stride (7 = roll/pitch/yaw + mic_amp); sent after
+                tracereq:<shot_id>
 ```
 
 The shot count is detected on-device, persisted to RRAM via Zephyr Settings

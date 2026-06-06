@@ -51,7 +51,9 @@ telemetry; connect it from the status badge in the header.
   only after IndexedDB save, then firmware frees that stored slot.
 - Buffered shot traces now freeze after a configurable follow-through delay
   (default 1.5 s, set over BLE with `followms:<ms>`) so stored traces include
-  both pre-shot hold and post-release recovery.
+  both pre-shot hold and post-release recovery. Firmware trace points and
+  browser `shot_traces` records now store microphone envelope samples (`micAmp`
+  per motion point plus a full-rate `mic_series` window on connected shots).
 - Fresh firmware defaults disconnected deep sleep to 300 s. Existing persisted
   settings can override it; update devices with `sleeptime:<s>` or the dashboard
   sleep slider.

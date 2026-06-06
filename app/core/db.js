@@ -46,7 +46,9 @@ export function initDb() {
         store.createIndex("timestamp", "timestamp", { unique: false });
       }
 
-      // 4. Shot Traces (keyPath 'shot_id' - maps directly to shot.id)
+      // 4. Shot Traces (keyPath 'shot_id' - maps directly to shot.id).
+      //    payload[] carries motion (+ micAmp per point); mic_series[] is an
+      //    optional full-rate mic window for connected-shot captures.
       if (!db.objectStoreNames.contains("shot_traces")) {
         db.createObjectStore("shot_traces", { keyPath: "shot_id" });
       }

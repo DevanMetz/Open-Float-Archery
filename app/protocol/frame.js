@@ -156,10 +156,13 @@ export function parseBinaryTraceFrame(bytes, offset = 0) {
     len
   );
 
+  const chunkIndex = view.getUint8(6);
+
   return {
     shotId: view.getUint16(4, true),
-    chunkIndex: view.getUint8(6),
+    chunkIndex,
     totalChunks: view.getUint8(7),
+    pointStride: chunkIndex === 0 ? view.getUint8(28) : 0,
     payload: Array.from(payload),
   };
 }
