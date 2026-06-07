@@ -270,6 +270,7 @@ static void stop_pdm(void)
 #define OPENFLOAT_CONN_INTERVAL_MAX 6  /* 7.5 ms */
 #define OPENFLOAT_CONN_LATENCY 0
 #define OPENFLOAT_CONN_TIMEOUT 400 /* 4 s */
+#define BLE_STALE_NOTIFY_DISCONNECT_MS 1500
 #define MADGWICK_BETA 0.08f
 #define STORED_SHOT_CAPACITY 100
 
@@ -414,9 +415,12 @@ static const uint8_t openfloat_flash_tail_pad[32]
 	};
 static struct bt_conn *current_conn;
 static bool ble_notify_enabled;
-static struct k_work adv_start_work;
+static struct k_work_delayable adv_start_work;
 static void tune_ble_link_work_handler(struct k_work *work);
+static void stale_ble_disconnect_work_handler(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(tune_ble_link_work, tune_ble_link_work_handler);
+static K_WORK_DELAYABLE_DEFINE(stale_ble_disconnect_work,
+			       stale_ble_disconnect_work_handler);
 
 static struct bt_uuid_128 openfloat_service_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x8f3f3b10, 0x0f5a, 0x4f4c, 0x9a2d,
@@ -2206,6 +2210,7 @@ static void openfloat_live_ccc_changed(const struct bt_gatt_attr *attr,
 {
 	ble_notify_enabled = (value == BT_GATT_CCC_NOTIFY);
 	if (ble_notify_enabled) {
+		(void)k_work_cancel_delayable(&stale_ble_disconnect_work);
 		ble_send_count_sync = true;
 		ble_send_storage_status = true;
 		stored_shot_upload_in_progress = false;
@@ -2213,6 +2218,10 @@ static void openfloat_live_ccc_changed(const struct bt_gatt_attr *attr,
 	} else {
 		stored_shot_upload_in_progress = false;
 		stored_shot_upload_requested = false;
+		if (current_conn) {
+			k_work_reschedule(&stale_ble_disconnect_work,
+					  K_MSEC(BLE_STALE_NOTIFY_DISCONNECT_MS));
+		}
 	}
 	printk("# BLE live notifications %s\n",
 	       ble_notify_enabled ? "enabled" : "disabled");
@@ -2301,6 +2310,9 @@ static int start_ble_advertising(void)
 	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad),
 				  sd, ARRAY_SIZE(sd));
 
+	if (err == -EALREADY) {
+		return 0;
+	}
 	if (err) {
 		printk("# BLE advertising failed: %d\n", err);
 		return err;
@@ -2312,7 +2324,12 @@ static int start_ble_advertising(void)
 
 static void adv_start_work_handler(struct k_work *work)
 {
-	(void)start_ble_advertising();
+	int err;
+
+	err = start_ble_advertising();
+	if (err) {
+		k_work_reschedule(&adv_start_work, K_MSEC(1000));
+	}
 }
 
 static void tune_ble_link_work_handler(struct k_work *work)
@@ -2357,14 +2374,34 @@ static void tune_ble_link_work_handler(struct k_work *work)
 	}
 }
 
+static void stale_ble_disconnect_work_handler(struct k_work *work)
+{
+	int err;
+
+	ARG_UNUSED(work);
+
+	if (!current_conn || ble_notify_enabled) {
+		return;
+	}
+
+	printk("# BLE live notifications stale; disconnecting idle central\n");
+	err = bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+	if (err) {
+		printk("# BLE stale disconnect failed: %d\n", err);
+	}
+}
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
 		printk("# BLE connection failed: %u\n", err);
+		k_work_reschedule(&adv_start_work, K_MSEC(500));
 		return;
 	}
 
 	current_conn = bt_conn_ref(conn);
+	(void)k_work_cancel_delayable(&adv_start_work);
+	(void)k_work_cancel_delayable(&stale_ble_disconnect_work);
 	printk("# BLE connected\n");
 	last_activity_time_ms = k_uptime_get();
 	(void)k_work_reschedule(&tune_ble_link_work, K_MSEC(500));
@@ -2377,6 +2414,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	stored_shot_upload_in_progress = false;
 	stored_shot_upload_requested = false;
 	(void)k_work_cancel_delayable(&tune_ble_link_work);
+	(void)k_work_cancel_delayable(&stale_ble_disconnect_work);
 
 	if (current_conn) {
 		bt_conn_unref(current_conn);
@@ -2384,7 +2422,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	}
 
 	last_activity_time_ms = k_uptime_get();
-	k_work_submit(&adv_start_work);
+	k_work_reschedule(&adv_start_work, K_MSEC(250));
 }
 
 static void le_param_updated(struct bt_conn *conn, uint16_t interval,
@@ -2601,7 +2639,7 @@ int main(void)
 	k_work_init(&trace_persist_work, trace_persist_work_handler);
 	k_work_init_delayable(&trace_freeze_work, trace_freeze_work_handler);
 	k_work_init_delayable(&trace_upload_work, trace_upload_work_handler);
-	k_work_init(&adv_start_work, adv_start_work_handler);
+	k_work_init_delayable(&adv_start_work, adv_start_work_handler);
 	err = settings_subsys_init();
 	if (err) {
 		printk("# settings init failed: %d (shot count will not persist)\n",

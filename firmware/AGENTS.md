@@ -260,6 +260,15 @@ Verified boot and telemetry excerpt:
 OFRAW,1,0,77728,900,-753,654,-104,505,-525,488,3,3,0,1000000,228,223,17,0
 ```
 
+## BLE Link Recovery & Advertising Retry Logic
+
+To handle transient connection losses and ensure reliable connection recovery, the firmware implements the following advertising management:
+- **Delayable Advertising Work**: Instead of starting advertising synchronously, advertising is initialized and managed using a delayable work queue (`adv_start_work`).
+- **Disconnection Callback**: When the device's `disconnected` callback fires, it schedules `adv_start_work` to run after a 250 ms delay (`k_work_reschedule(&adv_start_work, K_MSEC(250))`).
+- **Retry Mechanism**: If advertising fails to start (e.g. if the BLE stack is busy or not yet ready), the work handler reschedules itself to retry every 1000 ms (`k_work_reschedule(&adv_start_work, K_MSEC(1000))`).
+- **Stale Notification Cleanup**: If a central disables live notifications but keeps the BLE link open, `stale_ble_disconnect_work` disconnects that idle central after 1500 ms so advertising can resume.
+- **Connection Handshake**: Once a client successfully connects, `k_work_cancel_delayable(&adv_start_work)` is called in the `connected()` callback to cancel any scheduled advertisement retry attempts.
+
 ## BLE Verification
 
 The firmware advertises as:
@@ -427,7 +436,7 @@ python tools\openfloat_ble_client.py --name-prefix OpenFloat --scan-timeout 12 -
 
 Use `--warmup <seconds>` for steady-state BLE throughput stats after the Windows connection parameter and PHY updates settle.
 
-One Windows-specific caveat remains: after the Python/Bleak client exits, Windows may hold the BLE connection for a while. In that state immediate rediscovery by scanning can fail even though serial continues streaming and the firmware remains alive. The firmware restarts advertising in its `disconnected` callback, so if a real disconnect reaches the device it should advertise again. The Python client now connects with the scanned BLE device object for name/prefix matches, which helps WinRT reliability; if repeat scans still fail, reset the module through OpenOCD and use a short scan timeout before an older persisted sleep timer can fire.
+The firmware now handles a Windows/Bleak edge case where a client disables live notifications but leaves the BLE link open. After a 1500 ms grace period the stale central is disconnected, the normal `disconnected` callback restarts advertising, and repeat scans can reconnect without resetting the module. The Python client connects with the scanned BLE device object for name/prefix matches, which helps WinRT reliability.
 
 Useful CPU liveness check:
 

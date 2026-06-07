@@ -3,7 +3,7 @@
 
 import { createStore, EventBus } from "./core/store.js";
 import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-105";
-import { createAdapter } from "./device/adapters.js?v=shot-store-105";
+import { createAdapter } from "./device/adapters.js?v=shot-store-106";
 import {
   cloneMountAxes,
   mountBowShop,
@@ -25,7 +25,7 @@ import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-104";
 import { buildSessionFloatPlot, buildSessionReview } from "./ui/session-review.js?v=shot-store-105";
 import { mountTraining } from "./ui/training.js?v=shot-store-99";
 
-const APP_BUILD = "shot-store-105";
+const APP_BUILD = "shot-store-106";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [

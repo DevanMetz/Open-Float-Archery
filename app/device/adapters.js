@@ -186,6 +186,16 @@ export class BleAdapter extends BaseAdapter {
     this.storedShotWatchdog = null;
     this.currentTraceDownloadShotId = null;
     this.traceTimer = null;
+    this.reconnectTimer = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 6;
+    this.manualDisconnect = false;
+    this.dropHandler = () => this._onDrop();
+    this.liveValueHandler = (e) => this._onValue(e);
+    this.batteryValueHandler = (e) => {
+      const val = e.target.value.getUint8(0);
+      this.bus.emit("battery", val);
+    };
     this.unsubscribeShotSaved = bus.on("shot-saved", (shot) => {
       if (shot && shot.shotId != null) {
         if (shot.stored) {
@@ -215,12 +225,20 @@ export class BleAdapter extends BaseAdapter {
     // Match by advertised service UUID (carried in the primary advertisement)
     // or by name prefix (carried in the scan response) — service is the more
     // reliable of the two for discovery.
+    this._stopReconnectTimer();
+    this.manualDisconnect = false;
+
     this.device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [OPENFLOAT_SERVICE] }, { namePrefix: "OpenFloat" }],
       optionalServices: [OPENFLOAT_SERVICE, "battery_service"],
     });
-    this.device.addEventListener("gattserverdisconnected", () => this._onDrop());
+    this.device.removeEventListener("gattserverdisconnected", this.dropHandler);
+    this.device.addEventListener("gattserverdisconnected", this.dropHandler);
 
+    await this._connectGatt();
+  }
+
+  async _connectGatt() {
     const server = await this.device.gatt.connect();
     const service = await server.getPrimaryService(OPENFLOAT_SERVICE);
     this.live = await service.getCharacteristic(OPENFLOAT_LIVE);
@@ -241,15 +259,14 @@ export class BleAdapter extends BaseAdapter {
     }
 
     this.sampleCount = 0;
-    this.live.addEventListener("characteristicvaluechanged", (e) => this._onValue(e));
+    this.live.removeEventListener("characteristicvaluechanged", this.liveValueHandler);
+    this.live.addEventListener("characteristicvaluechanged", this.liveValueHandler);
     await this.live.startNotifications();
     this.log("BLE notifications subscribed.");
 
     if (this.batteryChar) {
-      this.batteryChar.addEventListener("characteristicvaluechanged", (e) => {
-        const val = e.target.value.getUint8(0);
-        this.bus.emit("battery", val);
-      });
+      this.batteryChar.removeEventListener("characteristicvaluechanged", this.batteryValueHandler);
+      this.batteryChar.addEventListener("characteristicvaluechanged", this.batteryValueHandler);
       await this.batteryChar.startNotifications();
       try {
         const initVal = await this.batteryChar.readValue();
@@ -263,6 +280,7 @@ export class BleAdapter extends BaseAdapter {
     await this.sendControl("shotdump");
 
     this.connected = true;
+    this.reconnectAttempts = 0;
     this.status("live", `BLE ${this.device.name || ""}`.trim());
     this.log(`BLE connected to ${this.device.name || this.device.id}.`);
 
@@ -394,15 +412,59 @@ export class BleAdapter extends BaseAdapter {
   }
 
   _onDrop() {
-    if (!this.connected) return;
+    const wasConnected = this.connected;
     this.connected = false;
+    clearTimeout(this.watchdog);
+    this.watchdog = null;
     this._stopStoredShotWatchdog();
     this._stopTraceDownloadTimer();
     this.currentTraceDownloadShotId = null;
     this.pendingStoredShots = 0;
+    this.live = null;
+    this.control = null;
+    this.batteryChar = null;
     this.bus.emit("upload-status", { pending: 0, shotCount: null });
-    this.log("BLE disconnected.");
-    this.status("", "Disconnected");
+    if (wasConnected) {
+      this.log("BLE disconnected.");
+    }
+    if (this.manualDisconnect) {
+      this.status("", "Disconnected");
+      return;
+    }
+    this.status("reconnecting", "BLE reconnecting...");
+    this._scheduleReconnect();
+  }
+
+  _scheduleReconnect() {
+    if (!this.device || this.reconnectTimer || this.reconnectAttempts >= this.maxReconnectAttempts) {
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        this.status("", "Disconnected");
+        this.log("BLE reconnect stopped. Click the status badge to choose the sensor again.");
+      }
+      return;
+    }
+
+    const delayMs = Math.min(1000 * 2 ** this.reconnectAttempts, 8000);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      if (this.manualDisconnect || this.connected) return;
+      try {
+        this.log(`BLE reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}...`);
+        await this._connectGatt();
+        this.log("BLE reconnected.");
+      } catch (error) {
+        this.log(`BLE reconnect failed: ${error.message}`);
+        this._scheduleReconnect();
+      }
+    }, delayMs);
+  }
+
+  _stopReconnectTimer() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   _startStoredShotWatchdog() {
@@ -474,6 +536,8 @@ export class BleAdapter extends BaseAdapter {
   }
 
   async disconnect() {
+    this.manualDisconnect = true;
+    this._stopReconnectTimer();
     this._stopStoredShotWatchdog();
     this._stopTraceDownloadTimer();
     if (this.unsubscribeShotSaved) {
@@ -491,6 +555,9 @@ export class BleAdapter extends BaseAdapter {
     try {
       if (this.device && this.device.gatt.connected) this.device.gatt.disconnect();
     } catch (_) {}
+    if (this.device) {
+      this.device.removeEventListener("gattserverdisconnected", this.dropHandler);
+    }
     this._onDrop();
   }
 }

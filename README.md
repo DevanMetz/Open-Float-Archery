@@ -123,6 +123,10 @@ telemetry; connect it from the status badge in the header.
 - **Stored-Shot Upload Indicator**: When a device that buffered shots while
   disconnected reconnects, an inline "Uploading N" status appears beside the
   live rate and shot counter and counts down as the backlog transfers.
+- **BLE Link Recovery**: If the radio link drops, the firmware retries advertising and the browser attempts to reconnect automatically.
+  - **Firmware-side Retry**: Upon disconnection, the firmware schedules BLE advertising via a delayable work queue after a 250 ms delay, retrying every 1000 ms if the stack is not ready, and cancels retries once a connection is re-established.
+  - **Stale Link Cleanup**: If a BLE client disables live notifications without closing the connection, the firmware disconnects that idle central after a short grace period so the sensor can advertise again.
+  - **Browser-side Reconnection**: If the link drops unexpectedly, the web app updates the status badge to `"BLE reconnecting..."` and retries connection up to 6 times using an exponential backoff strategy (`Math.min(1000 * 2^attempts, 8000)` ms, i.e., 1s, 2s, 4s, 8s, 8s, 8s). If reconnection succeeds, the live stream is restored; if all 6 attempts fail, it reverts to `"Disconnected"`, prompting the user to manually click the status badge to search again.
 - **Configurable Device Settings**: The Settings view can send threshold,
   wake/sleep, trace buffer, follow-through, BLE stream-rate, NVS buffering, and
   auto-sleep commands over BLE. Settings are cached locally and persisted on the

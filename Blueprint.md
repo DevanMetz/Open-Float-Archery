@@ -428,6 +428,10 @@ a dedicated shot-event characteristic.
 ## 8. BLE GATT Protocol
 
 OpenFloat should expose one custom BLE service with versioned characteristics.
+To handle transient connection drops and guarantee robust link recovery:
+- **Firmware advertising retry**: Upon disconnection, the firmware schedules BLE advertising using a delayable work queue (`adv_start_work`) after 250 ms. If the BLE stack is busy or not ready, it retries starting advertising every 1000 ms, canceling the scheduled retries only when a client successfully connects.
+- **Stale connection cleanup**: If a central disables live notifications but leaves the BLE link open, the firmware disconnects that idle central after a short grace period and returns to advertising. This prevents the sensor from being trapped in a connected-but-not-streaming state.
+- **Browser auto-reconnect**: If the link drops unexpectedly, the web client updates the status badge to `"BLE reconnecting..."` and triggers up to 6 reconnection attempts using exponential backoff (`Math.min(1000 * 2^attempts, 8000)` ms: 1s, 2s, 4s, 8s, 8s, 8s). If successful, the live stream resumes. If all 6 attempts fail, the status returns to `"Disconnected"`, indicating that the user needs to manually initiate device selection by clicking the status badge.
 
 ```text
 OpenFloat Service UUID
