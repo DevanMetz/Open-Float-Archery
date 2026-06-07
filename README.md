@@ -57,6 +57,9 @@ telemetry; connect it from the status badge in the header.
 - Fresh firmware defaults disconnected deep sleep to 300 s. Existing persisted
   settings can override it; update devices with `sleeptime:<s>` or the dashboard
   sleep slider.
+- The default firmware config is battery-safe and disables the USB UART console
+  so the XIAO nRF54L15 can boot from Li-ion battery power. For USB bench logs,
+  build with the `firmware/prj_uart.conf` overlay.
 - BLE notifications batch six 29-byte frames (on-board quaternions plus a
   microphone peak-envelope byte) into 174-byte notifications. The same 29-byte
   envelope also carries shot, count-sync, storage-status, stored-shot, and

@@ -494,6 +494,10 @@ The control characteristic accepts the ASCII commands:
 * `shotreset`: Clear the persisted shot count and shot queue.
 * `shotset:<n>`: Set the persisted shot count.
 
+The default firmware configuration disables the UART console for battery-safe
+boot on XIAO nRF54L15 hardware. Use `firmware/prj_uart.conf` as an overlay for
+USB bench debugging when serial logs are needed.
+
 The standard Battery Service (BAS) periodically reads the battery voltage from pin `P1.14/AIN7_VBAT` using the regulator switch `vbat_pwr` (`P1.15`), scales the measurement using a $2.0$ divider multiplier, and publishes the percentage value. The dedicated device-info, shot-data, and config characteristics are not implemented yet; shot events ride the live characteristic rather than a separate shot-event characteristic.
 
 ### Shot Data Chunking

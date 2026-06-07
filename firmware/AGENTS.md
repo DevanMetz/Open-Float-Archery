@@ -48,7 +48,7 @@ app.overlay      IMU power, PDM queue-size, and console routing overrides
 CMakeLists.txt   Zephyr app declaration
 ```
 
-The v3.3.0 built-in board names the Sense IMU node `lsm6ds3tr_c` and already uses the `st,lsm6dsl` driver. The current overlay adds the IMU power supply and leaves console output on `uart20`, which is the built-in board's USB debug UART route.
+The v3.3.0 built-in board names the Sense IMU node `lsm6ds3tr_c` and already uses the `st,lsm6dsl` driver. The current overlay adds the IMU power supply and leaves console routing on `uart20` for USB debug builds. The default `prj.conf` disables the UART console so the XIAO nRF54L15 can boot from battery; use `prj_uart.conf` as an overlay when USB serial logs are needed.
 
 ## Build With NCS v3.3.0
 
@@ -69,6 +69,12 @@ The current v3.3.0 build succeeds and creates:
 
 ```text
 C:\Users\metzd\Documents\GitHub\Open-Float-Archery\firmware\build-v3.3.0\merged.hex
+```
+
+For USB bench debugging with serial logs, append:
+
+```powershell
+-DOVERLAY_CONFIG=prj_uart.conf
 ```
 
 Expected non-blocking warnings:
