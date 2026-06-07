@@ -21,11 +21,12 @@ import {
 } from "./ui/trace-preview.js?v=shot-store-98";
 import { resolveReviewMicSeries } from "./protocol/trace.js?v=shot-store-102";
 import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS, exportAllData, importAllData } from "./core/db.js?v=shot-store-98";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-104";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-112";
 import { buildSessionFloatPlot, buildSessionReview } from "./ui/session-review.js?v=shot-store-105";
 import { mountTraining } from "./ui/training.js?v=shot-store-99";
+import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-112";
 
-const APP_BUILD = "shot-store-109";
+const APP_BUILD = "shot-store-112";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -78,6 +79,7 @@ const ELEMENT_IDS = [
   "saveBowProfileBtn", "deleteBowProfileBtn", "newBowProfileBtn",
   "recentShotsPanel", "recentShotsList",
   "exportDataBtn", "importDataBtn", "importDataInput", "dataBackupStatus",
+  "sampleDataCard", "clearSamplesBtn", "sampleDataStatus",
   "toggleLevelTuneBtn", "levelTuneSection", "levelRangeSlider",
   "levelRangeValue", "levelToleranceSlider", "levelToleranceValue"
 ];
@@ -318,11 +320,78 @@ function initSettingsFromCache() {
   }
 }
 
+// Demo/sample data so a first-time visitor without a device sees a populated
+// dashboard. Seeded only into an empty database, never synced to the cloud, and
+// removed as soon as real data shows up.
+const SAMPLE_CLEARED_KEY = "openfloat_samples_cleared";
+
+async function seedSampleDataIfEmpty() {
+  try {
+    if (localStorage.getItem(SAMPLE_CLEARED_KEY) === "1") return;
+    const existing = await getAll("shots");
+    if (existing.length > 0) return;
+    const { shots, traces } = generateSampleData();
+    for (const s of shots) await put("shots", s); // no sync_queue → never uploads
+    for (const t of traces) await put("shot_traces", t);
+    bus.emit(
+      "log",
+      `Loaded ${shots.length} sample shots so you can explore the app — connect a device to start your own.`,
+    );
+  } catch (error) {
+    console.error("Sample data seed failed:", error);
+  }
+}
+
+async function sampleShotsPresent() {
+  try {
+    const shots = await getAll("shots");
+    return shots.some(
+      (s) => s && (s.sample === true || s.device_id === SAMPLE_DEVICE_ID),
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+// Show the "Remove demo shots" control only while sample shots exist.
+async function updateSampleControls() {
+  if (!el.sampleDataCard) return;
+  el.sampleDataCard.hidden = !(await sampleShotsPresent());
+}
+
+async function clearSampleData({ refresh = true } = {}) {
+  try {
+    const shots = await getAll("shots");
+    const samples = shots.filter(
+      (s) => s && (s.sample === true || s.device_id === SAMPLE_DEVICE_ID),
+    );
+    // Remember the choice so samples don't reappear, even if real data is later
+    // deleted and the shots store ends up empty again.
+    localStorage.setItem(SAMPLE_CLEARED_KEY, "1");
+    for (const s of samples) {
+      await remove("shots", s.id);
+      await remove("shot_traces", s.id);
+    }
+    bus.emit("log", `Removed ${samples.length} demo shot(s).`);
+    if (refresh) {
+      await loadShotHistoryList();
+      await loadRecentShotsList();
+    }
+    await updateSampleControls();
+    return samples.length;
+  } catch (error) {
+    console.error("Clearing sample data failed:", error);
+    return 0;
+  }
+}
+
 // Initialize database
 initDb().then(async () => {
   bus.emit("log", "Local IndexedDB initialized successfully.");
+  await seedSampleDataIfEmpty();
   await loadBowProfiles();
   await loadRecentShotsList();
+  await updateSampleControls();
 }).catch((err) => {
   bus.emit("log", `Database initialization failed: ${err.message}`);
 });
@@ -1082,6 +1151,44 @@ async function handleExportData() {
   }
 }
 
+// User-owned stores that should replicate to the cloud. Imported records are
+// written straight to IndexedDB and carry no fresh sync task, so importing
+// re-queues a CREATE per record (deduped against any task already pending,
+// including ones restored from a backup's own sync_queue) so the data syncs.
+const CLOUD_SYNC_TABLES = ["bow_profiles", "sessions", "shots", "shot_traces"];
+
+async function enqueueImportedForSync(stores) {
+  const existing = await getAll("sync_queue");
+  const seen = new Set(
+    existing
+      .filter((t) => t && t.status !== "done" && t.targetId != null)
+      .map((t) => `${t.table}|${t.targetId}`),
+  );
+  let queued = 0;
+  for (const table of CLOUD_SYNC_TABLES) {
+    const records = Array.isArray(stores[table]) ? stores[table] : [];
+    for (const rec of records) {
+      if (!rec) continue;
+      // Never push demo/sample records to the cloud.
+      if (rec.sample === true || rec.device_id === SAMPLE_DEVICE_ID) continue;
+      const targetId = table === "shot_traces" ? rec.shot_id : rec.id;
+      if (targetId == null) continue;
+      const key = `${table}|${targetId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      await put("sync_queue", {
+        table,
+        action: "CREATE",
+        targetId,
+        payload: rec,
+        status: "pending",
+      });
+      queued += 1;
+    }
+  }
+  return queued;
+}
+
 async function handleImportFile(file) {
   try {
     setDataBackupStatus("Reading file...");
@@ -1092,10 +1199,34 @@ async function handleImportFile(file) {
     } catch (_) {
       throw new Error("file is not valid JSON.");
     }
-    const counts = await importAllData(payload, { merge: true });
-    const summary = summarizeCounts(counts);
-    setDataBackupStatus(`Imported ${summary}.`);
-    bus.emit("log", `Data import: ${summary}.`);
+
+    let summary;
+    let stores;
+    if (payload && payload.format === "openfloat-shot-export" && payload.shot) {
+      // Single-shot export: one shot record plus its optional trace.
+      await put("shots", payload.shot);
+      if (payload.trace) await put("shot_traces", payload.trace);
+      stores = {
+        shots: [payload.shot],
+        shot_traces: payload.trace ? [payload.trace] : [],
+      };
+      summary = `1 shot${payload.trace ? " + trace" : ""}`;
+    } else {
+      // Full backup bundle (writes every store, incl. a restored sync_queue).
+      const counts = await importAllData(payload, { merge: true });
+      summary = summarizeCounts(counts);
+      stores = payload.stores || {};
+    }
+
+    // Queue the imported user data for cloud replication, then kick a sync.
+    // If cloud isn't configured, triggerSync is a quiet no-op and the tasks
+    // wait in the queue until it is.
+    const queued = await enqueueImportedForSync(stores);
+    if (queued > 0 && syncAdapter) syncAdapter.triggerSync();
+
+    const cloudNote = queued > 0 ? ` (${queued} queued for cloud sync)` : "";
+    setDataBackupStatus(`Imported ${summary}${cloudNote}.`);
+    bus.emit("log", `Data import: ${summary}${cloudNote}.`);
     // Refresh the views that read straight from IndexedDB.
     await loadBowProfiles();
     await loadShotHistoryList();
@@ -1113,6 +1244,15 @@ if (el.importDataBtn && el.importDataInput) {
     const file = event.target.files && event.target.files[0];
     event.target.value = ""; // allow re-importing the same file
     if (file) handleImportFile(file);
+  });
+}
+
+if (el.clearSamplesBtn) {
+  el.clearSamplesBtn.addEventListener("click", async () => {
+    el.clearSamplesBtn.disabled = true;
+    const n = await clearSampleData();
+    bus.emit("log", n > 0 ? `Removed ${n} demo shot(s).` : "No demo shots to remove.");
+    el.clearSamplesBtn.disabled = false;
   });
 }
 

@@ -735,6 +735,7 @@ sessions
 
 shots
   id
+  user_id
   session_id
   device_id
   device_shot_id
@@ -742,6 +743,7 @@ shots
   peak_g
   cant_angle_deg
   pitch_angle_deg
+  yaw_angle_deg
   roll_angle_deg
   stability_score
   shot_score
@@ -752,18 +754,26 @@ shots
   score_version
   stored_upload
   packet_loss_count
-  raw_trace_ref
+  label
 
 shot_traces
   shot_id
+  user_id
   encoding
   sample_rate_hz
   source
   has_mic
   mic_sample_rate_hz
-  mic_series
-  payload
+  mic_series   (gzip+base64 text, see encoding)
+  payload      (gzip+base64 text, see encoding)
 ```
+
+The authoritative, idempotent schema (including the row-level security policies
+that scope every table by `user_id = auth.uid()`) lives in
+[`supabase/schema.sql`](supabase/schema.sql). Run that file in the Supabase SQL
+editor — it matches exactly what `app/telemetry/sync.js` uploads, so no field is
+silently dropped. The column list here is descriptive; the SQL file is the
+source of truth.
 
 **Client session model (current implementation):** the local IndexedDB no longer
 tracks live `sessions`. Shots are saved with `session_id: null`, and practice
@@ -782,31 +792,15 @@ deduplicated, `shot_score` for the derived OpenFloat Float Score,
 `score_version` for scoring-model compatibility, and `stored_upload` to mark
 shots recovered from firmware nonvolatile storage.
 
-For existing Supabase projects, add the newer shot fields with:
-
-```sql
-alter table public.shots
-  add column if not exists device_shot_id integer,
-  add column if not exists shot_score numeric,
-  add column if not exists stored_upload boolean default false,
-  add column if not exists hold_stability numeric,
-  add column if not exists release_quality numeric,
-  add column if not exists follow_through numeric,
-  add column if not exists level_consistency numeric,
-  add column if not exists score_version text;
-
-alter table public.shot_traces
-  add column if not exists source text,
-  add column if not exists has_mic boolean default false,
-  add column if not exists mic_sample_rate_hz numeric,
-  add column if not exists mic_series jsonb;
-
-create unique index if not exists shots_device_shot_id_unique
-  on public.shots (device_id, device_shot_id)
-  where device_shot_id is not null;
-
-notify pgrst, 'reload schema';
-```
+For both new and existing Supabase projects, run [`supabase/schema.sql`](supabase/schema.sql).
+It is idempotent (`create table if not exists` + `add column if not exists`),
+adds every field the client sends — including the ones earlier drafts missed
+(`yaw_angle_deg`, `label`, and a `user_id` on `shots`/`shot_traces`) — widens
+`shot_traces.mic_series` from `jsonb` to gzip+base64 `text`, creates the
+device-shot dedup index, and installs the RLS policies. Without it the sync
+adapter silently drops unknown columns (it retries after stripping them and only
+logs once), so cloud rows can end up missing scores, yaw, or labels even though
+the upload "succeeds".
 
 ## 14. Analytics Roadmap
 

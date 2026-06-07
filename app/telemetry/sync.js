@@ -252,23 +252,38 @@ export class CloudSyncAdapter {
     if (action === "CREATE" || action === "UPDATE") {
       let finalPayload = { ...payload };
 
-      // Inject the user_id if needed by tables owning user constraints
-      if (table === "sessions" || table === "bow_profiles") {
+      // Stamp the owning user on every user-scoped table so row-level security
+      // can partition data per user. shots carry no user_id locally (session_id
+      // is null), so inject it here; shot_traces is handled in its block below.
+      if (
+        table === "sessions" ||
+        table === "bow_profiles" ||
+        table === "shots"
+      ) {
         finalPayload.user_id = this.user.id;
       }
 
-      // If syncing trace data, compress it before sending
+      // If syncing trace data, compress both the motion payload and the
+      // full-rate mic envelope before sending. The mic series is high-rate and
+      // largely redundant with the per-point micAmp already inside payload, so
+      // storing it raw bloated rows to hundreds of KB; both blobs now share the
+      // `encoding` marker. Nothing reads these back in-app today.
       if (table === "shot_traces") {
-        const compressed = await compressPayload(payload.payload);
+        const compressedPayload = await compressPayload(payload.payload);
+        const compressedMic =
+          payload.mic_series && payload.mic_series.length
+            ? await compressPayload(payload.mic_series)
+            : null;
         finalPayload = {
           shot_id: payload.shot_id,
+          user_id: this.user.id,
           encoding: "gzip-base64",
           sample_rate_hz: payload.sample_rate_hz || 416,
           source: payload.source || null,
           has_mic: !!payload.has_mic,
           mic_sample_rate_hz: payload.mic_sample_rate_hz || null,
-          mic_series: payload.mic_series || null,
-          payload: compressed
+          mic_series: compressedMic,
+          payload: compressedPayload
         };
       }
 
