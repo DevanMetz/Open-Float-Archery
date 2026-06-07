@@ -411,6 +411,17 @@ The firmware also keeps the newest 100 compact shot records in
 type-4 frames. The web app writes each shot to IndexedDB and only then sends
 `shotack:<shot_id>`, at which point firmware removes that shot from
 RRAM-backed storage. `shotreset` also clears the stored-shot queue.
+
+Every detected shot is queued in this log regardless of connection state, so a
+dropped live shot-event notification (e.g. the release impulse glitching the BLE
+link without a full disconnect) is still recoverable. The browser acks live
+shots too, so on the happy path the shot leaves the queue almost immediately. To
+avoid an RRAM write on every shot while connected, the log persist is deferred
+~3 s: if the shot is still unacked when the timer fires, the firmware persists
+the log and sends a storage-status frame, prompting the browser to drain the
+backlog via `shotdump`. Net result: RRAM is written only when a live frame was
+actually lost, while the in-RAM queue plus the ack/retry path guarantee the shot
+is recovered without a reconnect.
 Buffered traces freeze after a configurable post-release follow-through delay
 (default 1.5 s, stored as `openfloat/followms`) so the saved window contains
 both the pre-shot hold and the recovery after the release impulse. Each
@@ -868,6 +879,7 @@ not begun. See the Implementation Status section near the top for detail.
 - Add import/export for open-source data portability. (Settings → Data Backup &
   Restore exports every object store to a single JSON file and imports one back,
   merging by key. Fully local, no account required.)
+- Add single shot export. (Allows exporting individual shots with their telemetry trace to standalone JSON files from the Dashboard's Trace Review Mode or the Saved Shots list.)
 
 ### Phase 7: Optional Cloud Sync  [partial]
 

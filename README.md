@@ -48,7 +48,11 @@ telemetry; connect it from the status badge in the header.
   connect). Correct it over BLE with `shotset:<n>` or clear with `shotreset`.
 - Firmware keeps the newest 100 compact shot records in nonvolatile storage and
   uploads them to the browser on reconnect. The web app acknowledges each shot
-  only after IndexedDB save, then firmware frees that stored slot.
+  only after IndexedDB save, then firmware frees that stored slot. Every shot is
+  queued the moment it is detected (even while connected), so a dropped live
+  shot notification is recovered via the same ack/retry path without a
+  reconnect. The nonvolatile write is deferred a few seconds and skipped when
+  the browser acks in time, so RRAM is written only when a live frame was lost.
 - Buffered shot traces now freeze after a configurable follow-through delay
   (default 1.5 s, set over BLE with `followms:<ms>`) so stored traces include
   both pre-shot hold and post-release recovery. Firmware trace points and
@@ -149,6 +153,7 @@ telemetry; connect it from the status badge in the header.
 - **Consolidated Settings**: Full-width Power Management and Telemetry & Buffer cards sit at the top, followed by a combined, collapsible **Sensor & 3D Alignment** card that pairs the sensor mount axis mapping (which changes the data) with the 3D model display (visual only) under one shared 3D preview. Connecting and zeroing live on the header badge and dashboard, so a separate connection card is no longer needed.
 - **Offline PWA Support**: Registers a service worker to cache application assets (markup, styling, scripts, and the 3D model GLB), enabling full offline operation at remote archery ranges.
 - **Local Data Backup & Restore**: A Settings card exports every locally stored shot, trace, session override, and bow profile to a single JSON file, and imports one back (merging by key). Fully local — no account needed — so field-test data is portable between devices and easy to back up.
+- **Single Shot Export**: You can export individual shots along with their telemetry trace to a standalone JSON file. This is accessible via the "Export Shot" button in the Trace Review banner on the Dashboard, or via the export icon (📤) next to any shot in the Saved Shots history list. This makes it easy to share specific shots for analysis.
 - **Optional Supabase Sync**: The Cloud modal accepts a Supabase URL and anon key
   for self-hosted sync. Local IndexedDB writes remain the source of truth and are
   queued before upload; leaving cloud settings blank keeps the app local-only.

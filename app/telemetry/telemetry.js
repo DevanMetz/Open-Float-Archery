@@ -54,6 +54,12 @@ export function coachForScore({ formScore, holdStability, releaseQuality, follow
       coachText: "Movement is building before the shot. Let the float shrink before you commit.",
     };
   }
+  if (releaseQuality === null || followThrough === null) {
+    return {
+      coachTitle: "Steady hold practice",
+      coachText: "Focus on maintaining bubble level consistency and reducing hand drift during the hold.",
+    };
+  }
   if (releaseQuality < 65) {
     return {
       coachTitle: "Soften the break",
@@ -340,11 +346,16 @@ export class TelemetryStore {
       if (this.shotTraceBuffer.length > this.shotTraceCapacity) {
         this.shotTraceBuffer.shift();
       }
-    }
 
-    // Push full samples to rolling history buffer (30 seconds * ~52 Hz = ~1560 samples)
-    this.history30s.push(tracePoint);
-    if (this.history30s.length > 1600) this.history30s.shift();
+      this.history30s.push({
+        ...tracePoint,
+        lost: this.lost
+      });
+      const historyCapacity = Math.max(1500, this.shotTraceRateHz * 30);
+      if (this.history30s.length > historyCapacity) {
+        this.history30s.shift();
+      }
+    }
 
     this.micRingBuffer.push({
       tUs: this.elapsedUs,
@@ -433,6 +444,7 @@ export class TelemetryStore {
 
       const activeState = this.store.get();
       const computedYaw = activeState.yaw || 0;
+      const startLost = this.lost;
       const shotRecord = {
         id: localShotId,
         session_id: null,
@@ -452,7 +464,7 @@ export class TelemetryStore {
         follow_through: activeState.followThrough != null ? activeState.followThrough : null,
         level_consistency: activeState.levelConsistency != null ? activeState.levelConsistency : null,
         score_version: activeState.scoreVersion || FLOAT_SCORE_VERSION,
-        packet_loss_count: this.lost
+        packet_loss_count: 0
       };
 
       await put("shots", shotRecord);
@@ -477,6 +489,7 @@ export class TelemetryStore {
           shot,
           followThroughMs,
           browserTraceRateHz,
+          startLost,
         );
       }
 
@@ -588,7 +601,7 @@ export class TelemetryStore {
     return fallbackUs;
   }
 
-  scheduleBrowserShotTraceCapture(localShotId, deviceShotId, shotTimeUs, shot, followThroughMs, sampleRateHz) {
+  scheduleBrowserShotTraceCapture(localShotId, deviceShotId, shotTimeUs, shot, followThroughMs, sampleRateHz, startLost) {
     const delayMs = Math.max(0, followThroughMs + 100);
 
     setTimeout(() => {
@@ -599,6 +612,7 @@ export class TelemetryStore {
         shot,
         sampleRateHz,
         followThroughMs,
+        startLost,
       );
     }, delayMs);
   }
@@ -619,6 +633,7 @@ export class TelemetryStore {
     shot,
     sampleRateHz,
     followThroughMs = configuredFollowThroughMs(),
+    startLost = this.lost,
   ) {
     const resolvedShotTimeUs = this.resolveShotTimeUs(shot, shotTimeUs);
     const resolvedFreezeAtUs = resolvedShotTimeUs + followThroughMs * 1000;
@@ -658,6 +673,7 @@ export class TelemetryStore {
       });
       const shotRecord = await get("shots", localShotId);
       if (shotRecord) {
+        const shotLoss = Math.max(0, this.lost - startLost);
         const updatedShot = {
           ...shotRecord,
           shot_score: traceScore.formScore,
@@ -666,6 +682,7 @@ export class TelemetryStore {
           follow_through: traceScore.followThrough,
           level_consistency: traceScore.levelConsistency,
           score_version: traceScore.scoreVersion,
+          packet_loss_count: shotLoss,
         };
         await put("shots", updatedShot);
         await put("sync_queue", {
@@ -721,8 +738,9 @@ export class TelemetryStore {
       return;
     }
 
-    const durationSec = Math.round(this.history30s.length / 52);
-    this.bus.emit("log", `Saving last ${durationSec}s of live telemetry (${this.history30s.length} samples)...`);
+    const hz = this.shotTraceRateHz > 0 ? this.shotTraceRateHz : 52;
+    const durationSec = Math.round(this.history30s.length / hz);
+    this.bus.emit("log", `Saving last ${durationSec}s of live telemetry (${this.history30s.length} samples at ${hz} Hz)...`);
 
     try {
       // 1. Compute metrics from the 30s buffer
@@ -748,14 +766,16 @@ export class TelemetryStore {
           pitch: pt.pitch,
           yaw: pt.yaw || 0,
           micAmp: pt.micAmp || 0,
-          tUs: Math.round((index * 1000000) / 52),
+          tUs: Math.round((index * 1000000) / hz),
         };
       });
 
       const avgStability = Number((sumStability / this.history30s.length).toFixed(1));
-      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz: 52 });
+      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz: hz, isManual: true });
 
       // 3. Save shot metadata (representing the manual capture)
+      const startLost = this.history30s[0]?.lost ?? this.lost;
+      const shotLoss = Math.max(0, this.lost - startLost);
       const manualShotId = generateUUID();
       const shotRecord = {
         id: manualShotId,
@@ -774,7 +794,7 @@ export class TelemetryStore {
         follow_through: floatScore.followThrough,
         level_consistency: floatScore.levelConsistency,
         score_version: floatScore.scoreVersion,
-        packet_loss_count: this.lost
+        packet_loss_count: shotLoss
       };
 
       await put("shots", shotRecord);
@@ -789,7 +809,7 @@ export class TelemetryStore {
       // 4. Save trace payload (the full history buffer)
       const tracePayload = buildShotTraceRecord({
         localShotId: manualShotId,
-        sampleRateHz: 52,
+        sampleRateHz: hz,
         payload: parsedTrace,
         micSeries: parsedTrace.map((point) => ({
           tUs: point.tUs,
@@ -839,6 +859,7 @@ export class TelemetryStore {
     this.manualRecordingBuffer = [];
     this.manualRecordingDurationUs = 0;
     this.manualRecordingLabel = label;
+    this.manualRecordingStartLost = this.lost;
     
     this.store.set({
       manualRecordingActive: true,
@@ -870,16 +891,18 @@ export class TelemetryStore {
 
     this.isRecordingManual = false;
     const durationSec = this.manualRecordingDurationUs / 1000000;
-    const sampleRateHz = durationSec > 0 ? Math.round(this.manualRecordingBuffer.length / durationSec) : 52;
+    const rawSampleRateHz = durationSec > 0 ? this.manualRecordingBuffer.length / durationSec : 52;
+    const step = Math.max(1, Math.round(rawSampleRateHz / 52));
+    const decimatedBuffer = this.manualRecordingBuffer.filter((_, idx) => idx % step === 0);
     const label = this.manualRecordingLabel.trim() || "Manual Recording";
 
-    this.bus.emit("log", `Saving manual recording: "${label}" (${durationSec.toFixed(1)}s, ${this.manualRecordingBuffer.length} samples at ~${sampleRateHz}Hz)...`);
+    this.bus.emit("log", `Saving manual recording: "${label}" (${durationSec.toFixed(1)}s, raw ${this.manualRecordingBuffer.length} samples at ~${Math.round(rawSampleRateHz)}Hz, decimated to ${decimatedBuffer.length} samples at 52Hz)...`);
 
     try {
       // 1. Compute metrics
       let maxG = 0;
       let sumStability = 0;
-      const parsedTrace = this.manualRecordingBuffer.map((pt, index) => {
+      const parsedTrace = decimatedBuffer.map((pt, index) => {
         const g = Math.hypot(pt.ax, pt.ay, pt.az);
         if (g > maxG) maxG = g;
         
@@ -898,18 +921,18 @@ export class TelemetryStore {
           pitch: pt.pitch,
           yaw: pt.yaw || 0,
           micAmp: pt.micAmp || 0,
-          tUs: sampleRateHz > 0
-            ? Math.round((index * 1000000) / sampleRateHz)
-            : index * 19230,
+          tUs: Math.round((index * 1000000) / 52),
         };
       });
 
-      const avgStability = this.manualRecordingBuffer.length > 0
-        ? Number((sumStability / this.manualRecordingBuffer.length).toFixed(1))
+      const avgStability = decimatedBuffer.length > 0
+        ? Number((sumStability / decimatedBuffer.length).toFixed(1))
         : 100;
-      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz });
+      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz: 52, isManual: true });
 
       // 2. Save shot record
+      const startLost = this.manualRecordingStartLost ?? this.lost;
+      const shotLoss = Math.max(0, this.lost - startLost);
       const manualShotId = generateUUID();
       const shotRecord = {
         id: manualShotId,
@@ -928,7 +951,7 @@ export class TelemetryStore {
         follow_through: floatScore.followThrough,
         level_consistency: floatScore.levelConsistency,
         score_version: floatScore.scoreVersion,
-        packet_loss_count: this.lost,
+        packet_loss_count: shotLoss,
         label: label
       };
 
@@ -944,7 +967,7 @@ export class TelemetryStore {
       // 4. Save trace record
       const tracePayload = buildShotTraceRecord({
         localShotId: manualShotId,
-        sampleRateHz,
+        sampleRateHz: 52,
         payload: parsedTrace,
         micSeries: parsedTrace.map((point) => ({
           tUs: point.tUs,

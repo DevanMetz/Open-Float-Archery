@@ -1089,10 +1089,6 @@ td:last-child {
     flex-wrap: wrap;
   }
 
-  .review-overlay {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
 
   .review-trace-controls {
     width: 100%;
@@ -1320,6 +1316,44 @@ td:last-child {
   gap: 8px;
 }
 
+.history-item-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.history-item-checkbox:hover {
+  border-color: var(--cyan);
+}
+
+.history-item-checkbox:checked {
+  background: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.history-item-checkbox:checked::after {
+  content: "✓";
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: bold;
+  display: block;
+}
+
+.history-item-checkbox.hidden {
+  display: none;
+}
+
 .history-item {
   display: flex;
   flex-direction: row;
@@ -1398,6 +1432,29 @@ td:last-child {
 }
 
 .history-item:hover .history-item-delete-btn {
+  opacity: 1;
+}
+
+.history-item-export-btn {
+  flex-shrink: 0;
+  align-self: center;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.85;
+  margin-right: 4px;
+}
+
+.history-item-export-btn:hover {
+  color: var(--cyan);
+  border-color: rgba(53, 199, 232, 0.45);
+  background: rgba(53, 199, 232, 0.1);
+  opacity: 1;
+}
+
+.history-item:hover .history-item-export-btn {
   opacity: 1;
 }
 
@@ -1944,31 +2001,61 @@ td:last-child {
 }
 
 @media (max-width: 560px) {
+  main {
+    padding: 10px 8px;
+  }
+
+  .panel {
+    padding: 10px;
+  }
+
+  .chart-panel {
+    padding: 10px;
+  }
+
+  .recent-shots-panel {
+    padding: 10px;
+  }
+
+  #traceCanvas {
+    min-height: 200px;
+  }
+
   .review-overlay {
-    align-items: stretch;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+    align-items: center;
+  }
+
+  .review-details {
+    grid-column: 1 / -1;
   }
 
   .review-compare-field {
-    flex: 1 1 100%;
+    grid-column: 1 / -1;
     max-width: none;
   }
 
   .review-compare-legend {
-    flex: 1 1 100%;
+    grid-column: 1 / -1;
   }
 
   .review-trace-controls {
+    grid-column: 1 / -1;
     justify-content: space-between;
     margin-left: 0;
   }
 
   .review-overlay > .mini-btn {
     width: 100%;
+    margin: 0;
   }
 
   .review-scrub-bar {
-    gap: 9px;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px 10px;
     padding: 8px 10px;
   }
 

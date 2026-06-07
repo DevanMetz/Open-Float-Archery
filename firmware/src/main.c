@@ -388,6 +388,14 @@ static float wake_sensitivity_g = 2.0f;
 static float sleep_sensitivity_g = 0.15f;
 static struct k_work shot_persist_work;
 static struct k_work shot_log_persist_work;
+/*
+ * Delay before persisting the stored-shot log to RRAM after a shot while
+ * connected. Long enough for the browser to ack the live frame and drain the
+ * queue first, so the ~2.2 KB RRAM write only happens when a live frame was
+ * actually lost.
+ */
+#define SHOT_LOG_RECONCILE_DELAY_MS 3000
+static struct k_work_delayable shot_log_reconcile_work;
 static struct k_work wake_sens_persist_work;
 static struct k_work sleep_time_persist_work;
 static struct k_work sleep_sens_persist_work;
@@ -401,7 +409,6 @@ static bool ble_send_count_sync;
 static bool ble_send_storage_status;
 static bool stored_shot_upload_in_progress;
 static bool stored_shot_upload_requested;
-static bool last_shot_queued_for_storage;
 static uint16_t stored_shot_upload_id;
 static uint8_t fifo_drain_raw[LSM6DSL_FIFO_DRAIN_MAX_WORDS * sizeof(uint16_t)];
 /*
@@ -1582,6 +1589,27 @@ static void shot_log_persist_work_handler(struct k_work *work)
 	}
 }
 
+/*
+ * Connected-path reconcile, scheduled a few seconds after each shot. If the
+ * browser acked the live frame, stored_shot_remove() already drained the queue
+ * and this is a no-op — no RRAM write. If a shot is still pending the live
+ * frame was lost: persist the backlog and flag a storage-status frame so the
+ * browser pulls it via shotdump and the ack/retry path recovers the shot.
+ */
+static void shot_log_reconcile_work_handler(struct k_work *work)
+{
+	if (stored_shot_log.count == 0) {
+		return;
+	}
+
+	int rc = settings_save_one("openfloat/shotlog", &stored_shot_log,
+				   sizeof(stored_shot_log));
+	if (rc) {
+		printk("# shot log save failed: %d\n", rc);
+	}
+	ble_send_storage_status = true;
+}
+
 static void sleep_time_persist_work_handler(struct k_work *work)
 {
 	uint32_t value = disconnected_sleep_timeout_ms;
@@ -2626,6 +2654,8 @@ int main(void)
 
 	k_work_init(&shot_persist_work, shot_persist_work_handler);
 	k_work_init(&shot_log_persist_work, shot_log_persist_work_handler);
+	k_work_init_delayable(&shot_log_reconcile_work,
+			      shot_log_reconcile_work_handler);
 	k_work_init(&wake_sens_persist_work, wake_sens_persist_work_handler);
 	k_work_init(&sleep_time_persist_work, sleep_time_persist_work_handler);
 	k_work_init(&sleep_sens_persist_work, sleep_sens_persist_work_handler);
@@ -2818,7 +2848,6 @@ int main(void)
 
 				last_shot_accel = avg_accel;
 				last_shot_sequence = (uint16_t)telemetry_sequence;
-				last_shot_queued_for_storage = false;
 				last_shot_record = (struct stored_shot){
 					.shot_count = (uint16_t)shot_count,
 					.shot_id = (uint16_t)shot_id,
@@ -2834,12 +2863,17 @@ int main(void)
 					.impact_dt_ms = 0,
 				};
 
-				if (!ble_notify_enabled) {
-					stored_shot_append(&last_shot_record);
-					last_shot_queued_for_storage = true;
-					if (buffer_rate_hz > 0) {
-						schedule_trace_freeze((uint16_t)shot_id);
-					}
+				/*
+				 * Always queue the shot in the RAM log and freeze
+				 * its trace, even while connected, so a dropped live
+				 * frame can still be recovered via the stored-shot
+				 * ack/retry path. The trace freeze is RAM-only unless
+				 * bufnvs is enabled, so this adds no RRAM writes by
+				 * default; the shot-log RRAM write is deferred below.
+				 */
+				stored_shot_append(&last_shot_record);
+				if (buffer_rate_hz > 0) {
+					schedule_trace_freeze((uint16_t)shot_id);
 				}
 
 				led_shot_until_ms = k_uptime_get() + LED_SHOT_PULSE_MS;
@@ -2854,7 +2888,19 @@ int main(void)
 
 				(void)notify_openfloat_shot_event(2);
 				k_work_submit(&shot_persist_work);
-				if (last_shot_queued_for_storage) {
+				if (ble_notify_enabled) {
+					/*
+					 * Connected: defer the ~2.2 KB shot-log RRAM
+					 * write. If the browser acks the live frame
+					 * first the queue drains and the reconcile
+					 * handler is a no-op, so RRAM is written only
+					 * when delivery actually failed.
+					 */
+					k_work_schedule(
+						&shot_log_reconcile_work,
+						K_MSEC(SHOT_LOG_RECONCILE_DELAY_MS));
+				} else {
+					/* Disconnected: nobody will ack; persist now. */
 					k_work_submit(&shot_log_persist_work);
 				}
 			}

@@ -13,7 +13,7 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/dashboard.js?v=shot-store-102";
+} from "./ui/dashboard.js?v=shot-store-109";
 import {
   drawEmptyTargetPreview,
   drawTraceTargetPreview,
@@ -25,7 +25,7 @@ import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-104";
 import { buildSessionFloatPlot, buildSessionReview } from "./ui/session-review.js?v=shot-store-105";
 import { mountTraining } from "./ui/training.js?v=shot-store-99";
 
-const APP_BUILD = "shot-store-106";
+const APP_BUILD = "shot-store-109";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -36,10 +36,11 @@ const ELEMENT_IDS = [
   "orientationCanvas", "orientationRollValue", "orientationPitchValue", "orientationYawValue",
   "syncBadge", "syncText", "cloudModal", "closeCloudModalBtn",
   "sbUrlInput", "sbKeyInput", "saveCloudSettingsBtn", "clearCloudSettingsBtn",
-  "chartTitle", "reviewBanner", "reviewInfo", "reviewCompareSelect",
-  "reviewCompareField", "reviewCompareLegend", "exitReviewBtn",
+  "chartTitle", "reviewBanner", "reviewInfo", "reviewRangeEst", "reviewCompareSelect",
+  "reviewCompareField", "reviewCompareLegend", "exportShotBtn", "exitReviewBtn",
   "navDashboardBtn", "navTrainingBtn", "navHistoryBtn", "navBowShopBtn", "navSettingsBtn",
   "tabDashboard", "tabTraining", "tabHistory", "tabBowShop", "tabSettings", "historyList",
+  "historyBulkActions", "bulkSelectCount", "bulkDeleteBtn", "bulkCancelBtn", "historySelectModeBtn", "bulkSelectAllBtn", "historyDefaultActions",
   "trainingDurationSelect", "startTrainingBtn", "cancelTrainingBtn",
   "trainingStatusText", "trainingStatusDesc", "trainingDisplayDefault", "trainingDisplayActive",
   "timerProgress", "trainingCountdownVal", "trainingPhaseLabel", "trainingTargetWrapper",
@@ -73,7 +74,7 @@ const ELEMENT_IDS = [
   "followThroughSlider", "followThroughValueMs",
   "streamRateSlider", "streamRateValue",
   "mobileAlertBanner", "mobileAlertText", "closeMobileAlertBtn",
-  "bowProfileSelect", "bowModelInput", "drawWeightInput", "stabilizerSetupInput", "bowNotesInput",
+  "bowProfileSelect", "bowModelInput", "drawWeightInput", "bowSpeedInput", "stabilizerSetupInput", "bowNotesInput",
   "saveBowProfileBtn", "deleteBowProfileBtn", "newBowProfileBtn",
   "recentShotsPanel", "recentShotsList",
   "exportDataBtn", "importDataBtn", "importDataInput", "dataBackupStatus",
@@ -161,6 +162,11 @@ const store = createStore({
   reviewSampleRateHz: 52,
   reviewThresholdG: 12,
   reviewInfo: "",
+  reviewRangeEst: "",
+  reviewReleaseIdx: null,
+  reviewReleaseTimeMs: null,
+  reviewHitIdx: null,
+  reviewHitTimeMs: null,
   compareShotId: null,
   compareTrace: null,
   compareShotLabel: "",
@@ -1266,6 +1272,7 @@ async function populateBowForm() {
   if (!selectedId) {
     el.bowModelInput.value = "";
     el.drawWeightInput.value = "";
+    el.bowSpeedInput.value = "";
     el.stabilizerSetupInput.value = "";
     el.bowNotesInput.value = "";
     el.deleteBowProfileBtn.disabled = true;
@@ -1275,6 +1282,7 @@ async function populateBowForm() {
       if (profile) {
         el.bowModelInput.value = profile.model || "";
         el.drawWeightInput.value = profile.draw_weight != null ? profile.draw_weight : "";
+        el.bowSpeedInput.value = profile.arrow_speed != null ? profile.arrow_speed : "";
         el.stabilizerSetupInput.value = profile.stabilizer_setup || "";
         el.bowNotesInput.value = profile.notes || "";
         el.deleteBowProfileBtn.disabled = false;
@@ -1308,6 +1316,7 @@ el.saveBowProfileBtn.addEventListener("click", async () => {
   }
 
   const drawWeight = parseFloat(el.drawWeightInput.value) || null;
+  const arrowSpeed = parseInt(el.bowSpeedInput.value, 10) || null;
   const stabilizerSetup = el.stabilizerSetupInput.value.trim();
   const notes = el.bowNotesInput.value.trim();
 
@@ -1322,6 +1331,7 @@ el.saveBowProfileBtn.addEventListener("click", async () => {
     id,
     model: modelName,
     draw_weight: drawWeight,
+    arrow_speed: arrowSpeed,
     stabilizer_setup: stabilizerSetup,
     notes
   };
@@ -1542,7 +1552,19 @@ async function loadShotHistoryList() {
       for (const shot of group.shots) {
         const item = buildHistoryItemElement(shot);
         item.addEventListener("click", (e) => {
-          if (e.target.closest(".history-item-delete-btn")) return;
+          if (e.target.closest(".history-item-delete-btn") || e.target.closest(".history-item-export-btn")) return;
+          
+          const isSelectMode = el.historyBulkActions && !el.historyBulkActions.classList.contains("hidden");
+          if (isSelectMode) {
+            e.stopPropagation();
+            const chk = item.querySelector(".history-item-checkbox");
+            if (chk && e.target !== chk) {
+              chk.checked = !chk.checked;
+              updateBulkSelectCount();
+            }
+            return;
+          }
+          
           e.stopPropagation();
           reviewShotTrace(shot);
         });
@@ -1551,6 +1573,12 @@ async function loadShotHistoryList() {
           e.preventDefault();
           e.stopPropagation();
           deleteSavedShot(shot.id);
+        });
+        const exportBtn = item.querySelector(".history-item-export-btn");
+        exportBtn?.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          exportSingleShot(shot.id);
         });
         containerEl.appendChild(item);
         historyPreviewJobs.push({ item, shot });
@@ -1643,6 +1671,132 @@ async function loadReviewCompareShot(shotId) {
   }
 }
 
+async function getActiveArrowSpeed() {
+  const activeBowId = localStorage.getItem("openfloat_active_bow_id");
+  if (activeBowId) {
+    try {
+      const profile = await get("bow_profiles", activeBowId);
+      if (profile && profile.arrow_speed != null) {
+        return Number(profile.arrow_speed);
+      }
+    } catch (error) {
+      console.error("Error getting active bow speed:", error);
+    }
+  }
+  return 280; // Fallback default speed
+}
+
+function estimateShotRange(trace, sampleRateHz, bowSpeedFps) {
+  if (!trace || !trace.payload || trace.payload.length === 0) return null;
+  const payload = trace.payload;
+  const hz = sampleRateHz || 52;
+
+  const getG = (f) => Math.sqrt((f.ax || 0) ** 2 + (f.ay || 0) ** 2 + (f.az || 0) ** 2);
+
+  const getTimeMs = (idx) => {
+    const f = payload[idx];
+    if (f.tUs !== undefined) return f.tUs / 1000.0;
+    return (idx * 1000.0) / hz;
+  };
+
+  let maxIdx = -1;
+  let maxG = -1;
+  for (let i = 0; i < payload.length; i++) {
+    const g = getG(payload[i]);
+    if (g > maxG) {
+      maxG = g;
+      maxIdx = i;
+    }
+  }
+
+  if (maxG < 4.0 || maxIdx === -1) {
+    return null;
+  }
+
+  const maxTime = getTimeMs(maxIdx);
+
+  let releaseIdx = maxIdx;
+  while (releaseIdx > 0) {
+    if (getG(payload[releaseIdx]) <= 1.25) {
+      break;
+    }
+    releaseIdx--;
+  }
+
+  const releaseTime = getTimeMs(releaseIdx);
+
+  let searchStartIdx = -1;
+  for (let i = releaseIdx; i < payload.length; i++) {
+    if (getTimeMs(i) >= maxTime + 200) {
+      searchStartIdx = i;
+      break;
+    }
+  }
+
+  if (searchStartIdx === -1) {
+    return null;
+  }
+
+  let firstAbove15Idx = -1;
+  for (let i = searchStartIdx; i < payload.length; i++) {
+    const dt = getTimeMs(i) - releaseTime;
+    if (dt > 2200) {
+      break;
+    }
+    if ((payload[i].micAmp || 0) > 15) {
+      firstAbove15Idx = i;
+      break;
+    }
+  }
+
+  if (firstAbove15Idx === -1) {
+    return null;
+  }
+
+  let bestPeakIdx = firstAbove15Idx;
+  let maxMic = payload[firstAbove15Idx].micAmp || 0;
+  for (let i = firstAbove15Idx + 1; i < payload.length; i++) {
+    const dt = getTimeMs(i) - releaseTime;
+    if (dt > 2200) break;
+    const mic = payload[i].micAmp || 0;
+    if (mic <= 15) break;
+    if (mic > maxMic) {
+      maxMic = mic;
+      bestPeakIdx = i;
+    }
+  }
+
+  let hitIdx = bestPeakIdx;
+  while (hitIdx > searchStartIdx && (payload[hitIdx].micAmp || 0) >= 10) {
+    hitIdx--;
+  }
+
+  const hitTime = getTimeMs(hitIdx);
+  const totalTimeSec = (hitTime - releaseTime) / 1000.0;
+  if (totalTimeSec <= 0) return null;
+
+  const V_sound = 1125.0;
+  const b = 0.075;
+  const A = b;
+  const B = -(V_sound + bowSpeedFps + totalTimeSec * b * V_sound);
+  const C = totalTimeSec * bowSpeedFps * V_sound;
+
+  const discriminant = B * B - 4 * A * C;
+  if (discriminant < 0) return null;
+
+  const distanceFt = (-B - Math.sqrt(discriminant)) / (2 * A);
+  if (distanceFt <= 0) return null;
+
+  return {
+    yards: distanceFt / 3.0,
+    feet: distanceFt,
+    releaseIdx,
+    releaseTime,
+    hitIdx,
+    hitTime
+  };
+}
+
 async function reviewShotTrace(shot) {
   try {
     let trace = await get("shot_traces", shot.id);
@@ -1691,6 +1845,12 @@ async function reviewShotTrace(shot) {
       roll
     });
 
+    const speed = await getActiveArrowSpeed();
+    const range = estimateShotRange(trace, trace.sample_rate_hz || 52, speed);
+    const rangeText = range 
+      ? `| Est. Range: ${range.yards.toFixed(1)} yds (${Math.round(range.feet)} ft) @ ${speed} fps`
+      : "";
+
     store.set({
       reviewMode: true,
       reviewShotId: shot.id,
@@ -1699,6 +1859,11 @@ async function reviewShotTrace(shot) {
       reviewSampleRateHz: trace.sample_rate_hz || 52,
       reviewThresholdG: shot.threshold_g != null ? Number(shot.threshold_g) : 12,
       reviewInfo: info,
+      reviewRangeEst: rangeText,
+      reviewReleaseIdx: range ? range.releaseIdx : null,
+      reviewReleaseTimeMs: range ? range.releaseTime : null,
+      reviewHitIdx: range ? range.hitIdx : null,
+      reviewHitTimeMs: range ? range.hitTime : null,
       chartView: "target",
       replayActive: false,
       replayPaused: false,
@@ -1745,6 +1910,11 @@ el.exitReviewBtn.addEventListener("click", () => {
     reviewSampleRateHz: 52,
     reviewThresholdG: 12,
     reviewInfo: "",
+    reviewRangeEst: "",
+    reviewReleaseIdx: null,
+    reviewReleaseTimeMs: null,
+    reviewHitIdx: null,
+    reviewHitTimeMs: null,
     compareShotId: null,
     compareTrace: null,
     compareShotLabel: "",
@@ -1768,6 +1938,53 @@ el.exitReviewBtn.addEventListener("click", () => {
   }
   bus.emit("log", "Exited review mode. Returned to live telemetry stream.");
 });
+
+async function exportSingleShot(shotId) {
+  try {
+    const shot = await get("shots", shotId);
+    if (!shot) {
+      alert("Shot not found in database.");
+      return;
+    }
+    const trace = await get("shot_traces", shotId);
+    
+    const payload = {
+      format: "openfloat-shot-export",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      shot,
+      trace
+    };
+
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const dateStr = new Date(shot.timestamp).toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `openfloat-shot-${shotId.slice(0, 8)}-${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    
+    bus.emit("log", `Exported single shot ${shotId.slice(0, 8)} successfully.`);
+  } catch (error) {
+    console.error("Single shot export failed:", error);
+    alert(`Failed to export shot: ${error.message}`);
+  }
+}
+
+if (el.exportShotBtn) {
+  el.exportShotBtn.addEventListener("click", () => {
+    const currentShotId = store.get().reviewShotId;
+    if (currentShotId) {
+      exportSingleShot(currentShotId);
+    } else {
+      alert("No shot is currently being reviewed.");
+    }
+  });
+}
 
 if (el.reviewCompareSelect) {
   el.reviewCompareSelect.addEventListener("change", () => {
@@ -1794,6 +2011,9 @@ function buildHistoryItemElement(shot) {
   item.className = "history-item";
   item.dataset.shotId = shot.id;
 
+  const isSelectMode = el.historyBulkActions && !el.historyBulkActions.classList.contains("hidden");
+  const chkClass = isSelectMode ? "history-item-checkbox" : "history-item-checkbox hidden";
+
   const timestampStr = new Date(shot.timestamp).toLocaleTimeString();
   const title = shot.label || (shot.peak_g > 15 ? "Arrow Release" : "Hold Capture");
   const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
@@ -1802,6 +2022,7 @@ function buildHistoryItemElement(shot) {
   const peakG = Number.isFinite(Number(shot.peak_g)) ? Number(shot.peak_g).toFixed(1) : "--";
 
   item.innerHTML = `
+    <input type="checkbox" class="${chkClass}" data-shot-id="${shot.id}" type="checkbox">
     <div class="history-item-preview-wrap is-empty" aria-hidden="true">
       <canvas class="history-item-trace-preview"></canvas>
     </div>
@@ -1826,12 +2047,23 @@ function buildHistoryItemElement(shot) {
       </div>
       <button
         type="button"
+        class="history-item-export-btn mini-icon-btn"
+        title="Export shot to JSON"
+        aria-label="Export shot"
+      >📤</button>
+      <button
+        type="button"
         class="history-item-delete-btn mini-icon-btn"
         title="Delete shot"
         aria-label="Delete shot"
       >🗑</button>
     </div>
   `;
+  const chk = item.querySelector(".history-item-checkbox");
+  chk?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    updateBulkSelectCount();
+  });
   return item;
 }
 
@@ -1890,6 +2122,11 @@ async function deleteSavedShot(shotId) {
         reviewTrace: null,
         reviewMicSeries: null,
         reviewInfo: "",
+        reviewRangeEst: "",
+        reviewReleaseIdx: null,
+        reviewReleaseTimeMs: null,
+        reviewHitIdx: null,
+        reviewHitTimeMs: null,
         replayActive: false,
         replayPaused: false,
         replayProgress: 1,
@@ -2224,6 +2461,156 @@ bus.on("status", ({ mode }) => {
     store.set({ batteryLevel: null });
   }
 });
+
+// History list bulk select & delete feature
+function updateBulkSelectCount() {
+  if (!el.historyList) return;
+  const checkboxes = el.historyList.querySelectorAll(".history-item-checkbox");
+  let selectedCount = 0;
+  checkboxes.forEach((chk) => {
+    if (chk.checked) selectedCount++;
+  });
+  if (el.bulkSelectCount) {
+    el.bulkSelectCount.textContent = `${selectedCount} selected`;
+  }
+}
+
+if (el.historySelectModeBtn) {
+  el.historySelectModeBtn.addEventListener("click", () => {
+    if (el.historyDefaultActions) el.historyDefaultActions.classList.add("hidden");
+    if (el.historyBulkActions) el.historyBulkActions.classList.remove("hidden");
+    
+    // Show all checkboxes in history list
+    if (el.historyList) {
+      el.historyList.querySelectorAll(".history-item-checkbox").forEach((chk) => {
+        chk.classList.remove("hidden");
+        chk.checked = false;
+      });
+    }
+    updateBulkSelectCount();
+  });
+}
+
+if (el.bulkCancelBtn) {
+  el.bulkCancelBtn.addEventListener("click", () => {
+    if (el.historyBulkActions) el.historyBulkActions.classList.add("hidden");
+    if (el.historyDefaultActions) el.historyDefaultActions.classList.remove("hidden");
+    
+    // Hide all checkboxes and uncheck them
+    if (el.historyList) {
+      el.historyList.querySelectorAll(".history-item-checkbox").forEach((chk) => {
+        chk.classList.add("hidden");
+        chk.checked = false;
+      });
+    }
+    updateBulkSelectCount();
+  });
+}
+
+if (el.bulkSelectAllBtn) {
+  el.bulkSelectAllBtn.addEventListener("click", () => {
+    if (!el.historyList) return;
+    const checkboxes = el.historyList.querySelectorAll(".history-item-checkbox");
+    const allChecked = Array.from(checkboxes).every((chk) => chk.checked);
+    checkboxes.forEach((chk) => {
+      chk.checked = !allChecked;
+    });
+    updateBulkSelectCount();
+  });
+}
+
+if (el.bulkDeleteBtn) {
+  el.bulkDeleteBtn.addEventListener("click", async () => {
+    if (!el.historyList) return;
+    const checkboxes = el.historyList.querySelectorAll(".history-item-checkbox");
+    const selectedIds = Array.from(checkboxes)
+      .filter((chk) => chk.checked)
+      .map((chk) => chk.dataset.shotId);
+
+    if (selectedIds.length === 0) {
+      alert("No shots selected for deletion.");
+      return;
+    }
+
+    const confirmed = confirm(
+      `Delete ${selectedIds.length} selected shot${selectedIds.length > 1 ? "s" : ""}?\n\nThis cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      bus.emit("log", `Bulk deleting ${selectedIds.length} shots...`);
+      
+      const state = store.get();
+      let reviewClosed = false;
+      let compareClosed = false;
+      
+      for (const shotId of selectedIds) {
+        await purgeSyncQueueForShot(shotId);
+        try {
+          await remove("shot_traces", shotId);
+        } catch (_) {}
+        await remove("shots", shotId);
+
+        try {
+          const override = await get("session_overrides", shotId);
+          if (override) await remove("session_overrides", shotId);
+        } catch (_) {}
+
+        if (state.reviewMode && state.reviewShotId === shotId) {
+          reviewClosed = true;
+        }
+        if (state.compareShotId === shotId) {
+          compareClosed = true;
+        }
+      }
+
+      const updates = {};
+      if (reviewClosed) {
+        Object.assign(updates, {
+          reviewMode: false,
+          reviewShotId: null,
+          reviewTrace: null,
+          reviewMicSeries: null,
+          reviewInfo: "",
+          reviewRangeEst: "",
+          reviewReleaseIdx: null,
+          reviewReleaseTimeMs: null,
+          reviewHitIdx: null,
+          reviewHitTimeMs: null,
+          replayActive: false,
+          replayPaused: false,
+          replayProgress: 1,
+        });
+      }
+      if (compareClosed) {
+        Object.assign(updates, {
+          compareShotId: null,
+          compareTrace: null,
+          compareShotLabel: "",
+          compareThresholdG: 12,
+        });
+        if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
+      }
+      if (Object.keys(updates).length > 0) store.set(updates);
+
+      if (el.historyBulkActions) el.historyBulkActions.classList.add("hidden");
+      if (el.historyDefaultActions) el.historyDefaultActions.classList.remove("hidden");
+      
+      await loadShotHistoryList();
+      
+      if (state.reviewMode && state.reviewShotId && !selectedIds.includes(state.reviewShotId)) {
+        await refreshReviewCompareOptions(state.reviewShotId);
+      }
+
+      if (syncAdapter) syncAdapter.triggerSync();
+      
+      bus.emit("log", `Successfully deleted ${selectedIds.length} shots.`);
+    } catch (error) {
+      console.error("Bulk deletion failed:", error);
+      alert(`Failed to delete shots: ${error.message}`);
+    }
+  });
+}
 
 // Register Service Worker for offline-first support
 if ("serviceWorker" in navigator) {

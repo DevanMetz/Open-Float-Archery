@@ -3,6 +3,7 @@
 
 import { MAX_TRACE_POINTS } from "../telemetry/telemetry.js";
 import { micChartPointsFromSeries } from "../protocol/trace.js?v=shot-store-102";
+import { get } from "../core/db.js";
 
 function reviewMicChartData(state) {
   if (!state.reviewMode) return null;
@@ -17,6 +18,44 @@ function reviewMicChartData(state) {
     }));
   }
   return null;
+}
+
+async function getActiveArrowSpeed() {
+  const activeBowId = localStorage.getItem("openfloat_active_bow_id");
+  if (activeBowId) {
+    try {
+      const profile = await get("bow_profiles", activeBowId);
+      if (profile && profile.arrow_speed != null) {
+        return Number(profile.arrow_speed);
+      }
+    } catch (error) {
+      console.error("Error getting active bow speed:", error);
+    }
+  }
+  return 280; // Fallback default speed
+}
+
+function calculateRangeFromTimes(releaseTimeMs, hitTimeMs, bowSpeedFps) {
+  if (releaseTimeMs === null || hitTimeMs === null) return null;
+  const totalTimeSec = (hitTimeMs - releaseTimeMs) / 1000.0;
+  if (totalTimeSec <= 0) return null;
+
+  const V_sound = 1125.0; // fps
+  const b = 0.075;
+  const A = b;
+  const B = -(V_sound + bowSpeedFps + totalTimeSec * b * V_sound);
+  const C = totalTimeSec * bowSpeedFps * V_sound;
+
+  const discriminant = B * B - 4 * A * C;
+  if (discriminant < 0) return null;
+
+  const distanceFt = (-B - Math.sqrt(discriminant)) / (2 * A);
+  if (distanceFt <= 0) return null;
+
+  return {
+    yards: distanceFt / 3.0,
+    feet: distanceFt
+  };
 }
 
 function reviewTraceTimeRangeUs(state, trace) {
@@ -45,6 +84,24 @@ function fallbackReviewTimeRangeUs(state, trace) {
 
 function reviewTimeRangeUs(state, trace) {
   return reviewTraceTimeRangeUs(state, trace) || fallbackReviewTimeRangeUs(state, trace);
+}
+
+// Shared x-axis for the review line chart: the union of the motion trace and the
+// mic series real-timestamp ranges. The mic is captured over a different window
+// than the motion (shorter pre-roll, longer post-pad) and at a higher sample
+// rate, so using the motion range alone squished the audio into part of the
+// chart and clipped its tail. Returns null when neither series has real tUs, so
+// both fall back to index mapping and stay aligned.
+function reviewLineTimeRangeUs(state, motionData, micData) {
+  const motionRange = reviewTraceTimeRangeUs(state, motionData);
+  const micRange = Array.isArray(micData) ? reviewTraceTimeRangeUs(state, micData) : null;
+  if (motionRange && micRange) {
+    return {
+      start: Math.min(motionRange.start, micRange.start),
+      end: Math.max(motionRange.end, micRange.end),
+    };
+  }
+  return motionRange || micRange || null;
 }
 
 const THREE_URL = "https://esm.sh/three@0.164.1";
@@ -1404,6 +1461,177 @@ export function mountDashboard({ store, telemetry, el }) {
   const ctx = el.traceCanvas.getContext("2d");
   initOrientationVisualizer(el, store);
 
+  // Interactive RELEASE & HIT Marker Dragging
+  let draggedMarker = null;
+
+  const getMarkerClickTarget = (xClient, yClient) => {
+    const state = store.get();
+    if (!state.reviewMode || !state.reviewTrace) return null;
+
+    const canvas = el.traceCanvas;
+    const rect = canvas.getBoundingClientRect();
+    const clientWidth = rect.width;
+    const clientHeight = rect.height;
+
+    const isTargetView = state.chartView === "target";
+    const bandHeight = isTargetView ? 0.2 : 0.3;
+    const bandTopClient = clientHeight * (1 - bandHeight);
+
+    if (yClient < bandTopClient) return null;
+
+    const timeRangeUs = reviewTimeRangeUs(state, state.reviewTrace);
+    const maxIdx = state.reviewTrace.length - 1;
+    if (maxIdx <= 0) return null;
+
+    const getXForTime = (timeMs, idx) => {
+      if (
+        timeRangeUs &&
+        timeRangeUs.end > timeRangeUs.start &&
+        timeMs !== null &&
+        timeMs !== undefined
+      ) {
+        const tUs = timeMs * 1000;
+        return ((tUs - timeRangeUs.start) / (timeRangeUs.end - timeRangeUs.start)) * clientWidth;
+      }
+      if (idx !== null && idx !== undefined && idx >= 0) {
+        return (idx / maxIdx) * clientWidth;
+      }
+      return null;
+    };
+
+    const xRelease = getXForTime(state.reviewReleaseTimeMs, state.reviewReleaseIdx);
+    const xHit = getXForTime(state.reviewHitTimeMs, state.reviewHitIdx);
+
+    const threshold = 15;
+    let target = null;
+    let minDist = Infinity;
+
+    if (xRelease !== null) {
+      const dist = Math.abs(xClient - xRelease);
+      if (dist <= threshold && dist < minDist) {
+        minDist = dist;
+        target = "release";
+      }
+    }
+
+    if (xHit !== null) {
+      const dist = Math.abs(xClient - xHit);
+      if (dist <= threshold && dist < minDist) {
+        minDist = dist;
+        target = "hit";
+      }
+    }
+
+    return target;
+  };
+
+  const handleDragMove = (xClient) => {
+    if (!draggedMarker) return;
+    const state = store.get();
+    if (!state.reviewMode || !state.reviewTrace) return;
+
+    const canvas = el.traceCanvas;
+    const rect = canvas.getBoundingClientRect();
+    const clientWidth = rect.width;
+    const frac = Math.max(0, Math.min(1, xClient / clientWidth));
+
+    const timeRangeUs = reviewTimeRangeUs(state, state.reviewTrace);
+    const maxIdx = state.reviewTrace.length - 1;
+    if (maxIdx <= 0) return;
+
+    let timeMs = 0;
+    let idx = 0;
+
+    if (timeRangeUs && timeRangeUs.end > timeRangeUs.start) {
+      const tUs = timeRangeUs.start + frac * (timeRangeUs.end - timeRangeUs.start);
+      timeMs = tUs / 1000;
+      idx = Math.max(0, Math.min(maxIdx, Math.round(frac * maxIdx)));
+    } else {
+      idx = Math.max(0, Math.min(maxIdx, Math.round(frac * maxIdx)));
+      const f = state.reviewTrace[idx];
+      if (f.tUs !== undefined) {
+        timeMs = f.tUs / 1000;
+      } else {
+        const hz = state.reviewSampleRateHz || 52;
+        timeMs = (idx * 1000) / hz;
+      }
+    }
+
+    const updates = {};
+    if (draggedMarker === "release") {
+      updates.reviewReleaseIdx = idx;
+      updates.reviewReleaseTimeMs = timeMs;
+    } else if (draggedMarker === "hit") {
+      updates.reviewHitIdx = idx;
+      updates.reviewHitTimeMs = timeMs;
+    }
+
+    const newRelease = draggedMarker === "release" ? timeMs : state.reviewReleaseTimeMs;
+    const newHit = draggedMarker === "hit" ? timeMs : state.reviewHitTimeMs;
+
+    getActiveArrowSpeed().then((speedVal) => {
+      const range = calculateRangeFromTimes(newRelease, newHit, speedVal);
+      const rangeText = range
+        ? `| Est. Range: ${range.yards.toFixed(1)} yds (${Math.round(range.feet)} ft) @ ${speedVal} fps`
+        : "";
+
+      updates.reviewRangeEst = rangeText;
+      store.set(updates);
+    });
+  };
+
+  el.traceCanvas.addEventListener("mousedown", (e) => {
+    const target = getMarkerClickTarget(e.offsetX, e.offsetY);
+    if (target) {
+      draggedMarker = target;
+    }
+  });
+
+  el.traceCanvas.addEventListener("mousemove", (e) => {
+    if (draggedMarker) {
+      handleDragMove(e.offsetX);
+    } else {
+      const target = getMarkerClickTarget(e.offsetX, e.offsetY);
+      el.traceCanvas.style.cursor = target ? "ew-resize" : "";
+    }
+  });
+
+  const endDrag = () => {
+    draggedMarker = null;
+    if (el.traceCanvas) {
+      el.traceCanvas.style.cursor = "";
+    }
+  };
+
+  el.traceCanvas.addEventListener("mouseup", endDrag);
+  el.traceCanvas.addEventListener("mouseleave", endDrag);
+
+  // Touch Drag Support
+  el.traceCanvas.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 1) {
+      const touch = e.touches[0];
+      const rect = el.traceCanvas.getBoundingClientRect();
+      const x = touch.clientX - rect.left;
+      const y = touch.clientY - rect.top;
+      const target = getMarkerClickTarget(x, y);
+      if (target) {
+        draggedMarker = target;
+      }
+    }
+  });
+
+  el.traceCanvas.addEventListener("touchmove", (e) => {
+    if (draggedMarker && e.touches.length === 1) {
+      const touch = e.touches[0];
+      const rect = el.traceCanvas.getBoundingClientRect();
+      const x = touch.clientX - rect.left;
+      handleDragMove(x);
+      e.preventDefault(); // Disable scroll/pinch gesture while dragging a marker
+    }
+  }, { passive: false });
+
+  el.traceCanvas.addEventListener("touchend", endDrag);
+
   let filteredRoll = null;
   let lastUpdateTime = null;
 
@@ -1418,9 +1646,15 @@ export function mountDashboard({ store, telemetry, el }) {
         el.reviewBanner.classList.remove("hidden");
         el.chartTitle.textContent = "Trace Review Mode";
         el.reviewInfo.textContent = s.reviewInfo || "";
+        if (el.reviewRangeEst) {
+          el.reviewRangeEst.textContent = s.reviewRangeEst || "";
+        }
       } else {
         el.reviewBanner.classList.add("hidden");
         el.chartTitle.textContent = "Shot Sequence Trace";
+        if (el.reviewRangeEst) {
+          el.reviewRangeEst.textContent = "";
+        }
       }
     }
 
@@ -1747,7 +1981,15 @@ export function mountDashboard({ store, telemetry, el }) {
           "rgba(53, 199, 232, 0.22)",
           w,
           h,
-          { bandHeight: 0.2, label: "Audio", timeRangeUs },
+          {
+            bandHeight: 0.2,
+            label: "Audio",
+            timeRangeUs,
+            releaseTimeMs: state.reviewReleaseTimeMs,
+            hitTimeMs: state.reviewHitTimeMs,
+            releaseIdx: state.reviewReleaseIdx,
+            hitIdx: state.reviewHitIdx,
+          },
         );
       }
     } else {
@@ -1764,7 +2006,16 @@ export function mountDashboard({ store, telemetry, el }) {
       const state = store.get();
       const data = state.reviewMode ? (state.reviewTrace || []) : telemetry.getTrace();
       const micData = state.reviewMode ? (reviewMicChartData(state) || data) : data;
-      const timeRangeUs = state.reviewMode ? reviewTimeRangeUs(state, data) : null;
+      // Share one x-axis between the accel lines and the mic band: the union of
+      // both series' real-timestamp ranges. With real tUs (browser captures)
+      // both map by time even though the mic samples at ~1110 Hz and the motion
+      // trace at 52-208 Hz over a different window; the union keeps the audio
+      // from being squished or clipped. Without real tUs (firmware traces) it
+      // returns null and both fall back to index mapping, still aligned because
+      // the mic series is derived from the same payload.
+      const timeRangeUs = state.reviewMode
+        ? reviewLineTimeRangeUs(state, data, micData)
+        : null;
 
       // Draw raw mic channel in the background (bottom band)
       drawMicSeries(
@@ -1775,12 +2026,20 @@ export function mountDashboard({ store, telemetry, el }) {
         "rgba(53, 199, 232, 0.15)",
         w,
         h,
-        state.reviewMode ? { bandHeight: 0.3, label: "Audio", timeRangeUs } : undefined,
+        state.reviewMode ? {
+          bandHeight: 0.3,
+          label: "Audio",
+          timeRangeUs,
+          releaseTimeMs: state.reviewReleaseTimeMs,
+          hitTimeMs: state.reviewHitTimeMs,
+          releaseIdx: state.reviewReleaseIdx,
+          hitIdx: state.reviewHitIdx,
+        } : undefined,
       );
 
-      drawSeries(ctx, data, "ax", cssVar("--green"), w, h);
-      drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h);
-      drawSeries(ctx, data, "az", cssVar("--amber"), w, h);
+      drawSeries(ctx, data, "ax", cssVar("--green"), w, h, timeRangeUs);
+      drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h, timeRangeUs);
+      drawSeries(ctx, data, "az", cssVar("--amber"), w, h, timeRangeUs);
       drawSequenceMarkers(ctx, data, w, h, state.reviewMode);
     }
 
@@ -1792,15 +2051,23 @@ export function mountDashboard({ store, telemetry, el }) {
   draw();
 }
 
-function drawSeries(ctx, data, key, color, w, h) {
+function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null) {
   if (data.length < 2) return;
 
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.beginPath();
   const maxIdx = data.length - 1;
+  const useTime = !!(timeRangeUs && timeRangeUs.end > timeRangeUs.start);
   for (let i = 0; i < data.length; i += 1) {
-    const x = (i / maxIdx) * w;
+    const tUs = Number(data[i].tUs);
+    const x =
+      useTime && Number.isFinite(tUs)
+        ? Math.max(
+            0,
+            Math.min(w, ((tUs - timeRangeUs.start) / (timeRangeUs.end - timeRangeUs.start)) * w),
+          )
+        : (i / maxIdx) * w;
     const clamped = Math.max(-2, Math.min(2, data[i][key]));
     const y = h / 2 - (clamped / 4) * h;
     if (i === 0) ctx.moveTo(x, y);
@@ -1876,6 +2143,63 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     ctx.fillText(options.label, 8, bandTop + 4);
+  }
+
+  // Draw release and target hit markers if available
+  const getXForTime = (timeMs, idx) => {
+    if (
+      timeRangeUs &&
+      timeRangeUs.end > timeRangeUs.start &&
+      timeMs !== null &&
+      timeMs !== undefined
+    ) {
+      const tUs = timeMs * 1000;
+      return Math.max(
+        0,
+        Math.min(w, ((tUs - timeRangeUs.start) / (timeRangeUs.end - timeRangeUs.start)) * w),
+      );
+    }
+    if (idx !== null && idx !== undefined && idx >= 0) {
+      return (idx / maxIdx) * w;
+    }
+    return null;
+  };
+
+  const xRelease = getXForTime(options.releaseTimeMs, options.releaseIdx);
+  const xHit = getXForTime(options.hitTimeMs, options.hitIdx);
+
+  if (xRelease !== null && xRelease >= 0 && xRelease <= w) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(239, 68, 68, 0.75)"; // Red for release
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xRelease, bandTop);
+    ctx.lineTo(xRelease, bandBottom);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(239, 68, 68, 0.85)";
+    ctx.font = "700 9px sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText("RELEASE", xRelease - 4, bandTop + 4);
+    ctx.restore();
+  }
+
+  if (xHit !== null && xHit >= 0 && xHit <= w) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(53, 199, 232, 0.8)"; // Cyan for hit
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xHit, bandTop);
+    ctx.lineTo(xHit, bandBottom);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(53, 199, 232, 0.9)";
+    ctx.font = "700 9px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("HIT", xHit + 4, bandTop + 4);
+    ctx.restore();
   }
 
   ctx.restore();

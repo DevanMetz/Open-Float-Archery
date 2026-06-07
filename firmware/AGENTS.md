@@ -110,7 +110,7 @@ Flash the v3.3.0 build with:
 openocd `
   -s "C:/Users/metzd/Downloads/platform-seeedboards/zephyr/boards/arm/xiao_nrf54l15/support" `
   -s "C:/Program Files/OpenOCD/share/openocd/scripts" `
-  -c "adapter serial 463D5515" `
+  -c "adapter serial 09EC6223" `
   -f "C:/Users/metzd/Downloads/platform-seeedboards/zephyr/boards/arm/xiao_nrf54l15/support/openocd.cfg" `
   -c "init" `
   -c "targets" `
@@ -307,8 +307,10 @@ type 3 (count): "OF", proto, type, shot_count u16, shot_id u16, ...
                 -- count sync sent on subscribe so the persisted lifetime
                    count displays immediately without logging a shot
 type 4 (stored shot):
-                same payload as type 2; replayed from the RRAM-backed
-                stored-shot queue until the browser saves and acknowledges it
+                same payload as type 2; replayed from the stored-shot queue
+                (in RAM, persisted to RRAM on the recovery path) until the
+                browser saves and acknowledges it -- also recovers a dropped
+                live type-2 frame while connected
 type 5 (storage status):
                 shot_count u16, pending u16, upload_shot_id u16,
                 requested u16; sent on subscribe/request
@@ -326,6 +328,20 @@ firmware also keeps the newest 100 compact shot records in `openfloat/shotlog`.
 On subscribe/start it uploads queued shots one at a time as type-4 frames. The
 browser sends `shotack:<shot_id>` after IndexedDB save; firmware then removes
 that record from RRAM-backed storage.
+
+Every detected shot is appended to the in-RAM `stored_shot_log` queue (and its
+trace frozen) regardless of connection state, so a dropped live type-2 frame can
+still be recovered. The browser acks live frames too, so on the happy path the
+shot is removed from the queue almost immediately. To avoid a ~2.2 KB RRAM write
+per shot while connected, the log persist is **deferred**: a shot fires
+`shot_log_reconcile_work` after `SHOT_LOG_RECONCILE_DELAY_MS` (3 s). If the
+browser already acked and drained the queue, the handler is a no-op and nothing
+is written. If a shot is still pending (the live frame was lost), it persists the
+log and flags a storage-status frame so the browser pulls the backlog via
+`shotdump` and the ack/retry path recovers it — no disconnect required. When
+disconnected, the log is persisted immediately as before. The trace freeze stays
+RAM-only unless `bufnvs:1` is set, so the recovery path adds no RRAM writes by
+default.
 
 The BLE control characteristic accepts ASCII commands:
 
@@ -444,7 +460,7 @@ Useful CPU liveness check:
 openocd `
   -s "C:/Users/metzd/Downloads/platform-seeedboards/zephyr/boards/arm/xiao_nrf54l15/support" `
   -s "C:/Program Files/OpenOCD/share/openocd/scripts" `
-  -c "adapter serial 463D5515" `
+  -c "adapter serial 09EC6223" `
   -f "C:/Users/metzd/Downloads/platform-seeedboards/zephyr/boards/arm/xiao_nrf54l15/support/openocd.cfg" `
   -c "init" `
   -c "halt" `

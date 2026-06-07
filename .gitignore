@@ -18,6 +18,9 @@ memory/
 # Large IMU capture logs (debug data, not source)
 *.csv
 
+# Exported shot captures (personal practice data, not source)
+shots/
+
 # OS junk
 .DS_Store
 Thumbs.db

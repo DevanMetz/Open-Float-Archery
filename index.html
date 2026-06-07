@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-106">
+  <link rel="stylesheet" href="styles.css?v=shot-store-109">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="apple-touch-icon" href="icon.svg">
@@ -176,6 +176,7 @@
               <div class="review-details">
                 <strong>Trace Review Mode</strong>
                 <span id="reviewInfo">--</span>
+                <span id="reviewRangeEst" class="note" style="margin-left: 8px; font-weight: 600; color: var(--cyan);"></span>
               </div>
               <div id="reviewCompareField" class="review-compare-field">
                 <label for="reviewCompareSelect">Compare with</label>
@@ -187,6 +188,7 @@
                 <span class="legend-current">Current</span>
                 <span class="legend-compare">Compare</span>
               </span>
+              <button id="exportShotBtn" class="accent mini-btn" title="Export this single shot to a JSON file">Export Shot</button>
               <button id="exitReviewBtn" class="primary mini-btn">Exit Review</button>
             </div>
             <div id="reviewScrubBar" class="review-scrub-bar hidden" aria-label="Trace timeline scrubber">
@@ -328,9 +330,20 @@
       <div id="tabHistory" class="tab-view hidden-view">
         <section class="history-workspace">
           <div class="panel history-header-panel">
-            <div class="panel-head">
-              <h2>Saved Shot Logs</h2>
-              <p class="note">Click on any past shot below to review its complete 2D telemetry trace and scores.</p>
+            <div class="panel-head" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; width: 100%;">
+              <div>
+                <h2>Saved Shot Logs</h2>
+                <p class="note">Click on any past shot below to review its complete 2D telemetry trace and scores.</p>
+              </div>
+              <div id="historyBulkActions" class="bulk-actions-bar hidden" style="display: flex; align-items: center; gap: 8px;">
+                <button id="bulkSelectAllBtn" class="secondary mini-btn" type="button">Select All</button>
+                <span id="bulkSelectCount" class="note" style="margin: 0; font-weight: 600; color: var(--cyan);">0 selected</span>
+                <button id="bulkDeleteBtn" class="danger mini-btn" type="button" title="Delete selected shots">Delete Selected</button>
+                <button id="bulkCancelBtn" class="secondary mini-btn" type="button">Cancel</button>
+              </div>
+              <div id="historyDefaultActions">
+                <button id="historySelectModeBtn" class="secondary mini-btn" type="button">Select Shots</button>
+              </div>
             </div>
           </div>
           <div class="history-list-wrapper">
@@ -575,6 +588,10 @@
               <input type="number" id="drawWeightInput" min="10" max="90" step="0.5" placeholder="e.g. 42" value="">
             </div>
             <div class="field" style="margin-top: 10px;">
+              <label for="bowSpeedInput">Estimated Arrow Speed (fps)</label>
+              <input type="number" id="bowSpeedInput" min="100" max="450" step="1" placeholder="e.g. 280" value="">
+            </div>
+            <div class="field" style="margin-top: 10px;">
               <label for="stabilizerSetupInput">Stabilizer Setup</label>
               <input type="text" id="stabilizerSetupInput" placeholder="e.g. 30in Front / 12in Side" value="">
             </div>
@@ -660,6 +677,6 @@
     </div>
   </div>
 
-  <script type="module" src="app/main.js?v=shot-store-106"></script>
+  <script type="module" src="app/main.js?v=shot-store-109"></script>
 </body>
 </html>

@@ -104,21 +104,25 @@ export function computeFloatScoreFromTrace(trace, options = {}) {
   const cantSpread = stdDev(holdWindow.map((pt) => pt.roll || 0));
   const levelConsistency = clamp(100 - avgAbsCant * 6 - cantSpread * 12, 0, 100);
 
-  const formScore = clamp(
-    holdStability * 0.4 +
-      releaseQuality * 0.24 +
-      followThrough * 0.22 +
-      levelConsistency * 0.14,
-    0,
-    100,
-  );
+  const isManual = !!options.isManual;
+
+  const formScore = isManual
+    ? clamp(holdStability * 0.7 + levelConsistency * 0.3, 0, 100)
+    : clamp(
+        holdStability * 0.4 +
+          releaseQuality * 0.24 +
+          followThrough * 0.22 +
+          levelConsistency * 0.14,
+        0,
+        100,
+      );
 
   return {
     scoreVersion: FLOAT_SCORE_VERSION,
     formScore: Math.round(formScore),
     holdStability: Math.round(holdStability),
-    releaseQuality: Math.round(releaseQuality),
-    followThrough: Math.round(followThrough),
+    releaseQuality: isManual ? null : Math.round(releaseQuality),
+    followThrough: isManual ? null : Math.round(followThrough),
     levelConsistency: Math.round(levelConsistency),
     releaseIndex: releaseIdx,
   };
