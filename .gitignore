@@ -12,6 +12,10 @@ __pycache__/
 .idea/
 memory/
 
+# AI agent working notes (machine-specific paths, not contributor docs)
+AGENTS.md
+**/AGENTS.md
+
 # Blender backup files
 *.blend1
 

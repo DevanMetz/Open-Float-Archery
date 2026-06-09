@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { BINARY_FRAME_LEN, decodeBinaryFrame, TextLineParser } from "../protocol/frame.js?v=shot-store-105";
+import { BINARY_FRAME_LEN, decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-118";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
@@ -85,93 +85,6 @@ export class DemoAdapter extends BaseAdapter {
     this.connected = false;
     this.status("", "Disconnected");
     this.log("Demo stream stopped.");
-  }
-}
-
-// Web Serial: the firmware emits OFRAW/OFSHOT text lines at 115200 baud.
-export class SerialAdapter extends BaseAdapter {
-  constructor(bus, { baudRate = 115200 } = {}) {
-    super(bus);
-    this.baudRate = baudRate;
-  }
-
-  get name() {
-    return "Serial";
-  }
-
-  // Firmware prints every 8th IMU sample, so sequence advances by 8.
-  get sequenceStep() {
-    return 8;
-  }
-
-  async connect() {
-    if (!("serial" in navigator)) {
-      this.log("Web Serial unavailable. Use Chrome/Edge over https or localhost.");
-      throw new Error("Web Serial not supported");
-    }
-
-    this.port = await navigator.serial.requestPort();
-    await this.port.open({ baudRate: this.baudRate });
-    if (this.port.setSignals) {
-      await this.port.setSignals({ dataTerminalReady: true, requestToSend: true });
-    }
-
-    this.reader = this.port.readable.getReader();
-    this.connected = true;
-    this.keepReading = true;
-
-    this.status("live", `Live serial @ ${this.baudRate}`);
-    this.log(
-      `Serial connected @ ${this.baudRate} (DTR/RTS asserted). ` +
-        "Press reset on the module if no frames appear.",
-    );
-
-    this._readLoop(new TextLineParser());
-  }
-
-  async _readLoop(parser) {
-    try {
-      while (this.keepReading && this.reader) {
-        const { value, done } = await this.reader.read();
-        if (done) break;
-        if (!value) continue;
-
-        for (const event of parser.feed(value)) {
-          if (event.kind === "sample") this.emitSample(event.sample);
-          else if (event.kind === "shot") this.bus.emit("shot", event.shot);
-          else this.log(event.line);
-        }
-      }
-    } catch (error) {
-      if (this.keepReading) this.log(`Serial read error: ${error.message}`);
-    } finally {
-      await this.disconnect();
-    }
-  }
-
-  async disconnect() {
-    this.keepReading = false;
-
-    if (this.reader) {
-      try {
-        await this.reader.cancel();
-      } catch (_) {}
-      try {
-        this.reader.releaseLock();
-      } catch (_) {}
-      this.reader = null;
-    }
-
-    if (this.port) {
-      try {
-        await this.port.close();
-      } catch (_) {}
-      this.port = null;
-    }
-
-    if (this.connected) this.log("Serial disconnected.");
-    this.connected = false;
-    this.status("", "Disconnected");
   }
 }
 
@@ -563,7 +476,6 @@ export class BleAdapter extends BaseAdapter {
 }
 
 export function createAdapter(kind, bus, options) {
-  if (kind === "serial") return new SerialAdapter(bus, options);
   if (kind === "ble") return new BleAdapter(bus, options);
   return new DemoAdapter(bus, options);
 }

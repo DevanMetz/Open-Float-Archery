@@ -10,10 +10,19 @@ export function decodeFirmwareTraceBytes(rawBytes, bytesPerPoint = 0) {
     rawBytes.byteLength,
   );
   const len = rawBytes.byteLength;
-  let stride = bytesPerPoint;
+  // Only trust a caller-supplied stride if it is one the firmware can actually
+  // emit. A corrupted stride byte (e.g. clobbered on the wire) would otherwise
+  // be used verbatim and misalign every point, so fall back to auto-detection.
+  // 8 covers padded (non-__packed) trace_point structs from older firmware.
+  const VALID_STRIDES = new Set([4, FIRMWARE_TRACE_STRIDE_LEGACY,
+    FIRMWARE_TRACE_STRIDE_WITH_MIC, 8]);
+  let stride = VALID_STRIDES.has(bytesPerPoint) ? bytesPerPoint : 0;
 
   if (!stride) {
-    if (len % FIRMWARE_TRACE_STRIDE_WITH_MIC === 0 &&
+    if (len % 8 === 0 && len % FIRMWARE_TRACE_STRIDE_WITH_MIC !== 0 &&
+        len % FIRMWARE_TRACE_STRIDE_LEGACY !== 0) {
+      stride = 8;
+    } else if (len % FIRMWARE_TRACE_STRIDE_WITH_MIC === 0 &&
         len % FIRMWARE_TRACE_STRIDE_LEGACY !== 0) {
       stride = FIRMWARE_TRACE_STRIDE_WITH_MIC;
     } else if (len % FIRMWARE_TRACE_STRIDE_LEGACY === 0) {

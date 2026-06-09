@@ -1,0 +1,8 @@
+# Shows a "Sponsor" button on the GitHub repository.
+# Donations route through the OpenFloat store (Shopify) so payments and taxes use
+# the existing checkout. Replace the URL with your donation product if different.
+custom: ["https://store.openfloatarchery.com/products/support-openfloat"]
+
+# To also show a native GitHub Sponsors button, enable Sponsors for your account
+# and uncomment the line below with your username:
+# github: [DevanMetz]

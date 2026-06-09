@@ -2,7 +2,7 @@
 // Pure view code — it reads from the store and telemetry, never the device.
 
 import { MAX_TRACE_POINTS } from "../telemetry/telemetry.js";
-import { micChartPointsFromSeries } from "../protocol/trace.js?v=shot-store-102";
+import { micChartPointsFromSeries } from "../protocol/trace.js?v=shot-store-118";
 import { get } from "../core/db.js";
 
 function reviewMicChartData(state) {
@@ -1972,7 +1972,11 @@ export function mountDashboard({ store, telemetry, el }) {
 
       const reviewMic = reviewMicChartData(state);
       if (reviewMic?.length) {
-        const timeRangeUs = reviewTimeRangeUs(state, state.reviewTrace);
+        // Share the union of the motion-trace and mic-series time ranges, same
+        // as the line/motion view. Using the motion range alone squished the
+        // audio and clipped its tail because the mic is captured over a wider
+        // window at a higher rate.
+        const timeRangeUs = reviewLineTimeRangeUs(state, state.reviewTrace, reviewMic);
         drawMicSeries(
           ctx,
           reviewMic,

@@ -1129,6 +1129,18 @@ td:last-child {
   border-color: var(--cyan);
 }
 
+.store-link {
+  color: var(--text);
+  text-decoration: none;
+  border-color: rgba(53, 199, 232, 0.35);
+  background: rgba(53, 199, 232, 0.06);
+}
+
+.status.store-link:hover {
+  background: rgba(53, 199, 232, 0.16);
+  border-color: var(--cyan);
+}
+
 .status.sync-local .dot {
   background: var(--muted);
 }
@@ -2215,6 +2227,227 @@ canvas,
 @keyframes view-enter {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+/* Guide (in-app docs / wiki) */
+.guide-workspace {
+  display: grid;
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.guide-sidebar {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 12px;
+}
+
+.guide-nav-section {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 10px 8px 4px;
+}
+
+.guide-nav-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.guide-nav-folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  padding: 7px 8px;
+  transition: background 0.15s ease-in-out;
+}
+
+.guide-nav-folder:hover {
+  background: var(--panel-soft);
+}
+
+.guide-folder-caret {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--muted);
+  transition: transform 0.15s ease-in-out;
+}
+
+.guide-nav-group.collapsed .guide-folder-caret {
+  transform: rotate(-90deg);
+}
+
+.guide-nav-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.guide-nav-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 7px 10px;
+  transition: all 0.15s ease-in-out;
+}
+
+.guide-nav-link:hover {
+  background: var(--panel-soft);
+  border-color: var(--line);
+}
+
+.guide-nav-link.active {
+  background: rgba(53, 199, 232, 0.12);
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.guide-content {
+  padding: 8px 28px 32px;
+  max-width: 820px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.guide-content h1 {
+  font-size: 26px;
+  margin: 24px 0 8px;
+}
+
+.guide-content h2 {
+  font-size: 20px;
+  margin: 28px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.guide-content h3 {
+  font-size: 16px;
+  margin: 20px 0 8px;
+  color: var(--cyan);
+}
+
+.guide-content h4 {
+  font-size: 14px;
+  margin: 16px 0 6px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.guide-content p {
+  margin: 10px 0;
+}
+
+.guide-content ul,
+.guide-content ol {
+  margin: 10px 0;
+  padding-left: 22px;
+}
+
+.guide-content li {
+  margin: 5px 0;
+}
+
+.guide-content a {
+  color: var(--cyan);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.guide-content code {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 0.88em;
+  color: var(--amber);
+}
+
+.guide-content pre {
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+.guide-content pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.guide-content blockquote {
+  margin: 12px 0;
+  padding: 8px 14px;
+  border-left: 3px solid var(--green);
+  background: var(--panel-soft);
+  border-radius: 0 6px 6px 0;
+  color: var(--muted);
+}
+
+.guide-content blockquote code {
+  color: var(--amber);
+}
+
+.guide-content hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 24px 0;
+}
+
+.guide-loading,
+.guide-error {
+  color: var(--muted);
+  padding: 20px 0;
+}
+
+.guide-error {
+  color: var(--red);
+}
+
+@media (max-width: 720px) {
+  .guide-workspace {
+    grid-template-columns: 1fr;
+  }
+  .guide-sidebar {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .guide-content {
+    padding: 8px 16px 24px;
+  }
 }
 
 /* Bow Shop */

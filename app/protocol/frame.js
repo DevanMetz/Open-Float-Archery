@@ -8,8 +8,7 @@
 
 export const BINARY_FRAME_LEN = 29;
 export const GYRO_Q4 = 16; // BLE gyro is deg/s in Q4 fixed point (LSB = 1/16 dps)
-export const GYRO_MDPS = 1000; // OFRAW gyro is milli-deg/s
-export const ANGLE_CDEG = 100; // OFRAW angles are centi-degrees
+export const ANGLE_CDEG = 100; // binary-frame angles are centi-degrees
 // micAmp (byte 28): firmware noise-gated peak envelope / 3, range 0-255
 
 const MAGIC_O = 0x4f; // 'O'
@@ -196,82 +195,3 @@ export function decodeBinaryFrame(bytes, offset = 0) {
   return sample && { kind: "sample", sample };
 }
 
-// Decode an OFRAW serial line. Returns a Sample or null.
-export function parseOfrawLine(line) {
-  const parts = line.split(",");
-  if (parts[0] !== "OFRAW" || parts.length < 19) return null;
-  const n = (i) => Number(parts[i]);
-
-  return {
-    source: "text",
-    protocol: n(1),
-    type: 1,
-    sequence: n(2),
-    uptimeUs: n(3),
-    dtUs: n(4),
-    axMg: n(5),
-    ayMg: n(6),
-    azMg: n(7),
-    gxDps: n(8) / GYRO_MDPS,
-    gyDps: n(9) / GYRO_MDPS,
-    gzDps: n(10) / GYRO_MDPS,
-    rollDeg: n(11) / ANGLE_CDEG,
-    pitchDeg: n(12) / ANGLE_CDEG,
-    yawDeg: n(13) / ANGLE_CDEG,
-    flags: 0,
-    shotCount: n(18),
-    micAmp: 0,
-  };
-}
-
-// Decode an OFSHOT serial event line. Returns a Shot or null.
-export function parseOfshotLine(line) {
-  const parts = line.split(",");
-  if (parts[0] !== "OFSHOT" || parts.length < 8) return null;
-
-  return {
-    shotId: Number(parts[2]),
-    uptimeUs: Number(parts[3]),
-    axMg: Number(parts[4]),
-    ayMg: Number(parts[5]),
-    azMg: Number(parts[6]),
-    shotCount: Number(parts[7]),
-  };
-}
-
-// Buffers a newline-delimited text byte stream (serial) and yields decoded
-// events: { kind: "sample" | "shot" | "line", ... }.
-export class TextLineParser {
-  constructor() {
-    this.buffer = "";
-    this.decoder = new TextDecoder();
-  }
-
-  feed(chunk) {
-    this.buffer += this.decoder.decode(chunk, { stream: true });
-    const events = [];
-
-    let nl;
-    while ((nl = this.buffer.indexOf("\n")) !== -1) {
-      const line = this.buffer.slice(0, nl).trim();
-      this.buffer = this.buffer.slice(nl + 1);
-      if (!line) continue;
-
-      const sample = parseOfrawLine(line);
-      if (sample) {
-        events.push({ kind: "sample", sample });
-        continue;
-      }
-
-      const shot = parseOfshotLine(line);
-      if (shot) {
-        events.push({ kind: "shot", shot });
-        continue;
-      }
-
-      events.push({ kind: "line", line });
-    }
-
-    return events;
-  }
-}

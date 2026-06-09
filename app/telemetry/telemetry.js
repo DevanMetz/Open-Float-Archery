@@ -8,7 +8,7 @@ import {
   buildShotTraceRecord,
   decodeFirmwareTraceBytes,
   extractMicWindow,
-} from "../protocol/trace.js?v=shot-store-102";
+} from "../protocol/trace.js?v=shot-store-118";
 import {
   computeFloatScoreFromTrace,
   computeLiveFloatScore,

@@ -1,0 +1,23 @@
+{
+  "tree": [
+    {
+      "type": "folder",
+      "name": "Reference",
+      "path": "reference",
+      "children": [
+        {
+          "type": "file",
+          "name": "BLE Control Commands",
+          "id": "reference/ble-commands",
+          "path": "docs/reference/ble-commands.md"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "Quick Start",
+      "id": "quick-start",
+      "path": "docs/quick-start.md"
+    }
+  ]
+}

@@ -4,10 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-112">
+  <link rel="stylesheet" href="styles.css?v=shot-store-120">
   <link rel="manifest" href="manifest.json">
-  <link rel="icon" type="image/svg+xml" href="icon.svg">
-  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="icon" href="favicon.ico?v=shot-store-118" sizes="any">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png?v=shot-store-118">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=shot-store-118">
   <meta name="theme-color" content="#061014">
 </head>
 <body>
@@ -38,9 +39,16 @@
         <button id="navSettingsBtn" class="nav-tab">
           <span class="nav-icon">⚙️</span> Settings
         </button>
+        <button id="navGuideBtn" class="nav-tab">
+          <span class="nav-icon">📖</span> Guide
+        </button>
       </nav>
 
       <div class="header-status-group">
+        <a id="storeLink" class="status store-link clickable" href="https://store.openfloatarchery.com/" target="_blank" rel="noopener noreferrer" title="Shop OpenFloat hardware">
+          <span aria-hidden="true">🛒</span>
+          <span>Store</span>
+        </a>
         <div id="batteryBadge" class="status battery-status hidden" title="Battery Level">
           <span class="battery-icon">🔋</span>
           <span id="batteryText">--%</span>
@@ -61,7 +69,7 @@
       <span class="warning-icon">⚠️</span>
       <div class="alert-content">
         <strong>Browser Notice</strong>
-        <p id="mobileAlertText">Web Bluetooth / Serial is not supported in this browser.</p>
+        <p id="mobileAlertText">Web Bluetooth is not supported in this browser.</p>
       </div>
       <button id="closeMobileAlertBtn" class="close-alert-btn">&times;</button>
     </div>
@@ -659,6 +667,14 @@
         </section>
       </div>
 
+      <!-- 6. Guide View (in-app docs / wiki) -->
+      <div id="tabGuide" class="tab-view hidden-view">
+        <section class="guide-workspace">
+          <nav id="guideSidebar" class="guide-sidebar panel" aria-label="Guide Navigation"></nav>
+          <article id="guideContent" class="guide-content panel"></article>
+        </section>
+      </div>
+
     </main>
   </div>
 
@@ -689,6 +705,6 @@
     </div>
   </div>
 
-  <script type="module" src="app/main.js?v=shot-store-112"></script>
+  <script type="module" src="app/main.js?v=shot-store-120"></script>
 </body>
 </html>

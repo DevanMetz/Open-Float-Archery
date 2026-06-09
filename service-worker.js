@@ -1,10 +1,14 @@
-const CACHE_NAME = "openfloat-v112";
+const CACHE_NAME = "openfloat-v120";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./manifest.json",
-  "./icon.svg",
+  "./favicon.ico",
+  "./icon-192.png",
+  "./icon-512.png",
+  "./icon-maskable-512.png",
+  "./apple-touch-icon.png",
   "./Blender/BowModel.glb",
   "./app/main.js",
   "./app/data/sample-data.js",
@@ -20,14 +24,43 @@ const ASSETS = [
   "./app/ui/dashboard.js",
   "./app/ui/session-review.js",
   "./app/ui/trace-preview.js",
-  "./app/ui/training.js"
+  "./app/ui/training.js",
+  "./app/ui/guide.js",
+  "./docs/index.json"
 ];
+
+// Collect every Markdown file path from the generated docs index tree.
+function collectDocPaths(nodes, out) {
+  (nodes || []).forEach((node) => {
+    if (node.type === "folder") {
+      collectDocPaths(node.children, out);
+    } else if (node.type === "file" && node.path) {
+      out.push(`./${node.path}`);
+    }
+  });
+  return out;
+}
+
+// Precache all Markdown pages listed in docs/index.json so the Guide works
+// fully offline. New pages are picked up on the next service-worker version.
+async function precacheDocs(cache) {
+  try {
+    const res = await fetch("./docs/index.json");
+    if (!res.ok) return;
+    const data = await res.json();
+    const paths = collectDocPaths(data.tree, []);
+    if (paths.length) await cache.addAll(paths);
+  } catch (err) {
+    // Offline or missing index: live pages still cache on first fetch.
+  }
+}
 
 // Install Event
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS);
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await cache.addAll(ASSETS);
+      await precacheDocs(cache);
     }).then(() => self.skipWaiting())
   );
 });

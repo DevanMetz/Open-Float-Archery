@@ -28,7 +28,8 @@ telemetry; connect it from the status badge in the header.
 - `app/` contains native ES modules with no build step: protocol parsing,
   device adapters, IndexedDB storage, telemetry scoring/sync, and UI modules
   (dashboard, Steady Aim training, trace preview).
-- `firmware/` is the Zephyr/NCS app for the Seeed XIAO nRF54L15 Sense.
+- `firmware/` is the Zephyr/NCS app for the Seeed XIAO nRF54L15 Sense. See
+  `firmware/BUILDING.md` for build, flash, and verification instructions.
 - `tools/` contains host-side validation utilities, including the BLE client and
   follow-through trace verifier.
 - `Blender/` and `FreeCAD/` contain visual/mechanical assets used by the app and
@@ -252,6 +253,16 @@ create unique index if not exists shots_device_shot_id_unique
 
 notify pgrst, 'reload schema';
 ```
+
+## Support the Project
+
+OpenFloat is free and open source. If it is useful to you, donations help fund
+firmware development, hardware design, and hosting:
+
+- **Donate via the store:** https://store.openfloatarchery.com/products/support-openfloat
+- Or use the **Sponsor** button at the top of this repository.
+
+There is also a **Support OpenFloat** card in the web app's Settings tab.
 
 ## Safety
 

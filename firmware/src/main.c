@@ -265,7 +265,10 @@ static void stop_pdm(void)
 #define OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION 6
 #define OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE \
 	(OPENFLOAT_BLE_FRAME_SIZE * OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION)
-#define TRACE_CHUNK_PAYLOAD_SIZE (OPENFLOAT_BLE_FRAME_SIZE - 9)
+/* Reserve frame[28] for the stride byte (set on chunk 0). Payload therefore
+ * spans frame[9..27]; using FRAME_SIZE-9 would let the chunk-0 memcpy overwrite
+ * the stride byte the decoder relies on. */
+#define TRACE_CHUNK_PAYLOAD_SIZE (OPENFLOAT_BLE_FRAME_SIZE - 10)
 #define OPENFLOAT_CONN_INTERVAL_MIN 6  /* 7.5 ms */
 #define OPENFLOAT_CONN_INTERVAL_MAX 6  /* 7.5 ms */
 #define OPENFLOAT_CONN_LATENCY 0
@@ -480,12 +483,15 @@ static struct stored_shot_log stored_shot_log;
 
 #define TRACE_CAPACITY 1000
 
+/* __packed so sizeof() is exactly 7 bytes; without it the trailing uint8_t
+ * pads the struct to 8 and the raw memcpy upload ships a stride the decoder
+ * does not expect, scrambling every trace. */
 struct trace_point {
 	int16_t roll_cdeg;
 	int16_t pitch_cdeg;
 	int16_t yaw_cdeg;
 	uint8_t mic_amp;
-};
+} __packed;
 struct stored_trace {
 	uint16_t shot_id;
 	uint16_t count;

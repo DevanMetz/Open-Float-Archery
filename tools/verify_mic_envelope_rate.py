@@ -11,12 +11,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import re
 import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+# Path to the Seeed XIAO nRF54L15 OpenOCD support files (containing openocd.cfg).
+# Override for your install with the OPENFLOAT_SEEED_SUPPORT environment variable,
+# e.g. the `platform-seeedboards/.../xiao_nrf54l15/support` directory. The OpenOCD
+# script search path can be overridden with OPENOCD_SCRIPTS.
+SEEED_SUPPORT_DIR = os.environ.get(
+    "OPENFLOAT_SEEED_SUPPORT",
+    "platform-seeedboards/zephyr/boards/arm/xiao_nrf54l15/support",
+)
+OPENOCD_SCRIPTS_DIR = os.environ.get("OPENOCD_SCRIPTS", "/usr/share/openocd/scripts")
 
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
@@ -42,13 +53,13 @@ def reset_target(openocd_serial: str) -> None:
     cmd = [
         "openocd",
         "-s",
-        "C:/Users/metzd/Downloads/platform-seeedboards/zephyr/boards/arm/xiao_nrf54l15/support",
+        SEEED_SUPPORT_DIR,
         "-s",
-        "C:/Program Files/OpenOCD/share/openocd/scripts",
+        OPENOCD_SCRIPTS_DIR,
         "-c",
         f"adapter serial {openocd_serial}",
         "-f",
-        "C:/Users/metzd/Downloads/platform-seeedboards/zephyr/boards/arm/xiao_nrf54l15/support/openocd.cfg",
+        f"{SEEED_SUPPORT_DIR}/openocd.cfg",
         "-c",
         "init",
         "-c",

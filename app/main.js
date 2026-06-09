@@ -3,7 +3,7 @@
 
 import { createStore, EventBus } from "./core/store.js";
 import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-105";
-import { createAdapter } from "./device/adapters.js?v=shot-store-106";
+import { createAdapter } from "./device/adapters.js?v=shot-store-118";
 import {
   cloneMountAxes,
   mountBowShop,
@@ -13,20 +13,21 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/dashboard.js?v=shot-store-109";
+} from "./ui/dashboard.js?v=shot-store-120";
 import {
   drawEmptyTargetPreview,
   drawTraceTargetPreview,
   watchTracePreviewResize,
 } from "./ui/trace-preview.js?v=shot-store-98";
-import { resolveReviewMicSeries } from "./protocol/trace.js?v=shot-store-102";
+import { resolveReviewMicSeries } from "./protocol/trace.js?v=shot-store-118";
 import { initDb, getAll, get, put, remove, generateUUID, groupShotsByTime, SESSION_GAP_MS, exportAllData, importAllData } from "./core/db.js?v=shot-store-98";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-112";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-117";
 import { buildSessionFloatPlot, buildSessionReview } from "./ui/session-review.js?v=shot-store-105";
 import { mountTraining } from "./ui/training.js?v=shot-store-99";
-import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-112";
+import { mountGuide } from "./ui/guide.js?v=shot-store-120";
+import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-117";
 
-const APP_BUILD = "shot-store-112";
+const APP_BUILD = "shot-store-120";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -39,8 +40,9 @@ const ELEMENT_IDS = [
   "sbUrlInput", "sbKeyInput", "saveCloudSettingsBtn", "clearCloudSettingsBtn",
   "chartTitle", "reviewBanner", "reviewInfo", "reviewRangeEst", "reviewCompareSelect",
   "reviewCompareField", "reviewCompareLegend", "exportShotBtn", "exitReviewBtn",
-  "navDashboardBtn", "navTrainingBtn", "navHistoryBtn", "navBowShopBtn", "navSettingsBtn",
-  "tabDashboard", "tabTraining", "tabHistory", "tabBowShop", "tabSettings", "historyList",
+  "navDashboardBtn", "navTrainingBtn", "navHistoryBtn", "navBowShopBtn", "navSettingsBtn", "navGuideBtn",
+  "tabDashboard", "tabTraining", "tabHistory", "tabBowShop", "tabSettings", "tabGuide",
+  "guideSidebar", "guideContent", "historyList",
   "historyBulkActions", "bulkSelectCount", "bulkDeleteBtn", "bulkCancelBtn", "historySelectModeBtn", "bulkSelectAllBtn", "historyDefaultActions",
   "trainingDurationSelect", "startTrainingBtn", "cancelTrainingBtn",
   "trainingStatusText", "trainingStatusDesc", "trainingDisplayDefault", "trainingDisplayActive",
@@ -621,13 +623,10 @@ function checkMobileCompatibility() {
         el.mobileAlertText.textContent = `Your mobile browser does not support Web Bluetooth. To connect to your bow sensor, please use Google Chrome on Android.`;
       }
       el.mobileAlertBanner.classList.remove("hidden");
-    } else {
-      el.mobileAlertText.textContent = `Web Serial (USB) is not supported on mobile devices. Please connect using Bluetooth (BLE).`;
-      el.mobileAlertBanner.classList.remove("hidden");
     }
   } else {
-    if (!navigator.bluetooth && !navigator.serial) {
-      el.mobileAlertText.textContent = `Your browser does not support Web Bluetooth or Web Serial. For the full experience, please use Chrome, Edge, or Opera.`;
+    if (!navigator.bluetooth) {
+      el.mobileAlertText.textContent = `Your browser does not support Web Bluetooth. For the full experience, please use Chrome, Edge, or Opera.`;
       el.mobileAlertBanner.classList.remove("hidden");
     }
   }
@@ -1064,13 +1063,14 @@ el.modelIgnoreYawToggle.addEventListener("change", () => {
 });
 // Tab Switching Navigation Logic
 function selectViewTab(targetId) {
-  const tabs = ["tabDashboard", "tabTraining", "tabHistory", "tabBowShop", "tabSettings"];
+  const tabs = ["tabDashboard", "tabTraining", "tabHistory", "tabBowShop", "tabSettings", "tabGuide"];
   const navButtons = {
     tabDashboard: el.navDashboardBtn,
     tabTraining: el.navTrainingBtn,
     tabHistory: el.navHistoryBtn,
     tabBowShop: el.navBowShopBtn,
     tabSettings: el.navSettingsBtn,
+    tabGuide: el.navGuideBtn,
   };
   const panels = {
     tabDashboard: el.tabDashboard,
@@ -1078,6 +1078,7 @@ function selectViewTab(targetId) {
     tabHistory: el.tabHistory,
     tabBowShop: el.tabBowShop,
     tabSettings: el.tabSettings,
+    tabGuide: el.tabGuide,
   };
 
   tabs.forEach((id) => {
@@ -1099,6 +1100,9 @@ function selectViewTab(targetId) {
   if (targetId === "tabDashboard") {
     withPreservedScroll(() => loadRecentShotsList());
   }
+  if (targetId === "tabGuide" && guide) {
+    guide.show();
+  }
 }
 
 if (el.navDashboardBtn && el.navTrainingBtn && el.navHistoryBtn && el.navBowShopBtn && el.navSettingsBtn) {
@@ -1108,6 +1112,21 @@ if (el.navDashboardBtn && el.navTrainingBtn && el.navHistoryBtn && el.navBowShop
   el.navBowShopBtn.addEventListener("click", () => selectViewTab("tabBowShop"));
   el.navSettingsBtn.addEventListener("click", () => selectViewTab("tabSettings"));
 }
+if (el.navGuideBtn) {
+  el.navGuideBtn.addEventListener("click", () => selectViewTab("tabGuide"));
+}
+
+// In-app Guide (docs / wiki) tab.
+const guide = mountGuide({ sidebar: el.guideSidebar, content: el.guideContent });
+// Deep-link: open the Guide tab directly when the URL targets a guide page.
+if (guide && guide.hasHashTarget()) {
+  selectViewTab("tabGuide");
+}
+window.addEventListener("hashchange", () => {
+  if (guide && guide.hasHashTarget()) {
+    selectViewTab("tabGuide");
+  }
+});
 
 // --- Local data backup / restore -----------------------------------------
 function setDataBackupStatus(message, isError = false) {
