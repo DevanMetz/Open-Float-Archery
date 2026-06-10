@@ -231,6 +231,29 @@ function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+// Chart draw colors that must flip with the page theme (light marks on the
+// classic dark canvas, ink marks on light themes). A theme stylesheet can
+// redefine the --trace-* variables; without them we fall back to the classic
+// dark-theme palette. Refreshed once per frame so theme toggles apply live.
+const CANVAS_INK_DEFAULTS = {
+  follow: "rgba(230, 244, 239, 0.58)",
+  dotRing: "#FFFFFF",
+  crosshair: "rgba(255, 255, 255, 0.65)",
+  label: "rgba(230, 244, 239, 0.72)",
+  marker: "rgba(230, 244, 239, 0.44)",
+};
+let canvasInk = { ...CANVAS_INK_DEFAULTS };
+
+function refreshCanvasInk() {
+  canvasInk = {
+    follow: cssVar("--trace-follow") || CANVAS_INK_DEFAULTS.follow,
+    dotRing: cssVar("--trace-dot-ring") || CANVAS_INK_DEFAULTS.dotRing,
+    crosshair: cssVar("--trace-crosshair") || CANVAS_INK_DEFAULTS.crosshair,
+    label: cssVar("--trace-label") || CANVAS_INK_DEFAULTS.label,
+    marker: cssVar("--trace-marker") || CANVAS_INK_DEFAULTS.marker,
+  };
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -300,7 +323,7 @@ function mean(values) {
 function phaseColor(phase) {
   if (phase === "release") return "#FF5D73";
   if (phase === "break") return "#FFBE5C";
-  if (phase === "follow") return "rgba(230, 244, 239, 0.58)";
+  if (phase === "follow") return canvasInk.follow;
   return "#30E39B";
 }
 
@@ -451,7 +474,7 @@ function drawCompareReviewTrace(ctx, {
   ctx.beginPath();
   ctx.arc(finalPt.x, finalPt.y, 5, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "#FFFFFF";
+  ctx.strokeStyle = canvasInk.dotRing;
   ctx.lineWidth = 1.5;
   ctx.stroke();
   ctx.restore();
@@ -1770,6 +1793,7 @@ export function mountDashboard({ store, telemetry, el }) {
   }
 
   function draw() {
+    refreshCanvasInk();
     const rect = el.traceCanvas.getBoundingClientRect();
     const w = rect.width;
     const h = rect.height;
@@ -1942,11 +1966,11 @@ export function mountDashboard({ store, telemetry, el }) {
         ctx.beginPath();
         ctx.arc(finalPoint.x, finalPoint.y, 6, 0, 2 * Math.PI);
         ctx.fill();
-        ctx.strokeStyle = "#FFFFFF";
+        ctx.strokeStyle = canvasInk.dotRing;
         ctx.lineWidth = 1.5;
         ctx.stroke();
 
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.65)";
+        ctx.strokeStyle = canvasInk.crosshair;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(finalPoint.x - 11, finalPoint.y);
@@ -1956,7 +1980,7 @@ export function mountDashboard({ store, telemetry, el }) {
         ctx.stroke();
 
         if (state.reviewMode) {
-          ctx.fillStyle = "rgba(230, 244, 239, 0.78)";
+          ctx.fillStyle = canvasInk.label;
           ctx.font = "700 11px ui-monospace, Consolas, monospace";
           ctx.textAlign = "right";
           ctx.textBaseline = "bottom";
@@ -2142,7 +2166,7 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
   ctx.stroke();
 
   if (options.label) {
-    ctx.fillStyle = "rgba(230, 244, 239, 0.72)";
+    ctx.fillStyle = canvasInk.label;
     ctx.font = "600 10px ui-monospace, Consolas, monospace";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
@@ -2212,7 +2236,7 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
 function drawSequenceMarkers(ctx, data, w, h, reviewMode) {
   if (data.length < 20) return;
 
-  const markerColor = "rgba(230, 244, 239, 0.44)";
+  const markerColor = canvasInk.marker;
   const labels = reviewMode
     ? [
         { x: 0.2, text: "hold" },
@@ -2238,7 +2262,7 @@ function drawSequenceMarkers(ctx, data, w, h, reviewMode) {
     ctx.stroke();
 
     ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(230, 244, 239, 0.72)";
+    ctx.fillStyle = canvasInk.label;
     ctx.fillText(marker.text, x, 12);
   }
   ctx.restore();

@@ -1,0 +1,484 @@
+/* ============================================================================
+   PROTOTYPE THEME: "Graph Paper" — fun / minimalist / technical
+   Loaded after styles.css as a pure override layer. Remove the <link> in
+   index.html (or hit the GRID toggle button) to fall back to the classic
+   dark theme. Canvases stay dark on purpose: they read as instrument
+   screens sitting on an engineer's drafting pad.
+   ========================================================================== */
+
+/* ---- 1. Palette: ink on paper ------------------------------------------- */
+:root {
+  color-scheme: light;
+  --bg: #f9f8f2;
+  --panel: rgba(255, 255, 255, 0.88);
+  --panel-soft: #f1f0e8;
+  --line: #b7c4bd;
+  --text: #17241f;
+  --muted: #5d7068;
+  --green: #0c9a68;
+  --cyan: #0d84a8;
+  --red: #d83a52;
+  --amber: #a9780f;
+  --violet: #6a58d8;
+  --ink: #0b1512; /* stays dark: code blocks + dark instrument surfaces */
+  /* Grid lines disabled for comparison — restore the rgba values to bring
+     the graph paper back: minor rgba(13,132,168,0.09), major rgba(13,132,168,0.18). */
+  --paper-grid: transparent;
+  --paper-grid-major: transparent;
+
+  /* Canvas draw colors read by the chart/preview JS (dark-theme fallbacks
+     are hardcoded there for when this sheet is toggled off). */
+  --trace-follow: rgba(23, 36, 31, 0.45);
+  --trace-dot-ring: #17241f;
+  --trace-crosshair: rgba(23, 36, 31, 0.6);
+  --trace-label: rgba(23, 36, 31, 0.72);
+  --trace-marker: rgba(23, 36, 31, 0.38);
+
+  /* Flat-surface tokens shared by the paper and dark minimal palettes */
+  --surface: #ffffff;
+  --surface-border: #9eafa8;
+  --divider: rgba(23, 36, 31, 0.25);
+  --on-accent: #ffffff;
+  --timer-track: #dde4df;
+  --tick: rgba(23, 36, 31, 0.5);
+  --rail: rgba(23, 36, 31, 0.12);
+  --overlay: rgba(23, 36, 31, 0.4);
+}
+
+/* ---- 1b. Minimal dark: the same flat look with the lights off ------------ */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #10171a;
+  --panel: #161f22;
+  --panel-soft: #1c272a;
+  --line: #324044;
+  --text: #e8f1ec;
+  --muted: #8fa39c;
+  --green: #2fd394;
+  --cyan: #3ec3e8;
+  --red: #ff6478;
+  --amber: #e8b54a;
+  --violet: #9b8cff;
+
+  --trace-follow: rgba(232, 241, 236, 0.5);
+  --trace-dot-ring: #e8f1ec;
+  --trace-crosshair: rgba(232, 241, 236, 0.6);
+  --trace-label: rgba(232, 241, 236, 0.72);
+  --trace-marker: rgba(232, 241, 236, 0.4);
+
+  --surface: #131c1f;
+  --surface-border: #46565a;
+  --divider: rgba(232, 241, 236, 0.22);
+  --on-accent: #0b1512; /* accents are bright on dark, so ink text on them */
+  --timer-track: #243034;
+  --tick: rgba(232, 241, 236, 0.55);
+  --rail: rgba(232, 241, 236, 0.16);
+  --overlay: rgba(0, 0, 0, 0.55);
+}
+
+/* ---- 2. The graph paper ------------------------------------------------- */
+body {
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(to right, var(--paper-grid-major) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--paper-grid-major) 1px, transparent 1px),
+    linear-gradient(to right, var(--paper-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--paper-grid) 1px, transparent 1px);
+  background-size: 80px 80px, 80px 80px, 16px 16px, 16px 16px;
+  background-attachment: fixed;
+}
+
+/* Classic notebook margin rule — disabled along with the grid lines */
+body::before {
+  content: none;
+}
+
+/* ---- 3. FLAT: kill every glow, shadow and blur in one pass --------------- */
+*,
+*::before,
+*::after {
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+header,
+.modal-overlay {
+  backdrop-filter: none;
+}
+
+/* ---- 4. Square corners (dots, rings and the bubble vial stay round) ------ */
+.panel,
+button,
+select,
+input:not([type="checkbox"]):not([type="radio"]),
+.status,
+.nav-tab,
+.mark,
+.modal-content,
+.modal-body input,
+.settings-card,
+.bow-shop-preview,
+.bow-shop-controls,
+.bow-color-row input[type="color"],
+.bow-color-row span,
+.training-control-card,
+.training-display-card,
+.training-results-card,
+.session-header,
+.session-editor,
+.session-editor input,
+.session-editor select,
+.session-editor-actions button,
+.session-stat-badge,
+.session-review,
+.session-float-plot,
+.session-review-stat,
+.session-review-drills span:not(.session-review-drills-label),
+.history-item,
+.history-item-preview-wrap,
+.history-item-checkbox,
+.recent-shot-card,
+.recent-shot-preview-wrap,
+.chart-toggles,
+.chart-metrics-inline,
+.toggle-btn,
+.record-toggle-btn,
+.zoom-controls,
+.speed-controls,
+.scrub-controls,
+.review-overlay,
+.review-scrub-bar,
+.play-btn,
+.mini-btn,
+.mini-icon-btn,
+.practice-card,
+.alignment-section,
+.alignment-tag,
+.alignment-preview-tag,
+.mobile-alert-banner,
+.record-card,
+.record-status-item,
+.record-status-box,
+.record-status-badge,
+.guide-nav-link,
+.guide-nav-folder,
+.guide-content pre,
+.guide-content code,
+.model-toggle-grid label,
+.mount-axis-grid span,
+.model-axis-grid span,
+#traceCanvas,
+#orientationCanvas,
+#mountOrientationCanvas,
+#bowShopCanvas {
+  border-radius: 0;
+}
+
+/* ---- 5. Typography: drafting annotations -------------------------------- */
+h1,
+h2,
+h3,
+.eyebrow,
+label,
+.nav-tab,
+.status,
+.tab-btn,
+.toggle-btn,
+.record-toggle-btn,
+button.mini-btn {
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+h1 {
+  letter-spacing: 0.01em;
+}
+
+/* ---- 6. Header: drafting table rule ------------------------------------- */
+header {
+  background: var(--bg); /* fully opaque: no content ghosting under the sticky bar */
+  border-bottom: 2px solid var(--text);
+}
+
+.mark {
+  border: 2px solid var(--text);
+  color: var(--text);
+  background: transparent;
+  transform: rotate(-4deg); /* rubber stamp */
+}
+
+/* ---- 7. Flat menus ------------------------------------------------------- */
+.nav-tab {
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.nav-tab .nav-icon {
+  display: none; /* text-only tabs in this theme */
+}
+
+.nav-tab:hover {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.nav-tab.active {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+
+.status {
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+/* ---- 8. Flat controls ----------------------------------------------------- */
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"] {
+  accent-color: var(--green);
+}
+
+select,
+button {
+  background: var(--surface);
+  border-color: var(--surface-border);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--text);
+}
+
+button.primary {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--on-accent);
+}
+
+button.accent {
+  background: var(--cyan);
+  border-color: var(--cyan);
+  color: var(--on-accent);
+}
+
+.toggle-btn.active {
+  color: var(--on-accent);
+}
+
+.session-editor-actions button.primary {
+  color: var(--on-accent);
+}
+
+.play-btn {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.chart-metrics-inline,
+.zoom-controls,
+.speed-controls,
+.scrub-controls,
+.chart-toggles {
+  background: var(--surface);
+}
+
+.history-item-checkbox:checked::after {
+  color: var(--on-accent);
+}
+
+.scrub-track input[type="range"]::-webkit-slider-thumb {
+  border-color: var(--text);
+}
+
+.scrub-track input[type="range"]::-moz-range-thumb {
+  border-color: var(--text);
+}
+
+/* ---- 9. Canvases: same graph paper as the page ---------------------------
+   The 3D renderers clear to transparent and the 2D charts clearRect, so the
+   canvas background is pure CSS. Draw colors (crosshairs, labels, follow
+   phase) come from the --trace-* variables below; the JS falls back to the
+   classic dark palette when this sheet is disabled. */
+.orientation-visualizer,
+#traceCanvas,
+#mountOrientationCanvas,
+#bowShopCanvas,
+.recent-shot-preview-wrap,
+.history-item-preview-wrap {
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(to right, var(--paper-grid-major) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--paper-grid-major) 1px, transparent 1px),
+    linear-gradient(to right, var(--paper-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--paper-grid) 1px, transparent 1px);
+  background-size: 80px 80px, 80px 80px, 16px 16px, 16px 16px;
+  border: 1px solid var(--line);
+}
+
+.orientation-visualizer,
+#traceCanvas {
+  border-color: var(--text);
+}
+
+.orientation-unavailable {
+  background-color: rgba(216, 58, 82, 0.06);
+}
+
+#orientationCanvas {
+  background: transparent;
+  border: 0; /* lives inside the already-framed visualizer panel */
+}
+
+#thresholdValue {
+  color: var(--green);
+}
+
+/* ---- 10. Bubble level: flat vial ----------------------------------------- */
+.bubble-level {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+}
+
+.level-card.level-ok .bubble-level {
+  background: rgba(12, 154, 104, 0.16);
+  border-color: rgba(12, 154, 104, 0.55);
+}
+
+.level-card.level-warn .bubble-level {
+  background: rgba(169, 120, 15, 0.16);
+  border-color: rgba(169, 120, 15, 0.5);
+}
+
+.level-card.level-danger .bubble-level {
+  background: rgba(216, 58, 82, 0.16);
+  border-color: rgba(216, 58, 82, 0.5);
+}
+
+.level-bubble {
+  background: var(--surface);
+  border: 2px solid var(--text);
+}
+
+.level-tick {
+  background: var(--tick);
+}
+
+.level-center-band {
+  background: transparent;
+  border-left: 1px dashed var(--tick);
+  border-right: 1px dashed var(--tick);
+}
+
+.level-controls {
+  border-top-color: var(--line);
+}
+
+/* ---- 11. Panels & cards: paper on paper ----------------------------------- */
+.score-ring {
+  background: var(--surface);
+  border: 9px solid rgba(12, 154, 104, 0.22);
+  outline: 1px solid var(--green);
+}
+
+.recent-shot-card,
+.history-item {
+  background: var(--surface);
+}
+
+.recent-shot-card:hover {
+  border-color: var(--text);
+}
+
+.recent-shot-metrics {
+  border-top-color: var(--line);
+}
+
+.metric-divider,
+.session-divider {
+  color: var(--divider);
+}
+
+.trace-phase-rail {
+  background: var(--rail);
+}
+
+.trace-phase-rail .phase-follow {
+  background: var(--trace-follow);
+}
+
+/* Sessions & history */
+.session-editor {
+  background: var(--panel-soft);
+  border-color: var(--line);
+}
+
+.session-stat-badge,
+.session-review-stat {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+.session-review,
+.session-float-plot {
+  background: transparent;
+}
+
+.session-review-drills span:not(.session-review-drills-label) {
+  border-color: var(--line);
+}
+
+.session-float-dot {
+  fill: var(--surface);
+}
+
+/* Manual record */
+.record-status-item {
+  background: var(--panel-soft);
+  border-color: var(--line);
+}
+
+.record-status-badge {
+  background: var(--surface);
+}
+
+/* Training */
+.timer-bg {
+  stroke: var(--timer-track);
+}
+
+.cant-badge {
+  border-color: var(--text);
+}
+
+/* Alignment cards */
+.alignment-step {
+  color: var(--on-accent);
+}
+
+.alignment-preview-only {
+  background: var(--panel-soft);
+}
+
+/* ---- 12. Modal: index card ------------------------------------------------ */
+.modal-overlay {
+  background: var(--overlay);
+}
+
+.modal-content {
+  background: var(--surface);
+  border: 2px solid var(--text);
+}
+
+.modal-header {
+  background: var(--panel-soft);
+}
+
+/* ---- 13. Guide: code blocks stay terminal-dark ----------------------------- */
+.guide-content pre code {
+  color: #e9f2ed;
+}

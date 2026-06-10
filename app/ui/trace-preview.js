@@ -5,6 +5,17 @@ const PREVIEW_SCALE_FIT = 0.9;
 const PREVIEW_RING_INSET = 0.43;
 const PREVIEW_CANVAS_PAD = 3;
 
+// Follow-through is drawn in a pale tint on the classic dark theme; a theme
+// stylesheet can override it via --trace-follow for light backgrounds.
+const FOLLOW_COLOR_DEFAULT = "rgba(230, 244, 239, 0.5)";
+let followColor = FOLLOW_COLOR_DEFAULT;
+
+function refreshFollowColor() {
+  followColor =
+    getComputedStyle(document.documentElement).getPropertyValue("--trace-follow").trim() ||
+    FOLLOW_COLOR_DEFAULT;
+}
+
 function findReleaseIndex(data, thresholdG = 12.0) {
   let releaseIdx = 0;
   let maxG = 0;
@@ -61,7 +72,7 @@ function phaseForIndex(index, releaseIdx, hasRelease, length) {
 function phaseColor(phase) {
   if (phase === "release") return "#FF5D73";
   if (phase === "break") return "#FFBE5C";
-  if (phase === "follow") return "rgba(230, 244, 239, 0.5)";
+  if (phase === "follow") return followColor;
   return "#30E39B";
 }
 
@@ -187,6 +198,7 @@ export function drawTraceTargetPreview(canvas, tracePayload, options = {}) {
   }
 
   const thresholdG = options.thresholdG ?? 12;
+  refreshFollowColor();
   const data = decimateTrace(tracePayload);
   const { ctx, side, cx, cy, maxRadius } = prepareCanvas(canvas);
 

@@ -6,6 +6,17 @@ import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=shot-store-9
 
 const TARGET_COLORS = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
 
+// Marker colors that must flip with the page theme (white on the classic dark
+// canvas, ink on light themes). Falls back to the classic palette when the
+// --trace-* variables are not defined.
+function canvasMarkerInk() {
+  const styles = getComputedStyle(document.documentElement);
+  return {
+    dotRing: styles.getPropertyValue("--trace-dot-ring").trim() || "#FFFFFF",
+    crosshair: styles.getPropertyValue("--trace-crosshair").trim() || "rgba(255, 255, 255, 0.6)",
+  };
+}
+
 // Stats Helper Functions
 function mean(values) {
   if (!values.length) return 0;
@@ -191,6 +202,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
 
     ctx.clearRect(0, 0, w, h);
 
+    const markerInk = canvasMarkerInk();
     const cx = w / 2;
     const cy = h / 2;
     const maxRadius = Math.min(w, h) * 0.45;
@@ -236,12 +248,12 @@ export function mountTraining({ store, telemetry, el, bus }) {
         ctx.beginPath();
         ctx.arc(lx, ly, 6, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = "#FFFFFF";
+        ctx.strokeStyle = markerInk.dotRing;
         ctx.lineWidth = 1.5;
         ctx.stroke();
 
         // Crosshair for live dot
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
+        ctx.strokeStyle = markerInk.crosshair;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(lx - 10, ly);
@@ -300,7 +312,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
 
       // Draw final reference crosshair on the center of average float
       ctx.fillStyle = "#FF5D73";
-      ctx.strokeStyle = "#FFFFFF";
+      ctx.strokeStyle = markerInk.dotRing;
       ctx.beginPath();
       ctx.arc(cx, cy, 4, 0, Math.PI * 2);
       ctx.fill();
