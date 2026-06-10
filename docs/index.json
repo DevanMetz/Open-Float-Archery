@@ -18,6 +18,12 @@
       "name": "Quick Start",
       "id": "quick-start",
       "path": "docs/quick-start.md"
+    },
+    {
+      "type": "file",
+      "name": "Feature Status",
+      "id": "feature-status",
+      "path": "docs/feature-status.md"
     }
   ]
 }

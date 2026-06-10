@@ -1,25 +1,98 @@
-# Open-Float-Archery
+# OpenFloat Archery
 
-OpenFloat Archery is a local-first browser dashboard plus Zephyr/NCS firmware
-for bow-mounted IMU telemetry on the Seeed XIAO nRF54L15 Sense.
+**Open-source bow telemetry you can build in an afternoon and run entirely in
+your browser.** OpenFloat pairs a tiny BLE sensor (Seeed XIAO nRF54L15 Sense,
+Zephyr/NCS firmware) with a local-first web dashboard that streams ~1110 Hz IMU
+data, detects shots, and scores aiming hold, release, and follow-through — no
+app store, no account, and no cloud required.
 
-## Open the Web App
+🌐 **Hosted app:** [openfloatarchery.com](https://openfloatarchery.com) ·
+🚀 **[Quick Start](docs/quick-start.md)** ·
+🧩 **[Feature Status](docs/feature-status.md)** ·
+🏗 **[Architecture Blueprint](Blueprint.md)** ·
+🎛 **[BLE Commands](docs/reference/ble-commands.md)**
 
-Serve the repo root over localhost so native ES modules and Web Bluetooth are
-available:
+<p align="center">
+  <img src="docs/images/hero-shot-trace.webp" width="420"
+       alt="A shot is fired and the phase-colored Pin Float trace appears with its Float Score">
+</p>
+
+---
+
+## Try It — No Hardware Needed
+
+The hosted app at **[openfloatarchery.com](https://openfloatarchery.com)** loads
+with demo shots from real OpenFloat captures, so you can explore shot review,
+replay, scoring, and session analysis before building anything. It runs fully
+offline once loaded (PWA).
+
+**Already have a sensor?** Serve the repo root over localhost so native ES
+modules and Web Bluetooth are available, then open it in Chrome or Edge:
 
 ```powershell
 python -m http.server 4178
 ```
 
-Then open:
-
 ```text
 http://localhost:4178/
 ```
 
-Use Chrome or Edge for Web Bluetooth. A BLE sensor is required to stream live
-telemetry; connect it from the status badge in the header.
+Connect the sensor from the status badge in the header to start streaming live
+telemetry.
+
+**Building a sensor from scratch?** The [Quick Start](docs/quick-start.md) walks
+through the ~1 hour first build: parts list, firmware toolchain, flashing, and
+first calibration. Firmware build/flash/verify detail lives in
+[`firmware/BUILDING.md`](firmware/BUILDING.md).
+
+<!-- 📸 IMAGE SPOT 2 of 5 — SENSOR PHOTO — docs/images/sensor-mounted-riser.jpg
+     A clear, well-lit photo of the XIAO sensor mounted on your bow's riser
+     (or stabilizer). Show scale — the whole point is how tiny it is.
+     Suggested: ~1200 px wide JPG.
+     When ready, delete this comment and uncomment the line below. -->
+<!-- ![The OpenFloat sensor mounted on a compound bow riser](docs/images/sensor-mounted-riser.jpg) -->
+
+## What It Does
+
+A short tour of the shipped capabilities — see **[Feature Status](docs/feature-status.md)**
+for the full, detailed inventory and **[Blueprint.md](Blueprint.md)** for
+architecture and design intent.
+
+**Firmware** runs the LSM6DS3TR-C at 3332 Hz ODR via an interrupt-driven FIFO
+watermark, averaging to a ~1110 Hz BLE stream of 29-byte frames carrying
+on-device Madgwick quaternions plus an on-chip microphone envelope byte. It
+detects shots with a recoil-validated impulse threshold, persists a lifetime
+shot count and the newest 100 shot records to RRAM, and replays buffered traces
+to the browser on reconnect. The default config is battery-safe; a UART overlay
+adds USB bench logs.
+
+**Browser dashboard** is local-first and offline-capable (PWA). It renders a
+calibrated bubble level and 3D bow visualizer, phase-colored Pin Float shot
+review with replay scrubber and shot comparison, an independent open-source
+0–100 Float Score, Steady Aim hold training, automatic practice-session
+grouping, a Bow Shop 3D customizer, full local backup/restore, and an optional
+self-hosted Supabase sync that never gates local use.
+
+<!-- 📸 IMAGE SPOT 3 of 5 — LIVE DASHBOARD — docs/images/dashboard-live.png
+     Screenshot of the dashboard while connected and streaming: bubble level,
+     3D bow visualizer, live rate (~1110 Hz), and the acoustic envelope meter
+     visible in the header. Suggested: full-window PNG, ~1400 px wide.
+     When ready, delete this comment and uncomment the line below. -->
+<!-- ![Live dashboard: bubble level, 3D bow visualizer, and ~1110 Hz telemetry](docs/images/dashboard-live.png) -->
+
+<!-- 📸 IMAGE SPOT 4 of 5 — SHOT REVIEW — docs/images/shot-review-pin-float.png
+     Screenshot of Pin Float trace review on a saved shot: phase-colored trace
+     (green hold / amber-red release / gray follow-through), 1-sigma ellipse,
+     release reticle, replay scrubber, and the Float Score breakdown.
+     When ready, delete this comment and uncomment the line below. -->
+<!-- ![Pin Float shot review: phase-colored trace, sigma ellipse, replay scrubber, and Float Score](docs/images/shot-review-pin-float.png) -->
+
+<!-- 📸 IMAGE SPOT 5 of 5 — TRAINING & SESSIONS — docs/images/steady-aim-session.png
+     Screenshot of either the Steady Aim drill mid-hold (live tracing +
+     steadiness scoring) or a Saved Shots session summary with the Float Score
+     progression plot — whichever looks best. A side-by-side of both also
+     works. When ready, delete this comment and uncomment the line below. -->
+<!-- ![Steady Aim hold training and practice session review](docs/images/steady-aim-session.png) -->
 
 ## Repository Layout
 
@@ -34,130 +107,9 @@ telemetry; connect it from the status badge in the header.
   follow-through trace verifier.
 - `Blender/` and `FreeCAD/` contain visual/mechanical assets used by the app and
   enclosure work.
+- `docs/` is the documentation site source (Quick Start, Feature Status, and
+  BLE command reference) plus the README images in `docs/images/`.
 - `Blueprint.md` is the detailed architecture and implementation status.
-
-## Current Firmware Status
-
-- IMU raw-register FIFO path runs the LSM6DS3TR-C at 3332 Hz ODR, read via an
-  interrupt-driven FIFO watermark on INT1 (P0.02). (An earlier experiment used
-  the 6664 Hz max ODR, but the 1 MHz I2C bus could not drain it without ~1/s
-  FIFO overruns that corrupted a sample around each overrun.)
-- Each output frame averages 3 raw samples (~0.9 ms), giving ~1110 distinct
-  averaged frames/s; no frames are duplicated to pad the rate.
-- Shot detection persists a lifetime shot count to RRAM (Zephyr Settings/ZMS),
-  restores it on boot, and notifies the web app on every increment (and on
-  connect). Correct it over BLE with `shotset:<n>` or clear with `shotreset`.
-- Firmware keeps the newest 100 compact shot records in nonvolatile storage and
-  uploads them to the browser on reconnect. The web app acknowledges each shot
-  only after IndexedDB save, then firmware frees that stored slot. Every shot is
-  queued the moment it is detected (even while connected), so a dropped live
-  shot notification is recovered via the same ack/retry path without a
-  reconnect. The nonvolatile write is deferred a few seconds and skipped when
-  the browser acks in time, so RRAM is written only when a live frame was lost.
-- Buffered shot traces now freeze after a configurable follow-through delay
-  (default 1.5 s, set over BLE with `followms:<ms>`) so stored traces include
-  both pre-shot hold and post-release recovery. Firmware trace points and
-  browser `shot_traces` records now store microphone envelope samples (`micAmp`
-  per motion point plus a full-rate `mic_series` window on connected shots).
-- Fresh firmware defaults disconnected deep sleep to 300 s. Existing persisted
-  settings can override it; update devices with `sleeptime:<s>` or the dashboard
-  sleep slider.
-- The default firmware config is battery-safe and disables the USB UART console
-  so the XIAO nRF54L15 can boot from Li-ion battery power. For USB bench logs,
-  build with the `firmware/prj_uart.conf` overlay.
-- BLE notifications batch six 29-byte frames (on-board quaternions plus a
-  microphone peak-envelope byte) into 174-byte notifications. The same 29-byte
-  envelope also carries shot, count-sync, storage-status, stored-shot, and
-  trace-chunk frames.
-- **On-Chip Microphone Envelope**: The XIAO Sense PDM microphone runs at 16 kHz
-  in a dedicated audio thread. Audio is read in **14-sample blocks** (~1143
-  envelope updates/s), aligned with the ~1110 Hz IMU/BLE stream. A
-  noise-floor-subtracted peak follower with a **5 ms decay** packs a scaled
-  envelope byte into each live BLE frame (offset 28, firmware scale divisor 3,
-  range 0–255) for dashboard acoustic metering without extra bandwidth.
-- Latest Windows/Bleak validation received 28,670 sequential frames with zero
-  sequence loss over 25.5 s; warm-up-excluded rate was about 1129 Hz, with
-  0 FIFO overruns, 0 resyncs, 0 outlier frames, and 100% distinct frames
-  (|a| held 0.814-1.179 g).
-- CPU load during the interrupt-driven loop measured about 35% active, leaving
-  about 65% idle (down from ~51% with busy-polling).
-- **On-Chip Battery Monitoring**: Exposes standard BLE Battery Service (BAS, UUID `0x180F`) and Level characteristic (`0x2A19`). Measures battery level percentage from pin `P1.14/AIN7_VBAT` (divider $2.0$) using the dynamic power switch regulator `vbat_pwr` (`P1.15`) to save power.
-- **Bow Orientation Calibration**: Supports zeroing pitch and roll calibration values via the control BLE command `zero` or browser dashboard button. Offsets are saved persistently in Settings RRAM (`"cant_offset"`, `"pitch_offset"`) and loaded automatically on boot.
-- **Configurable Wake-up & Sleep Settings**: Allows tuning wake-up sensitivity (`wakesens:<g>`), deep sleep timeout (`sleeptime:<s>`), and active sleep movement sensitivity (`sleepsens:<g>`) via BLE commands, stored in Settings RRAM.
-- **Release Recoil Signature Filtering**: Checks gyroscope dynamic magnitude squared ($\ge 1.5\text{ rad/s}$ / $85^\circ\text{/s}$ minimum recoil velocity) during acceleration peaks to filter out accidental arrow bumps, bow drops, or setting the device down.
-
-## Current Browser Dashboard Status
-
-- Live calibration views include a calibrated digital bubble level and a 3D bow
-  orientation visualizer. Both apply the current zero offsets before rendering,
-  so a properly zeroed bow appears level.
-- **On-Device Orientation Processing**: Consumes high-rate Madgwick filter quaternions directly from BLE notifications, avoiding client-side complementary filter lag.
-- **Live Acoustic Envelope Meter**: When connected, the dashboard header shows a
-  clicker/volume bar driven by the firmware microphone envelope byte in each live
-  frame (~1110/s). The meter reflects the on-device peak follower (5 ms decay),
-  not raw PCM.
-- Pin Float shot review shows phase-colored traces (green aiming hold,
-  amber/red release break, and gray follow-through), centered on the point of
-  shot detection so the release reticle sits at the center of the target face.
-- **OpenFloat Float Score**: The browser computes an independent, open-source
-  0-100 form score from trace data. The score blends hold stability, release
-  quality, follow-through control, and level consistency. It is versioned in
-  saved shots as `openfloat-float-score-v1` so future scoring changes can be
-  compared safely.
-- The shot review canvas also renders a 1-sigma float ellipse, release reticle,
-  and an animated replay marker. The replay controls live in their own sections
-  below the target (not overlapping it): a Trace Review banner and a full-width
-  scrubber with a circular play/pause button, a phase-colored timeline, an
-  adjustable replay speed (0.25×-4×), and scroll-wheel (desktop) or pinch
-  (mobile) zoom directly on the trace.
-- **Live Shot Traces**: While the device is connected, the browser captures each
-  shot's trace from the live stream and saves it shortly after the
-  follow-through window completes. Connected captures keep about 3.5 seconds of
-  pre-shot hold plus the configured follow-through window, while the 20-second
-  rolling buffer is only used as browser-side retention headroom. BLE shot
-  events include the live sample sequence from detection, so connected traces
-  align motion and microphone envelope data to the device-side release sample
-  instead of browser notification receipt time. The device itself only stores
-  traces for shots taken while disconnected, which then upload on reconnect.
-- **Session Review**: Saved shots are grouped into practice sessions and each
-  session summarizes average Float Score, best and worst shot, consistency
-  trend, shots by drill label, and the biggest recurring issue. A compact plot
-  shows Float Score progression across the session.
-- **Battery Badge**: When the BLE device exposes the standard Battery Service,
-  the dashboard reads Battery Level and displays it in the header.
-- **Stored-Shot Upload Indicator**: When a device that buffered shots while
-  disconnected reconnects, an inline "Uploading N" status appears beside the
-  live rate and shot counter and counts down as the backlog transfers.
-- **BLE Link Recovery**: If the radio link drops, the firmware retries advertising and the browser attempts to reconnect automatically.
-  - **Firmware-side Retry**: Upon disconnection, the firmware schedules BLE advertising via a delayable work queue after a 250 ms delay, retrying every 1000 ms if the stack is not ready, and cancels retries once a connection is re-established.
-  - **Stale Link Cleanup**: If a BLE client disables live notifications without closing the connection, the firmware disconnects that idle central after a short grace period so the sensor can advertise again.
-  - **Browser-side Reconnection**: If the link drops unexpectedly, the web app updates the status badge to `"BLE reconnecting..."` and retries connection up to 6 times using an exponential backoff strategy (`Math.min(1000 * 2^attempts, 8000)` ms, i.e., 1s, 2s, 4s, 8s, 8s, 8s). If reconnection succeeds, the live stream is restored; if all 6 attempts fail, it reverts to `"Disconnected"`, prompting the user to manually click the status badge to search again.
-- **Configurable Device Settings**: The Settings view can send threshold,
-  wake/sleep, trace buffer, follow-through, BLE stream-rate, NVS buffering, and
-  auto-sleep commands over BLE. Settings are cached locally and persisted on the
-  device when firmware supports the command.
-- **Bow Profile Manager**: Organize and save stabilizer configurations, draw weights, and notes under custom bow profiles.
-- **Automatic Practice Sessions**: Saved shots are grouped into collapsible sessions automatically by timestamp — any gap longer than 30 minutes starts a new session. Rename any session and assign the bow used directly from the Saved Shots view.
-- **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
-- **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
-- **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
-- **Steady Aim Training**: The Steady Aim tab runs a guided hold drill with a
-  5-second draw countdown, configurable hold duration (5–30 s), live Pin Float
-  tracing, steadiness scoring (sigma ellipse, cant/pitch deviation, max float),
-  coaching feedback, and optional save to IndexedDB as a labeled practice shot.
-- **Bow Shop 3D Customization**: The Bow Shop tab loads `Blender/BowModel.glb`
-  and creates color pickers from the named compound-bow materials in the GLB.
-  Current bow materials are `string`, `cam`, `riser`, `grip`, and `text`; color
-  choices are cached locally and applied to the dashboard and alignment 3D
-  previews. The GLB also contains a named `MCU` object, which the app detaches
-  from the scene and uses as the live XIAO module preview.
-- **Consolidated Settings**: Full-width Power Management and Telemetry & Buffer cards sit at the top, followed by a combined, collapsible **Sensor & 3D Alignment** card that pairs the sensor mount axis mapping (which changes the data) with the 3D model display (visual only) under one shared 3D preview. Connecting and zeroing live on the header badge and dashboard, so a separate connection card is no longer needed.
-- **Offline PWA Support**: Registers a service worker to cache application assets (markup, styling, scripts, and the 3D model GLB), enabling full offline operation at remote archery ranges.
-- **Local Data Backup & Restore**: A Settings card exports every locally stored shot, trace, session override, and bow profile to a single JSON file, and imports one back (merging by key). Fully local — no account needed — so field-test data is portable between devices and easy to back up.
-- **Single Shot Export**: You can export individual shots along with their telemetry trace to a standalone JSON file. This is accessible via the "Export Shot" button in the Trace Review banner on the Dashboard, or via the export icon (📤) next to any shot in the Saved Shots history list. This makes it easy to share specific shots for analysis.
-- **Optional Supabase Sync**: The Cloud modal accepts a Supabase URL and anon key
-  for self-hosted sync. Local IndexedDB writes remain the source of truth and are
-  queued before upload; leaving cloud settings blank keeps the app local-only.
 
 ## BLE Telemetry Test Client
 
@@ -225,34 +177,16 @@ OpenFloat GATT UUIDs, add `--nus`:
 python tools\openfloat_ble_client.py --nus --name-prefix OpenFloat --every
 ```
 
-## Supabase Schema Updates
+## Optional Cloud Sync
 
-If cloud sync reports unsupported `shots` fields, add the current local shot
-metadata columns in the Supabase SQL editor:
-
-```sql
-alter table public.shots
-  add column if not exists device_shot_id integer,
-  add column if not exists shot_score numeric,
-  add column if not exists stored_upload boolean default false,
-  add column if not exists hold_stability numeric,
-  add column if not exists release_quality numeric,
-  add column if not exists follow_through numeric,
-  add column if not exists level_consistency numeric,
-  add column if not exists score_version text;
-
-alter table public.shot_traces
-  add column if not exists source text,
-  add column if not exists has_mic boolean default false,
-  add column if not exists mic_sample_rate_hz numeric,
-  add column if not exists mic_series jsonb;
-
-create unique index if not exists shots_device_shot_id_unique
-  on public.shots (device_id, device_shot_id)
-  where device_shot_id is not null;
-
-notify pgrst, 'reload schema';
-```
+Cloud sync is optional and self-hosted; the app is fully usable local-only. To
+enable it, supply a Supabase URL and anon key in the app's Cloud modal. The
+authoritative, idempotent database schema (tables, columns, dedup index, and
+row-level security policies) lives in
+[`supabase/schema.sql`](supabase/schema.sql) — run that file in the Supabase SQL
+editor. It matches exactly what `app/telemetry/sync.js` uploads, so keep it as
+the single source of truth rather than copying SQL elsewhere; drift causes the
+sync adapter to silently drop unknown columns.
 
 ## Support the Project
 

@@ -16,11 +16,17 @@ memory/
 AGENTS.md
 **/AGENTS.md
 
+# Personal task list (local planning notes, not contributor docs)
+TODO.md
+
 # Blender backup files
 *.blend1
 
 # Large IMU capture logs (debug data, not source)
 *.csv
+
+# Raw video clips dropped in for README media conversion (renders live elsewhere)
+docs/images/*.mp4
 
 # Exported shot captures (personal practice data, not source)
 shots/
