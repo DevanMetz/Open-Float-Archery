@@ -406,6 +406,7 @@ static struct k_work sleep_sens_persist_work;
 static struct k_work offsets_persist_work;
 static struct k_work_delayable battery_measure_work;
 static volatile bool zero_requested;
+static volatile bool trigger_shot_requested;
 /* Set when a connected client subscribes, so the loop sends one count-sync
  * frame and the web app shows the persisted lifetime count immediately.
  */
@@ -2169,6 +2170,9 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 	if (!strcmp(command, "zero")) {
 		zero_requested = true;
 		printk("# BLE control: zero calibration requested\n");
+	} else if (!strcmp(command, "shottrigger")) {
+		trigger_shot_requested = true;
+		printk("# BLE control: shot trigger simulated\n");
 	} else if (!strncmp(command, "thresh:", strlen("thresh:"))) {
 		(void)set_shot_threshold_from_command(command);
 	} else if (!strcmp(command, "start")) {
@@ -3017,7 +3021,13 @@ int main(void)
 				last_activity_time_ms = k_uptime_get();
 			}
 
-			if (detect_shot(&avg_accel, &avg_gyro, uptime_us(), roll_deg,
+			bool simulate_shot = false;
+			if (trigger_shot_requested) {
+				trigger_shot_requested = false;
+				simulate_shot = true;
+			}
+
+			if (simulate_shot || detect_shot(&avg_accel, &avg_gyro, uptime_us(), roll_deg,
 					pitch_deg, yaw_deg)) {
 				shot_detected = true;
 				last_activity_time_ms = k_uptime_get();
