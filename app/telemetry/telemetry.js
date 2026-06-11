@@ -405,6 +405,32 @@ export class TelemetryStore {
     });
   }
 
+  // Newest shot record with this device_shot_id saved within the dedup
+  // window, or null. The 24 h window bounds how long a re-uploaded shot is
+  // treated as a duplicate, so a same-id shot after a firmware reset on a
+  // later day is still saved as new.
+  async findRecentShotByDeviceId(deviceShotId) {
+    const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+    try {
+      const shots = await getAll("shots");
+      const cutoff = Date.now() - DEDUP_WINDOW_MS;
+      let newest = null;
+      for (const record of shots) {
+        if (record.device_shot_id !== deviceShotId) continue;
+        const savedAt = Date.parse(record.timestamp);
+        if (!Number.isFinite(savedAt) || savedAt < cutoff) continue;
+        if (!newest || savedAt > Date.parse(newest.timestamp)) {
+          newest = record;
+        }
+      }
+      return newest;
+    } catch (err) {
+      // Dedup is best-effort; on a DB read failure fall through and save,
+      // matching the pre-dedup behavior.
+      return null;
+    }
+  }
+
   async onShot(shot) {
     const peakG = Math.hypot(shot.axMg, shot.ayMg, shot.azMg) / 1000;
     const shotTimeUs = this.elapsedUs;
@@ -427,6 +453,30 @@ export class TelemetryStore {
           duplicate: true,
         });
         return;
+      }
+
+      // 1b. Cross-connection dedup for stored re-uploads. If the live frame
+      //     was saved but the ack never reached the device (or the link
+      //     dropped first), the device re-uploads the shot on the next
+      //     connection, where connectionShotIds is empty. Match on
+      //     device_shot_id against recently saved shots only: shot_id restarts
+      //     after a firmware shotreset/reflash, so old records with the same
+      //     id must not swallow genuinely new shots.
+      if (shot.stored && shot.shotId != null) {
+        const recentMatch = await this.findRecentShotByDeviceId(shot.shotId);
+        if (recentMatch) {
+          this.bus.emit(
+            "log",
+            `Stored shot id ${shot.shotId} already saved at ${recentMatch.timestamp}; re-acknowledging.`,
+          );
+          this.connectionShotIds.add(shot.shotId);
+          this.bus.emit("shot-saved", {
+            shotId: shot.shotId,
+            stored: true,
+            duplicate: true,
+          });
+          return;
+        }
       }
 
       this.bus.emit(

@@ -480,6 +480,12 @@ static struct vec3 last_shot_accel;
 static struct stored_shot last_shot_record;
 static uint16_t last_shot_sequence;
 static struct stored_shot_log stored_shot_log;
+/*
+ * Guards stored_shot_log: appended by the main IMU loop, drained by shotack
+ * on the Bluetooth RX thread, and snapshotted by the persist handlers on the
+ * system workqueue. Hold only for short RAM copies, never across RRAM writes.
+ */
+static K_MUTEX_DEFINE(shot_log_mutex);
 
 #define TRACE_CAPACITY 1000
 
@@ -607,6 +613,7 @@ static void schedule_trace_freeze(uint16_t shot_id_value)
 
 static void stored_shot_append(const struct stored_shot *shot)
 {
+	k_mutex_lock(&shot_log_mutex, K_FOREVER);
 	if (stored_shot_log.count >= STORED_SHOT_CAPACITY) {
 		memmove(&stored_shot_log.shots[0], &stored_shot_log.shots[1],
 			(STORED_SHOT_CAPACITY - 1) *
@@ -615,10 +622,14 @@ static void stored_shot_append(const struct stored_shot *shot)
 	}
 
 	stored_shot_log.shots[stored_shot_log.count++] = *shot;
+	k_mutex_unlock(&shot_log_mutex);
 }
 
 static bool stored_shot_remove(uint16_t shot_id)
 {
+	bool removed = false;
+
+	k_mutex_lock(&shot_log_mutex, K_FOREVER);
 	for (uint16_t i = 0; i < stored_shot_log.count; i++) {
 		if (stored_shot_log.shots[i].shot_id != shot_id) {
 			continue;
@@ -631,19 +642,26 @@ static bool stored_shot_remove(uint16_t shot_id)
 					sizeof(stored_shot_log.shots[0]));
 		}
 		stored_shot_log.count--;
-		return true;
+		removed = true;
+		break;
 	}
+	k_mutex_unlock(&shot_log_mutex);
 
-	return false;
+	return removed;
 }
 
-static const struct stored_shot *stored_shot_first(void)
+static bool stored_shot_peek_first(struct stored_shot *out)
 {
-	if (stored_shot_log.count == 0) {
-		return NULL;
-	}
+	bool have;
 
-	return &stored_shot_log.shots[0];
+	k_mutex_lock(&shot_log_mutex, K_FOREVER);
+	have = stored_shot_log.count > 0;
+	if (have) {
+		*out = stored_shot_log.shots[0];
+	}
+	k_mutex_unlock(&shot_log_mutex);
+
+	return have;
 }
 
 static int32_t scale_float(float value, float scale)
@@ -1585,14 +1603,31 @@ static void wake_sens_persist_work_handler(struct k_work *work)
 	}
 }
 
-static void shot_log_persist_work_handler(struct k_work *work)
+/*
+ * Snapshot the log under the mutex, then do the slow RRAM write unlocked so
+ * the high-rate IMU loop is never blocked behind settings_save_one(). Both
+ * persist handlers run on the system workqueue, so the static snapshot is
+ * never used concurrently.
+ */
+static void persist_shot_log_snapshot(void)
 {
-	int rc = settings_save_one("openfloat/shotlog", &stored_shot_log,
-				   sizeof(stored_shot_log));
+	static struct stored_shot_log snapshot;
+	int rc;
 
+	k_mutex_lock(&shot_log_mutex, K_FOREVER);
+	snapshot = stored_shot_log;
+	k_mutex_unlock(&shot_log_mutex);
+
+	rc = settings_save_one("openfloat/shotlog", &snapshot,
+			       sizeof(snapshot));
 	if (rc) {
 		printk("# shot log save failed: %d\n", rc);
 	}
+}
+
+static void shot_log_persist_work_handler(struct k_work *work)
+{
+	persist_shot_log_snapshot();
 }
 
 /*
@@ -1608,11 +1643,7 @@ static void shot_log_reconcile_work_handler(struct k_work *work)
 		return;
 	}
 
-	int rc = settings_save_one("openfloat/shotlog", &stored_shot_log,
-				   sizeof(stored_shot_log));
-	if (rc) {
-		printk("# shot log save failed: %d\n", rc);
-	}
+	persist_shot_log_snapshot();
 	ble_send_storage_status = true;
 }
 
@@ -2060,11 +2091,7 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		zero_requested = true;
 		printk("# BLE control: zero calibration requested\n");
 	} else if (!strncmp(command, "thresh:", strlen("thresh:"))) {
-		ble_notify_enabled = true;
-		ble_send_count_sync = true;
-		ble_send_storage_status = true;
-		stored_shot_upload_in_progress = false;
-		stored_shot_upload_requested = true;
+		(void)set_shot_threshold_from_command(command);
 	} else if (!strcmp(command, "start")) {
 		ble_notify_enabled = true;
 		ble_send_count_sync = true;
@@ -2085,7 +2112,9 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		shot_count = 0;
 		shot_id = 0;
 		last_shot_accel = (struct vec3){ 0 };
+		k_mutex_lock(&shot_log_mutex, K_FOREVER);
 		stored_shot_log.count = 0;
+		k_mutex_unlock(&shot_log_mutex);
 		stored_shot_upload_in_progress = false;
 		stored_shot_upload_requested = false;
 		ble_send_count_sync = true;
@@ -2117,8 +2146,6 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 			printk("# BLE control: stored shot ack ignored: id=%d\n",
 			       value);
 		}
-	} else if (!strncmp(command, "thresh:", strlen("thresh:"))) {
-		(void)set_shot_threshold_from_command(command);
 	} else if (!strncmp(command, "wakesens:", strlen("wakesens:"))) {
 		const char *value_str = command + strlen("wakesens:");
 		char *end;
@@ -2540,7 +2567,7 @@ static bool notify_openfloat_shot_event(uint8_t type)
 
 static void notify_next_stored_shot(void)
 {
-	const struct stored_shot *shot;
+	struct stored_shot shot;
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
 	int err;
 
@@ -2549,13 +2576,12 @@ static void notify_next_stored_shot(void)
 		return;
 	}
 
-	shot = stored_shot_first();
-	if (!shot) {
+	if (!stored_shot_peek_first(&shot)) {
 		stored_shot_upload_requested = false;
 		return;
 	}
 
-	build_openfloat_stored_shot_binary(frame, shot);
+	build_openfloat_stored_shot_binary(frame, &shot);
 	err = bt_gatt_notify(NULL, &openfloat_svc.attrs[2], frame,
 			     sizeof(frame));
 	if (err) {
@@ -2564,7 +2590,7 @@ static void notify_next_stored_shot(void)
 		return;
 	}
 
-	stored_shot_upload_id = shot->shot_id;
+	stored_shot_upload_id = shot.shot_id;
 	stored_shot_upload_in_progress = true;
 	printk("# stored shot upload sent: id=%u pending=%u\n",
 	       stored_shot_upload_id, stored_shot_log.count);
