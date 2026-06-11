@@ -1184,6 +1184,55 @@ async function initOrientationVisualizer(el, store) {
   const bow = await loadBowModel(THREE);
   scene.add(bow);
 
+  function quaternionFromZyxEulerDeg(rollDeg, pitchDeg, yawDeg) {
+    return new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(radians(rollDeg), radians(pitchDeg), radians(yawDeg), "ZYX"),
+    );
+  }
+
+  function finiteQuaternion(qw, qx, qy, qz) {
+    if (![qw, qx, qy, qz].every((v) => Number.isFinite(Number(v)))) return null;
+    const q = new THREE.Quaternion(Number(qx), Number(qy), Number(qz), Number(qw));
+    if (q.lengthSq() <= 0) return null;
+    return q.normalize();
+  }
+
+  // Map the sensor frame (roll about X, pitch about Y, yaw about Z) onto the
+  // bow model frame (roll about X, pitch about Z, yaw about Y) as a proper
+  // rotation. Returns null when the invert/swap toggles describe a mirror,
+  // which has no quaternion equivalent — callers fall back to the Euler path.
+  function sensorToModelBasis(rollSign, pitchSign, swapRollPitch) {
+    if ((swapRollPitch ? 1 : -1) * rollSign * pitchSign !== 1) return null;
+    const m = new THREE.Matrix4();
+    if (swapRollPitch) {
+      // sensor x -> rollSign * model z, sensor y -> pitchSign * model x, sensor z -> model y
+      m.set(
+        0, pitchSign, 0, 0,
+        0, 0, 1, 0,
+        rollSign, 0, 0, 0,
+        0, 0, 0, 1,
+      );
+    } else {
+      // sensor x -> rollSign * model x, sensor y -> pitchSign * model z, sensor z -> model y
+      m.set(
+        rollSign, 0, 0, 0,
+        0, 0, 1, 0,
+        0, pitchSign, 0, 0,
+        0, 0, 0, 1,
+      );
+    }
+    return new THREE.Quaternion().setFromRotationMatrix(m);
+  }
+
+  // Remove the twist component about the model Y (yaw) axis, keeping the
+  // roll/pitch swing. Singularity-free replacement for zeroing the yaw angle.
+  function stripYawTwist(q) {
+    const twist = new THREE.Quaternion(0, q.y, 0, q.w);
+    if (twist.lengthSq() <= 1e-12) return q.clone();
+    twist.normalize();
+    return q.clone().multiply(twist.conjugate());
+  }
+
   let targetRoll = 0;
   let targetPitch = 0;
   let targetYaw = 0;
@@ -1195,11 +1244,14 @@ async function initOrientationVisualizer(el, store) {
   let modelSwapRollPitch = false;
   let modelIgnoreYaw = false;
   let viewRoll = 0;
+  let targetQuat = null;
+  let visualQuat = null;
 
   store.subscribe((state) => {
     let roll = state.roll;
     let pitch = state.pitch;
     let yaw = state.yaw || 0;
+    let sampleQuat = finiteQuaternion(state.qw, state.qx, state.qy, state.qz);
 
     if (state.reviewMode && state.reviewTrace && state.reviewTrace.length > 0) {
       const progress = Math.max(0, Math.min(1, state.replayProgress ?? 1));
@@ -1208,6 +1260,7 @@ async function initOrientationVisualizer(el, store) {
       roll = pt.roll || 0;
       pitch = pt.pitch || 0;
       yaw = pt.yaw || 0;
+      sampleQuat = finiteQuaternion(pt.qw, pt.qx, pt.qy, pt.qz);
     }
 
     targetRoll = calibratedAngle(roll, state.cantOffset);
@@ -1240,6 +1293,27 @@ async function initOrientationVisualizer(el, store) {
     if (el.calOffsetYawValue) {
       el.calOffsetYawValue.textContent = (Number(state.yawOffset) || 0).toFixed(1);
     }
+
+    // Quaternion-driven attitude (gimbal-lock free). The Euler angles above
+    // remain the source for the numeric readouts and for the fallback path.
+    targetQuat = null;
+    const basisQuat = sensorToModelBasis(modelRollSign, modelPitchSign, modelSwapRollPitch);
+    if (sampleQuat && basisQuat) {
+      const offsetQuat = quaternionFromZyxEulerDeg(
+        Number(state.cantOffset) || 0,
+        Number(state.pitchOffset) || 0,
+        Number(state.yawOffset) || 0,
+      );
+      const calibrated = offsetQuat.conjugate().multiply(sampleQuat);
+      let modelQuat = basisQuat
+        .clone()
+        .multiply(calibrated)
+        .multiply(basisQuat.clone().conjugate());
+      if (modelIgnoreYaw) {
+        modelQuat = stripYawTwist(modelQuat);
+      }
+      targetQuat = modelQuat;
+    }
   });
 
   function resize() {
@@ -1263,21 +1337,29 @@ async function initOrientationVisualizer(el, store) {
     const activeYaw = modelIgnoreYaw ? 0 : targetYaw;
     visualYaw = blendAngleDeg(visualYaw, activeYaw, 0.16);
 
-    /*
-     * The imported bow's natural attitude axes are the reverse of the old
-     * procedural placeholder: cant lives on model X, while pitch lives on model
-     * Z. The swap toggle now acts as a compatibility escape hatch.
-     */
-    const modelXAngle = modelSwapRollPitch
-      ? modelPitchSign * radians(visualPitch)
-      : modelRollSign * radians(visualRoll);
-    const modelZAngle = modelSwapRollPitch
-      ? modelRollSign * radians(visualRoll)
-      : modelPitchSign * radians(visualPitch);
+    if (targetQuat) {
+      if (!visualQuat) visualQuat = targetQuat.clone();
+      else visualQuat.slerp(targetQuat, 0.16);
+      bow.quaternion.copy(visualQuat);
+    } else {
+      visualQuat = null;
+      /*
+       * Euler fallback for samples without a quaternion, or when the
+       * invert/swap toggles describe a mirror. The imported bow's natural
+       * attitude axes are the reverse of the old procedural placeholder: cant
+       * lives on model X, while pitch lives on model Z.
+       */
+      const modelXAngle = modelSwapRollPitch
+        ? modelPitchSign * radians(visualPitch)
+        : modelRollSign * radians(visualRoll);
+      const modelZAngle = modelSwapRollPitch
+        ? modelRollSign * radians(visualRoll)
+        : modelPitchSign * radians(visualPitch);
 
-    bow.rotation.x = modelXAngle;
-    bow.rotation.z = modelZAngle;
-    bow.rotation.y = radians(visualYaw);
+      bow.rotation.x = modelXAngle;
+      bow.rotation.z = modelZAngle;
+      bow.rotation.y = radians(visualYaw);
+    }
     guide.rotation.z = 0;
 
     if (controls) controls.update();

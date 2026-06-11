@@ -14,7 +14,7 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/dashboard.js?v=shot-store-123";
+} from "./ui/dashboard.js?v=shot-store-124";
 import {
   drawEmptyTargetPreview,
   drawTraceTargetPreview,
@@ -28,7 +28,7 @@ import { mountTraining } from "./ui/training.js?v=shot-store-99";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-117";
 
-const APP_BUILD = "shot-store-123";
+const APP_BUILD = "shot-store-124";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
