@@ -84,10 +84,13 @@ export function parseBinaryShotFrame(bytes, offset = 0) {
   );
   const type = view.getUint8(3);
   if (type !== 2 && type !== 4) return null;
+  const lowShotId = view.getUint16(6, true);
+  const shotId =
+    type === 4 ? lowShotId + view.getUint16(26, true) * 0x10000 : lowShotId;
 
   return {
     shotCount: view.getUint16(4, true),
-    shotId: view.getUint16(6, true),
+    shotId,
     axMg: view.getInt16(8, true),
     ayMg: view.getInt16(10, true),
     azMg: view.getInt16(12, true),
@@ -97,7 +100,7 @@ export function parseBinaryShotFrame(bytes, offset = 0) {
     yawDeg: view.getInt16(20, true) / ANGLE_CDEG,
     clickerDtMs: view.getUint16(22, true),
     impactDtMs: view.getUint16(24, true),
-    shotSequence: view.getUint16(26, true),
+    shotSequence: type === 2 ? view.getUint16(26, true) : null,
     stored: type === 4,
   };
 }
@@ -133,8 +136,27 @@ export function parseBinaryStorageFrame(bytes, offset = 0) {
   return {
     shotCount: view.getUint16(4, true),
     pending: view.getUint16(6, true),
-    uploadShotId: view.getUint16(8, true),
+    uploadShotId: view.getUint16(8, true) + view.getUint16(14, true) * 0x10000,
     requested: view.getUint16(10, true) === 1,
+    dropped: view.getUint16(12, true),
+    retryAttempts: view.getUint16(16, true),
+  };
+}
+
+export function parseBinaryTraceStatusFrame(bytes, offset = 0) {
+  if (bytes.length - offset < BINARY_FRAME_LEN) return null;
+  if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
+
+  const view = new DataView(
+    bytes.buffer,
+    bytes.byteOffset + offset,
+    BINARY_FRAME_LEN,
+  );
+  if (view.getUint8(3) !== 7) return null;
+
+  return {
+    shotId: view.getUint16(4, true) + view.getUint16(6, true) * 0x10000,
+    status: view.getUint8(8),
   };
 }
 
@@ -170,7 +192,8 @@ export function parseBinaryTraceFrame(bytes, offset = 0) {
 // Decode any binary frame, dispatching on the type byte.
 // Returns { kind: "sample", sample } | { kind: "shot", shot }
 //       | { kind: "count", count } | { kind: "storage", storage }
-//       | { kind: "trace", trace } | null.
+//       | { kind: "trace", trace } | { kind: "trace-status", traceStatus }
+//       | null.
 export function decodeBinaryFrame(bytes, offset = 0) {
   if (bytes.length - offset < BINARY_FRAME_LEN) return null;
   if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
@@ -191,7 +214,10 @@ export function decodeBinaryFrame(bytes, offset = 0) {
     const trace = parseBinaryTraceFrame(bytes, offset);
     return trace && { kind: "trace", trace };
   }
+  if (bytes[offset + 3] === 7) {
+    const traceStatus = parseBinaryTraceStatusFrame(bytes, offset);
+    return traceStatus && { kind: "trace-status", traceStatus };
+  }
   const sample = parseBinaryFrame(bytes, offset);
   return sample && { kind: "sample", sample };
 }
-

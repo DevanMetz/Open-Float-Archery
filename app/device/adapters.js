@@ -10,11 +10,15 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { BINARY_FRAME_LEN, decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-118";
+import { BINARY_FRAME_LEN, decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-121";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
 const OPENFLOAT_CONTROL = "8f3f3b10-0f5a-4f4c-9a2d-000000000003";
+
+function sameLow16ShotId(a, b) {
+  return a != null && b != null && (Number(a) & 0xffff) === (Number(b) & 0xffff);
+}
 
 class BaseAdapter {
   constructor(bus) {
@@ -295,14 +299,24 @@ export class BleAdapter extends BaseAdapter {
       }
       if (decoded && decoded.kind === "storage") {
         decodedCount += 1;
-        this.log(
-          `Device stored shots pending: ${decoded.storage.pending} ` +
-            `(shot count ${decoded.storage.shotCount}).`,
-        );
+        const parts = [
+          `Device stored shots pending: ${decoded.storage.pending}`,
+          `shot count ${decoded.storage.shotCount}`,
+        ];
+        if (decoded.storage.dropped > 0) {
+          parts.push(`dropped ${decoded.storage.dropped}`);
+        }
+        if (decoded.storage.retryAttempts > 1 && decoded.storage.uploadShotId) {
+          parts.push(`retry ${decoded.storage.retryAttempts} for ${decoded.storage.uploadShotId}`);
+        }
+        this.log(`${parts[0]} (${parts.slice(1).join(", ")}).`);
         this.pendingStoredShots = decoded.storage.pending;
         this.bus.emit("upload-status", {
           pending: decoded.storage.pending,
           shotCount: decoded.storage.shotCount,
+          dropped: decoded.storage.dropped,
+          uploadShotId: decoded.storage.uploadShotId,
+          retryAttempts: decoded.storage.retryAttempts,
         });
         if (this.pendingStoredShots > 0) {
           this._startStoredShotWatchdog();
@@ -312,8 +326,26 @@ export class BleAdapter extends BaseAdapter {
       }
       if (decoded && decoded.kind === "trace") {
         decodedCount += 1;
+        if (
+          this.currentTraceDownloadShotId != null &&
+          decoded.trace.shotId !== this.currentTraceDownloadShotId &&
+          sameLow16ShotId(decoded.trace.shotId, this.currentTraceDownloadShotId)
+        ) {
+          decoded.trace = {
+            ...decoded.trace,
+            shotId: this.currentTraceDownloadShotId,
+          };
+        }
         this.bus.emit("trace-chunk", decoded.trace);
         this._onTraceChunkReceived(decoded.trace);
+        continue;
+      }
+      if (decoded && decoded.kind === "trace-status") {
+        decodedCount += 1;
+        if (decoded.traceStatus.status === 0) {
+          this.log(`No firmware trace available for shot ${decoded.traceStatus.shotId}; acking metadata.`);
+          this._completeTraceDownload(decoded.traceStatus.shotId);
+        }
         continue;
       }
     }
@@ -411,11 +443,11 @@ export class BleAdapter extends BaseAdapter {
     this.log(`Starting serialized trace download for shot ${shotId}...`);
     this.requestTrace(shotId);
     
-    // 2.5-second fallback timer if device doesn't respond or has no trace
+    // Fallback if an older firmware does not send a missing-trace status frame.
     this.traceTimer = setTimeout(() => {
       this.log(`Trace download timeout for shot ${shotId}. Proceeding to ack.`);
       this._completeTraceDownload(shotId);
-    }, 2500);
+    }, 1500);
   }
 
   _onTraceChunkReceived(trace) {

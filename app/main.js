@@ -3,7 +3,7 @@
 
 import { createStore, EventBus } from "./core/store.js";
 import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-105";
-import { createAdapter } from "./device/adapters.js?v=shot-store-118";
+import { createAdapter } from "./device/adapters.js?v=shot-store-121";
 import {
   MOUNT_ORIENTATIONS,
   cloneMountAxes,
@@ -28,7 +28,7 @@ import { mountTraining } from "./ui/training.js?v=shot-store-99";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-117";
 
-const APP_BUILD = "shot-store-120";
+const APP_BUILD = "shot-store-121";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
