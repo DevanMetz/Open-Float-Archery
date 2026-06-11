@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { BINARY_FRAME_LEN, decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-121";
+import { decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-123";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
@@ -18,6 +18,25 @@ const OPENFLOAT_CONTROL = "8f3f3b10-0f5a-4f4c-9a2d-000000000003";
 
 function sameLow16ShotId(a, b) {
   return a != null && b != null && (Number(a) & 0xffff) === (Number(b) & 0xffff);
+}
+
+function eulerDegToQuaternion(rollDeg, pitchDeg, yawDeg) {
+  const halfRoll = (rollDeg * Math.PI) / 360;
+  const halfPitch = (pitchDeg * Math.PI) / 360;
+  const halfYaw = (yawDeg * Math.PI) / 360;
+  const cr = Math.cos(halfRoll);
+  const sr = Math.sin(halfRoll);
+  const cp = Math.cos(halfPitch);
+  const sp = Math.sin(halfPitch);
+  const cy = Math.cos(halfYaw);
+  const sy = Math.sin(halfYaw);
+
+  return {
+    qw: cr * cp * cy + sr * sp * sy,
+    qx: sr * cp * cy - cr * sp * sy,
+    qy: cr * sp * cy + sr * cp * sy,
+    qz: cr * cp * sy - sr * sp * cy,
+  };
 }
 
 class BaseAdapter {
@@ -64,6 +83,10 @@ export class DemoAdapter extends BaseAdapter {
 
     this.timer = setInterval(() => {
       const t = performance.now() / 1000;
+      const rollDeg = Math.cos(t * 3) * 7;
+      const pitchDeg = Math.sin(t * 2.4) * 5;
+      const yawDeg = Math.sin(t * 0.8) * 24;
+      const quat = eulerDegToQuaternion(rollDeg, pitchDeg, yawDeg);
       this.emitSample({
         source: "demo",
         protocol: 1,
@@ -76,7 +99,10 @@ export class DemoAdapter extends BaseAdapter {
         gxDps: Math.sin(t * 5) * 18,
         gyDps: Math.cos(t * 4) * 12,
         gzDps: Math.sin(t * 3) * 8,
-        yawDeg: Math.sin(t * 0.8) * 24,
+        ...quat,
+        rollDeg,
+        pitchDeg,
+        yawDeg,
         flags: 0,
         micAmp: Math.round((Math.sin(t * 8) + 1) * 40 + Math.random() * 20),
       });
@@ -92,7 +118,7 @@ export class DemoAdapter extends BaseAdapter {
   }
 }
 
-// Web Bluetooth: the firmware notifies batched 29-byte binary frames.
+// Web Bluetooth: the firmware notifies batched compact binary frames.
 export class BleAdapter extends BaseAdapter {
   constructor(bus) {
     super(bus);
@@ -274,8 +300,12 @@ export class BleAdapter extends BaseAdapter {
     const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
 
     let decodedCount = 0;
-    for (let offset = 0; offset + BINARY_FRAME_LEN <= bytes.length; offset += BINARY_FRAME_LEN) {
+    for (let offset = 0; offset + 4 <= bytes.length;) {
       const decoded = decodeBinaryFrame(bytes, offset);
+      if (!decoded || !decoded.byteLength) {
+        break;
+      }
+      offset += decoded.byteLength;
       if (decoded && decoded.kind === "sample") {
         if (this.sampleCount === 0) this.log("BLE frames flowing.");
         this.sampleCount += 1;

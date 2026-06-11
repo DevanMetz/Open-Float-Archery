@@ -27,6 +27,12 @@ function maxAbs(values) {
   return values.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
 }
 
+function pointMotionDps(pt) {
+  const rotDps = Number(pt.rotDps);
+  if (Number.isFinite(rotDps)) return Math.abs(rotDps);
+  return Math.hypot(pt.gx || 0, pt.gy || 0, pt.gz || 0);
+}
+
 function traceSlice(trace, start, end) {
   return trace.slice(Math.max(0, start), Math.max(0, end));
 }
@@ -39,7 +45,7 @@ function releaseIndexForTrace(trace) {
   for (let i = 0; i < trace.length; i++) {
     const pt = trace[i];
     const accelDelta = Math.abs(Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0) - 1);
-    const gyroMag = Math.hypot(pt.gx || 0, pt.gy || 0, pt.gz || 0);
+    const gyroMag = pointMotionDps(pt);
     const motion = accelDelta * 35 + gyroMag;
     if (motion > bestMotion) {
       bestMotion = motion;
@@ -81,12 +87,12 @@ export function computeFloatScoreFromTrace(trace, options = {}) {
   const holdRollStd = stdDev(holdWindow.map((pt) => pt.roll || 0));
   const holdPitchStd = stdDev(holdWindow.map((pt) => pt.pitch || 0));
   const holdGyroAvg = average(
-    holdWindow.map((pt) => Math.hypot(pt.gx || 0, pt.gy || 0, pt.gz || 0)),
+    holdWindow.map(pointMotionDps),
   );
   const holdStability = clamp(100 - (holdRollStd + holdPitchStd) * 18 - holdGyroAvg * 0.55, 0, 100);
 
   const releaseGyroPeak = maxAbs(
-    releaseWindow.map((pt) => Math.hypot(pt.gx || 0, pt.gy || 0, pt.gz || 0)),
+    releaseWindow.map(pointMotionDps),
   );
   const releaseAccelPeak = maxAbs(
     releaseWindow.map((pt) => Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0) - 1),
@@ -94,7 +100,7 @@ export function computeFloatScoreFromTrace(trace, options = {}) {
   const releaseQuality = clamp(100 - releaseGyroPeak * 0.9 - releaseAccelPeak * 18, 0, 100);
 
   const followGyroAvg = average(
-    followWindow.map((pt) => Math.hypot(pt.gx || 0, pt.gy || 0, pt.gz || 0)),
+    followWindow.map(pointMotionDps),
   );
   const followRollTravel = maxAbs(followWindow.map((pt) => (pt.roll || 0) - (points[releaseIdx]?.roll || 0)));
   const followPitchTravel = maxAbs(followWindow.map((pt) => (pt.pitch || 0) - (points[releaseIdx]?.pitch || 0)));

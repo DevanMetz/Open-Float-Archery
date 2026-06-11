@@ -28,7 +28,9 @@ NUS_RX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 FRAME_SIZE = 29
+LIVE_V2_FRAME_SIZE = 20
 FRAME_STRUCT = struct.Struct("<2sBBHHhhhhhhhhhhB")
+LIVE_V2_STRUCT = struct.Struct("<2sBBHHbbbhhhhB")
 
 
 @dataclass
@@ -114,18 +116,75 @@ class OpenFloatParser:
                 return samples
             if start > 0:
                 del self.binary_buffer[:start]
-            if len(self.binary_buffer) < FRAME_SIZE:
+            if len(self.binary_buffer) < 4:
                 return samples
 
-            frame = bytes(self.binary_buffer[:FRAME_SIZE])
-            del self.binary_buffer[:FRAME_SIZE]
+            frame_len = binary_frame_len(self.binary_buffer)
+            if frame_len is None:
+                del self.binary_buffer[:2]
+                continue
+            if len(self.binary_buffer) < frame_len:
+                return samples
+
+            frame = bytes(self.binary_buffer[:frame_len])
+            del self.binary_buffer[:frame_len]
             sample = parse_binary_frame(frame)
             if sample:
                 samples.append(sample)
 
 
+def binary_frame_len(buf: bytes | bytearray) -> Optional[int]:
+    if len(buf) < 4 or buf[:2] != b"OF":
+        return None
+    protocol = buf[2]
+    frame_type = buf[3]
+    if protocol == 2 and frame_type == 1:
+        return LIVE_V2_FRAME_SIZE
+    return FRAME_SIZE
+
+
 def parse_binary_frame(frame: bytes) -> Optional[Sample]:
-    if len(frame) != FRAME_SIZE or frame[:2] != b"OF":
+    if frame[:2] != b"OF":
+        return None
+
+    if len(frame) == LIVE_V2_FRAME_SIZE and frame[2] == 2 and frame[3] == 1:
+        (
+            _magic,
+            protocol,
+            frame_type,
+            sequence_u16,
+            dt_us,
+            ax_deci_g,
+            ay_deci_g,
+            az_deci_g,
+            qw_q10k,
+            qx_q10k,
+            qy_q10k,
+            qz_q10k,
+            mic_raw,
+        ) = LIVE_V2_STRUCT.unpack(frame)
+        return Sample(
+            protocol=protocol,
+            frame_type=frame_type,
+            sequence=sequence_u16,
+            uptime_us=None,
+            dt_us=dt_us,
+            ax_mg=ax_deci_g * 100,
+            ay_mg=ay_deci_g * 100,
+            az_mg=az_deci_g * 100,
+            gx_dps=0.0,
+            gy_dps=0.0,
+            gz_dps=0.0,
+            qw=qw_q10k / 10000.0,
+            qx=qx_q10k / 10000.0,
+            qy=qy_q10k / 10000.0,
+            qz=qz_q10k / 10000.0,
+            flags=0,
+            checksum_ok=True,
+            mic_amp=mic_raw,
+        )
+
+    if len(frame) != FRAME_SIZE:
         return None
 
     (
@@ -281,7 +340,7 @@ async def choose_notify_uuid(client, requested_uuid: str) -> str:
         for char in service.characteristics
         if "notify" in char.properties
     ]
-    if len(notify_chars) == 1:
+    if len(notify_chars) == 1 and notify_chars[0].uuid.lower() != "00002a19-0000-1000-8000-00805f9b34fb":
         char = notify_chars[0]
         print(f"Requested notify UUID not found; using only notify characteristic {char.uuid}")
         return char.uuid
@@ -396,7 +455,7 @@ async def run_client(args) -> None:
                 print(format_sample(sample, rate_hz, lost))
                 last_print = now
 
-    client = BleakClient(address)
+    client = BleakClient(address, winrt={"use_cached_services": False})
     try:
         await client.connect()
         print(f"Connected to {address}")

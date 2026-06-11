@@ -50,10 +50,6 @@
           <span aria-hidden="true">🛒</span>
           <span>Store</span>
         </a>
-        <div id="batteryBadge" class="status battery-status hidden" title="Battery Level">
-          <span class="battery-icon">🔋</span>
-          <span id="batteryText">--%</span>
-        </div>
         <div id="syncBadge" class="status sync-local clickable" title="Configure Cloud Sync">
           <span class="dot"></span>
           <span id="syncText">Local-Only</span>
@@ -61,6 +57,9 @@
         <div id="statusBadge" class="status clickable" title="Connect Sensor">
           <span class="dot"></span>
           <span id="statusText">Disconnected</span>
+          <span id="batteryBadge" class="battery-status hidden" title="Battery Level">
+            <span id="batteryText">--%</span>
+          </span>
         </div>
       </div>
     </header>
@@ -182,8 +181,13 @@
                 </button>
                 <button id="discardRecordBtn" class="toggle-btn discard-btn hidden" title="Discard recording">Discard</button>
                 <span class="chart-toggle-divider"></span>
-                <button id="viewTraceBtn" class="toggle-btn">Motion</button>
+                <button id="viewTraceBtn" class="toggle-btn">Quaternion</button>
                 <button id="viewTargetBtn" class="toggle-btn active">Pin Float</button>
+                <span class="chart-toggle-divider" id="liveDurationDivider"></span>
+                <div class="live-duration-container" id="liveDurationContainer" title="Length of live data shown on plots">
+                  <label for="liveDurationSlider">Live: <strong id="liveDurationValue">10</strong>s</label>
+                  <input type="range" id="liveDurationSlider" min="3" max="30" step="1" value="10">
+                </div>
               </div>
             </div>
             <canvas id="traceCanvas"></canvas>
@@ -795,6 +799,6 @@
     })();
   </script>
 
-  <script type="module" src="app/main.js?v=shot-store-120"></script>
+  <script type="module" src="app/main.js?v=shot-store-123"></script>
 </body>
 </html>

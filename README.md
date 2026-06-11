@@ -59,8 +59,9 @@ for the full, detailed inventory and **[Blueprint.md](Blueprint.md)** for
 architecture and design intent.
 
 **Firmware** runs the LSM6DS3TR-C at 3332 Hz ODR via an interrupt-driven FIFO
-watermark, averaging to a ~1110 Hz BLE stream of 29-byte frames carrying
-on-device Madgwick quaternions plus an on-chip microphone envelope byte. It
+watermark, averaging to a ~1110 Hz BLE stream of 20-byte live frames carrying
+8-bit accel, on-device Madgwick quaternions, and an on-chip microphone envelope
+byte. It
 detects shots with a recoil-validated impulse threshold, persists a lifetime
 shot count and the newest 100 shot records to RRAM, and replays buffered traces
 to the browser on reconnect. The default config is battery-safe; a UART overlay

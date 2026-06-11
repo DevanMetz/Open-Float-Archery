@@ -262,9 +262,10 @@ static void stop_pdm(void)
 #define SERIAL_PRINT_DIVIDER 100
 #define BLE_NOTIFY_DIVIDER 1
 #define OPENFLOAT_BLE_FRAME_SIZE 29
+#define OPENFLOAT_BLE_LIVE_FRAME_SIZE 20
 #define OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION 6
 #define OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE \
-	(OPENFLOAT_BLE_FRAME_SIZE * OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION)
+	(OPENFLOAT_BLE_LIVE_FRAME_SIZE * OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION)
 /* Reserve frame[28] for the stride byte (set on chunk 0). Payload therefore
  * spans frame[9..27]; using FRAME_SIZE-9 would let the chunk-0 memcpy overwrite
  * the stride byte the decoder relies on. */
@@ -282,6 +283,7 @@ static void stop_pdm(void)
 #define SCALE_CDEG 100.0f
 #define SCALE_QUAT 1000000.0f
 #define SCALE_MG 101.97162129779283f
+#define SCALE_ACCEL_DECI_G 1.0197162129779283f
 #define SCALE_GYRO_MDPS (RAD_TO_DEG * 1000.0f)
 #define SCALE_GYRO_DPS_Q4 (RAD_TO_DEG * 16.0f)
 #define LSM6DSL_REG_WHO_AM_I 0x0f
@@ -1966,6 +1968,19 @@ static int16_t clamp_i16(int32_t value)
 	return (int16_t)value;
 }
 
+static int8_t clamp_i8(int32_t value)
+{
+	if (value > INT8_MAX) {
+		return INT8_MAX;
+	}
+
+	if (value < INT8_MIN) {
+		return INT8_MIN;
+	}
+
+	return (int8_t)value;
+}
+
 static uint16_t checksum16(const uint8_t *data, size_t len)
 {
 	uint16_t sum = 0;
@@ -1998,31 +2013,29 @@ static void uart_write_bytes(const uint8_t *data, size_t len)
 	}
 }
 
-static void build_openfloat_live_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
+static void build_openfloat_live_binary(uint8_t frame[OPENFLOAT_BLE_LIVE_FRAME_SIZE],
 					uint32_t sequence,
 					uint32_t dt_us,
 					const struct vec3 *accel,
-					const struct vec3 *gyro,
 					const struct quat *q,
 					uint16_t flags)
 {
-	memset(frame, 0, OPENFLOAT_BLE_FRAME_SIZE);
+	(void)flags;
+
+	memset(frame, 0, OPENFLOAT_BLE_LIVE_FRAME_SIZE);
 	frame[0] = 'O';
 	frame[1] = 'F';
-	frame[2] = 1; /* protocol version */
+	frame[2] = 2; /* protocol version */
 	frame[3] = 1; /* live raw sample */
 	put_u16_le(frame, 4, (uint16_t)sequence);
 	put_u16_le(frame, 6, (uint16_t)dt_us);
-	put_u16_le(frame, 8, (uint16_t)clamp_i16(scale_float(accel->x, SCALE_MG)));
-	put_u16_le(frame, 10, (uint16_t)clamp_i16(scale_float(accel->y, SCALE_MG)));
-	put_u16_le(frame, 12, (uint16_t)clamp_i16(scale_float(accel->z, SCALE_MG)));
-	put_u16_le(frame, 14, (uint16_t)clamp_i16(scale_float(gyro->x, SCALE_GYRO_DPS_Q4)));
-	put_u16_le(frame, 16, (uint16_t)clamp_i16(scale_float(gyro->y, SCALE_GYRO_DPS_Q4)));
-	put_u16_le(frame, 18, (uint16_t)clamp_i16(scale_float(gyro->z, SCALE_GYRO_DPS_Q4)));
-	put_u16_le(frame, 20, (uint16_t)clamp_i16(scale_float(q->w, 10000.0f)));
-	put_u16_le(frame, 22, (uint16_t)clamp_i16(scale_float(q->x, 10000.0f)));
-	put_u16_le(frame, 24, (uint16_t)clamp_i16(scale_float(q->y, 10000.0f)));
-	put_u16_le(frame, 26, (uint16_t)clamp_i16(scale_float(q->z, 10000.0f)));
+	frame[8] = (uint8_t)clamp_i8(scale_float(accel->x, SCALE_ACCEL_DECI_G));
+	frame[9] = (uint8_t)clamp_i8(scale_float(accel->y, SCALE_ACCEL_DECI_G));
+	frame[10] = (uint8_t)clamp_i8(scale_float(accel->z, SCALE_ACCEL_DECI_G));
+	put_u16_le(frame, 11, (uint16_t)clamp_i16(scale_float(q->w, 10000.0f)));
+	put_u16_le(frame, 13, (uint16_t)clamp_i16(scale_float(q->x, 10000.0f)));
+	put_u16_le(frame, 15, (uint16_t)clamp_i16(scale_float(q->y, 10000.0f)));
+	put_u16_le(frame, 17, (uint16_t)clamp_i16(scale_float(q->z, 10000.0f)));
 
 	int val_raw = (int)(audio_peak_raw / AUDIO_BLE_SCALE_DIVISOR);
 	if (val_raw < 0) {
@@ -2031,7 +2044,7 @@ static void build_openfloat_live_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 	if (val_raw > 255) {
 		val_raw = 255;
 	}
-	frame[28] = (uint8_t)val_raw;
+	frame[19] = (uint8_t)val_raw;
 }
 
 /*
@@ -2139,13 +2152,12 @@ static void build_openfloat_trace_status_binary(
 static void __maybe_unused write_openfloat_live_binary(uint32_t sequence,
 						       uint32_t dt_us,
 						       const struct vec3 *accel,
-						       const struct vec3 *gyro,
 						       const struct quat *q,
 						       uint16_t flags)
 {
-	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
+	uint8_t frame[OPENFLOAT_BLE_LIVE_FRAME_SIZE];
 
-	build_openfloat_live_binary(frame, sequence, dt_us, accel, gyro, q, flags);
+	build_openfloat_live_binary(frame, sequence, dt_us, accel, q, flags);
 	uart_write_bytes(frame, sizeof(frame));
 }
 
@@ -2830,8 +2842,8 @@ int main(void)
 	printk("# ui: user LED status, user button calibration\n");
 	printk("# ble: %s, batch %d averaged frames per notification\n",
 	       CONFIG_BT_DEVICE_NAME, OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION);
-	printk("# BLE live frame: %d bytes each, batched payload %d bytes, magic[2]='OF', proto u8, type u8, seq u16, dt_us u16, accel_mg int16[3], gyro_dps_q4 int16[3], quat_q14 int16[4]\n",
-	       OPENFLOAT_BLE_FRAME_SIZE,
+	printk("# BLE live frame: %d bytes each, batched payload %d bytes, magic[2]='OF', proto u8, type u8, seq u16, dt_us u16, accel_deci_g int8[3], quat_q10k int16[4], mic u8\n",
+	       OPENFLOAT_BLE_LIVE_FRAME_SIZE,
 	       OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE);
 	printk("# format: OFSHOT,proto,shot_id,uptime_us,ax_mg,ay_mg,az_mg,shot_count\n");
 
@@ -3133,11 +3145,11 @@ int main(void)
 
 			if ((telemetry_sequence % ble_stream_divider) == 0) {
 				offset = ble_payload_frames *
-					 OPENFLOAT_BLE_FRAME_SIZE;
+					 OPENFLOAT_BLE_LIVE_FRAME_SIZE;
 				build_openfloat_live_binary(
 					&ble_payload[offset],
 					telemetry_sequence, OUTPUT_DT_US * ble_stream_divider,
-					&avg_accel, &avg_gyro, &q, flags);
+					&avg_accel, &q, flags);
 				ble_payload_frames++;
 				if (ble_payload_frames >=
 				    OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION) {

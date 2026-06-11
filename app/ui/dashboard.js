@@ -254,6 +254,12 @@ function refreshCanvasInk() {
   };
 }
 
+function hasQuaternionSeries(data) {
+  return Array.isArray(data) && data.some((point) =>
+    ["qw", "qx", "qy", "qz"].every((key) => Number.isFinite(Number(point[key]))),
+  );
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -433,7 +439,7 @@ function drawCompareReviewTrace(ctx, {
   const replayCount = Math.max(2, Math.ceil(traceData.length * replayProgress));
   const visible = traceData.slice(0, replayCount);
   const mapPoint = (pt) => ({
-    x: cx + (((pt.roll || 0) - rollCenter) / normMaxDev) * displayScale,
+    x: cx - (((pt.roll || 0) - rollCenter) / normMaxDev) * displayScale,
     y: cy - (((pt.pitch || 0) - pitchCenter) / normMaxDev) * displayScale,
   });
 
@@ -517,7 +523,7 @@ function drawSigmaEllipse(ctx, points, mapPoint) {
 
   ctx.save();
   ctx.translate(center.x, center.y);
-  ctx.rotate(-angle);
+  ctx.rotate(angle);
   ctx.fillStyle = "rgba(48, 227, 155, 0.15)";
   ctx.strokeStyle = "rgba(48, 227, 155, 0.72)";
   ctx.lineWidth = 1.5;
@@ -1950,7 +1956,7 @@ export function mountDashboard({ store, telemetry, el }) {
         const displayScale = maxRadius * REVIEW_TARGET_SCALE_FIT * targetZoom;
         const primaryDrawScale = displayScale / primaryNormMaxDev;
         const mapPoint = (pt) => ({
-          x: cx + ((pt.roll || 0) - rollCenter) * primaryDrawScale,
+          x: cx - ((pt.roll || 0) - rollCenter) * primaryDrawScale,
           y: cy - ((pt.pitch || 0) - pitchCenter) * primaryDrawScale,
         });
 
@@ -1971,21 +1977,47 @@ export function mountDashboard({ store, telemetry, el }) {
 
         drawSigmaEllipse(ctx, holdData, mapPoint);
 
+        // Decimate visibleData for drawing when the point count exceeds the
+        // canvas pixel width — sub-pixel segments are invisible, so we keep
+        // at most ~2× the pixel width for smooth curves plus all phase-boundary
+        // and release points which must remain precise.
+        const maxDrawPts = Math.max(200, Math.round(w * 2));
+        let drawData = visibleData;
+        if (visibleData.length > maxDrawPts) {
+          const step = visibleData.length / maxDrawPts;
+          drawData = [];
+          let nextSlot = 0;
+          for (let i = 0; i < visibleData.length; i++) {
+            if (i >= nextSlot || i === visibleData.length - 1 || i === releaseIdx) {
+              drawData.push({ _origIdx: i, ...visibleData[i] });
+              nextSlot = i + step;
+            }
+          }
+        }
+
+        // Batch trace segments by phase colour — one beginPath/stroke per
+        // phase run instead of per-segment (~4 draw calls vs ~6000).
         ctx.lineWidth = 2.8;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-        for (let i = 1; i < visibleData.length; i++) {
-          const pt1 = visibleData[i - 1];
-          const pt2 = visibleData[i];
-          const p1 = mapPoint(pt1);
-          const p2 = mapPoint(pt2);
-          const phase = phaseForIndex(i, releaseIdx, hasRelease, data.length);
-          ctx.strokeStyle = phaseColor(phase);
-          ctx.beginPath();
-          ctx.moveTo(p1.x, p1.y);
-          ctx.lineTo(p2.x, p2.y);
-          ctx.stroke();
+
+        let curPhase = null;
+        for (let i = 1; i < drawData.length; i++) {
+          const origIdx = drawData[i]._origIdx ?? i;
+          const phase = phaseForIndex(origIdx, releaseIdx, hasRelease, data.length);
+          if (phase !== curPhase) {
+            // Flush previous run
+            if (curPhase !== null) ctx.stroke();
+            curPhase = phase;
+            ctx.strokeStyle = phaseColor(phase);
+            ctx.beginPath();
+            const prev = mapPoint(drawData[i - 1]);
+            ctx.moveTo(prev.x, prev.y);
+          }
+          const p = mapPoint(drawData[i]);
+          ctx.lineTo(p.x, p.y);
         }
+        if (curPhase !== null) ctx.stroke();
 
         if (hasRelease && visibleData.length > releaseIdx) {
           const releasePoint = mapPoint(data[releaseIdx]);
@@ -2114,9 +2146,27 @@ export function mountDashboard({ store, telemetry, el }) {
         } : undefined,
       );
 
-      drawSeries(ctx, data, "ax", cssVar("--green"), w, h, timeRangeUs);
-      drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h, timeRangeUs);
-      drawSeries(ctx, data, "az", cssVar("--amber"), w, h, timeRangeUs);
+      if (hasQuaternionSeries(data)) {
+        drawSeries(ctx, data, "qw", cssVar("--green"), w, h, timeRangeUs, 1);
+        drawSeries(ctx, data, "qx", cssVar("--cyan"), w, h, timeRangeUs, 1);
+        drawSeries(ctx, data, "qy", cssVar("--amber"), w, h, timeRangeUs, 1);
+        drawSeries(ctx, data, "qz", "#ff5d73", w, h, timeRangeUs, 1);
+        drawChartLegend(ctx, [
+          ["qw", cssVar("--green")],
+          ["qx", cssVar("--cyan")],
+          ["qy", cssVar("--amber")],
+          ["qz", "#ff5d73"],
+        ], w);
+      } else {
+        drawSeries(ctx, data, "ax", cssVar("--green"), w, h, timeRangeUs);
+        drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h, timeRangeUs);
+        drawSeries(ctx, data, "az", cssVar("--amber"), w, h, timeRangeUs);
+        drawChartLegend(ctx, [
+          ["ax", cssVar("--green")],
+          ["ay", cssVar("--cyan")],
+          ["az", cssVar("--amber")],
+        ], w);
+      }
       drawSequenceMarkers(ctx, data, w, h, state.reviewMode);
     }
 
@@ -2128,7 +2178,22 @@ export function mountDashboard({ store, telemetry, el }) {
   draw();
 }
 
-function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null) {
+function drawChartLegend(ctx, items, w) {
+  ctx.save();
+  ctx.font = "700 11px ui-monospace, Consolas, monospace";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  let x = 10;
+  for (const [label, color] of items) {
+    ctx.fillStyle = color;
+    ctx.fillText(label, x, 10);
+    x += Math.max(28, ctx.measureText(label).width + 14);
+    if (x > w - 32) break;
+  }
+  ctx.restore();
+}
+
+function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null, limit = 2) {
   if (data.length < 2) return;
 
   ctx.strokeStyle = color;
@@ -2136,20 +2201,76 @@ function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null) {
   ctx.beginPath();
   const maxIdx = data.length - 1;
   const useTime = !!(timeRangeUs && timeRangeUs.end > timeRangeUs.start);
-  for (let i = 0; i < data.length; i += 1) {
-    const tUs = Number(data[i].tUs);
-    const x =
-      useTime && Number.isFinite(tUs)
-        ? Math.max(
-            0,
-            Math.min(w, ((tUs - timeRangeUs.start) / (timeRangeUs.end - timeRangeUs.start)) * w),
-          )
-        : (i / maxIdx) * w;
-    const clamped = Math.max(-2, Math.min(2, data[i][key]));
-    const y = h / 2 - (clamped / 4) * h;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+
+  // When the dataset is much wider than the canvas, decimate with a min/max
+  // bucket strategy that preserves visual peaks while skipping sub-pixel detail.
+  const maxVerts = Math.max(200, Math.round(w * 2));
+  const step = data.length > maxVerts ? data.length / maxVerts : 1;
+
+  if (step <= 1) {
+    // No decimation needed — draw every point
+    for (let i = 0; i < data.length; i += 1) {
+      const tUs = Number(data[i].tUs);
+      const x =
+        useTime && Number.isFinite(tUs)
+          ? Math.max(
+              0,
+              Math.min(w, ((tUs - timeRangeUs.start) / (timeRangeUs.end - timeRangeUs.start)) * w),
+            )
+          : (i / maxIdx) * w;
+      const value = Number(data[i][key]);
+      const clamped = Number.isFinite(value)
+        ? Math.max(-limit, Math.min(limit, value))
+        : 0;
+      const y = h / 2 - (clamped / (limit * 2)) * h;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+  } else {
+    // Min-max bucket decimation: for each pixel-width bucket, emit the point
+    // with the minimum and maximum Y value to preserve peaks/troughs.
+    const xForIdx = (idx) => {
+      if (useTime) {
+        const tUs = Number(data[idx].tUs);
+        if (Number.isFinite(tUs)) {
+          return Math.max(0, Math.min(w, ((tUs - timeRangeUs.start) / (timeRangeUs.end - timeRangeUs.start)) * w));
+        }
+      }
+      return (idx / maxIdx) * w;
+    };
+    const yForIdx = (idx) => {
+      const value = Number(data[idx][key]);
+      const clamped = Number.isFinite(value)
+        ? Math.max(-limit, Math.min(limit, value))
+        : 0;
+      return h / 2 - (clamped / (limit * 2)) * h;
+    };
+
+    // First point
+    ctx.moveTo(xForIdx(0), yForIdx(0));
+
+    for (let b = 0; b < maxVerts; b++) {
+      const bStart = Math.round(b * step);
+      const bEnd = Math.min(data.length - 1, Math.round((b + 1) * step) - 1);
+      if (bStart > maxIdx) break;
+
+      let minY = Infinity, maxY = -Infinity, minIdx = bStart, maxIdx2 = bStart;
+      for (let j = bStart; j <= bEnd; j++) {
+        const y = yForIdx(j);
+        if (y < minY) { minY = y; minIdx = j; }
+        if (y > maxY) { maxY = y; maxIdx2 = j; }
+      }
+
+      // Emit min then max in index order to preserve waveform direction
+      const first = minIdx <= maxIdx2 ? minIdx : maxIdx2;
+      const second = minIdx <= maxIdx2 ? maxIdx2 : minIdx;
+      ctx.lineTo(xForIdx(first), yForIdx(first));
+      if (first !== second) {
+        ctx.lineTo(xForIdx(second), yForIdx(second));
+      }
+    }
   }
+
   ctx.stroke();
 }
 
@@ -2192,25 +2313,57 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
   };
   ctx.moveTo(0, bandBottom);
 
-  for (let i = 0; i < data.length; i += 1) {
-    const x = xForPoint(data[i], i);
-    const val = data[i][key] || 0;
-    const valHeight = (val / 255) * bandPixelHeight;
-    const y = bandBottom - valHeight;
-    ctx.lineTo(x, y);
+  // Decimate mic series when point count exceeds 2× canvas width
+  const maxVerts = Math.max(200, Math.round(w * 2));
+  const micStep = data.length > maxVerts ? data.length / maxVerts : 1;
+  const yForMicIdx = (idx) => {
+    const val = data[idx][key] || 0;
+    return bandBottom - (val / 255) * bandPixelHeight;
+  };
+
+  if (micStep <= 1) {
+    for (let i = 0; i < data.length; i += 1) {
+      ctx.lineTo(xForPoint(data[i], i), yForMicIdx(i));
+    }
+  } else {
+    for (let b = 0; b < maxVerts; b++) {
+      const bStart = Math.round(b * micStep);
+      const bEnd = Math.min(data.length - 1, Math.round((b + 1) * micStep) - 1);
+      if (bStart > maxIdx) break;
+      // Keep the max-amplitude (min Y) sample per bucket for the fill envelope
+      let bestIdx = bStart, bestY = Infinity;
+      for (let j = bStart; j <= bEnd; j++) {
+        const y = yForMicIdx(j);
+        if (y < bestY) { bestY = y; bestIdx = j; }
+      }
+      ctx.lineTo(xForPoint(data[bestIdx], bestIdx), bestY);
+    }
   }
   ctx.lineTo(w, bandBottom);
   ctx.closePath();
   ctx.fill();
 
   ctx.beginPath();
-  for (let i = 0; i < data.length; i += 1) {
-    const x = xForPoint(data[i], i);
-    const val = data[i][key] || 0;
-    const valHeight = (val / 255) * bandPixelHeight;
-    const y = bandBottom - valHeight;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+  if (micStep <= 1) {
+    for (let i = 0; i < data.length; i += 1) {
+      const x = xForPoint(data[i], i);
+      const y = yForMicIdx(i);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+  } else {
+    ctx.moveTo(xForPoint(data[0], 0), yForMicIdx(0));
+    for (let b = 0; b < maxVerts; b++) {
+      const bStart = Math.round(b * micStep);
+      const bEnd = Math.min(data.length - 1, Math.round((b + 1) * micStep) - 1);
+      if (bStart > maxIdx) break;
+      let bestIdx = bStart, bestY = Infinity;
+      for (let j = bStart; j <= bEnd; j++) {
+        const y = yForMicIdx(j);
+        if (y < bestY) { bestY = y; bestIdx = j; }
+      }
+      ctx.lineTo(xForPoint(data[bestIdx], bestIdx), bestY);
+    }
   }
   ctx.stroke();
 

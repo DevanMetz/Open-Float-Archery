@@ -2,8 +2,8 @@
 // own the transport lifecycle (connect / disconnect).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-105";
-import { createAdapter } from "./device/adapters.js?v=shot-store-121";
+import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-123";
+import { createAdapter } from "./device/adapters.js?v=shot-store-123";
 import {
   MOUNT_ORIENTATIONS,
   cloneMountAxes,
@@ -14,7 +14,7 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/dashboard.js?v=shot-store-120";
+} from "./ui/dashboard.js?v=shot-store-123";
 import {
   drawEmptyTargetPreview,
   drawTraceTargetPreview,
@@ -28,7 +28,7 @@ import { mountTraining } from "./ui/training.js?v=shot-store-99";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-117";
 
-const APP_BUILD = "shot-store-121";
+const APP_BUILD = "shot-store-123";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -87,7 +87,8 @@ const ELEMENT_IDS = [
   "exportDataBtn", "importDataBtn", "importDataInput", "dataBackupStatus",
   "sampleDataCard", "clearSamplesBtn", "sampleDataStatus",
   "toggleLevelTuneBtn", "levelTuneSection", "levelRangeSlider",
-  "levelRangeValue", "levelToleranceSlider", "levelToleranceValue"
+  "levelRangeValue", "levelToleranceSlider", "levelToleranceValue",
+  "liveDurationSlider", "liveDurationValue", "liveDurationContainer", "liveDurationDivider"
 ];
 
 const el = {};
@@ -191,6 +192,10 @@ const store = createStore({
   roll: 0,
   pitch: 0,
   yaw: 0,
+  qw: null,
+  qx: null,
+  qy: null,
+  qz: null,
   lastShotSummary: null,
   traceZoom: 1,
   replaySpeed: 1,
@@ -221,7 +226,8 @@ const store = createStore({
   streamRate: cached.streamRate !== undefined ? (Number(cached.streamRate) === 0 ? 55 : Number(cached.streamRate) === 1 ? 111 : Number(cached.streamRate) === 2 ? 222 : Number(cached.streamRate) === 3 ? 555 : 1110) : 1110,
   manualRecordingActive: false,
   manualRecordSamples: 0,
-  manualRecordElapsedSec: 0
+  manualRecordElapsedSec: 0,
+  liveTraceDuration: cached.liveTraceDuration !== undefined ? Number(cached.liveTraceDuration) : 10
 });
 
 function saveSettingsToCache() {
@@ -254,7 +260,8 @@ function saveSettingsToCache() {
       modelInvertPitch: store.get().modelInvertPitch,
       modelSwapRollPitch: store.get().modelSwapRollPitch,
       modelIgnoreYaw: store.get().modelIgnoreYaw,
-      bowMaterialColors: store.get().bowMaterialColors
+      bowMaterialColors: store.get().bowMaterialColors,
+      liveTraceDuration: store.get().liveTraceDuration
     };
     localStorage.setItem("openfloat_settings", JSON.stringify(settings));
   } catch (err) {
@@ -320,6 +327,10 @@ function initSettingsFromCache() {
     if (cached.levelTolerance !== undefined && el.levelToleranceSlider && el.levelToleranceValue) {
       el.levelToleranceSlider.value = cached.levelTolerance;
       el.levelToleranceValue.textContent = Number(cached.levelTolerance).toFixed(1);
+    }
+    if (cached.liveTraceDuration !== undefined && el.liveDurationSlider && el.liveDurationValue) {
+      el.liveDurationSlider.value = cached.liveTraceDuration;
+      el.liveDurationValue.textContent = cached.liveTraceDuration;
     }
   } catch (err) {
     console.error("Failed to init settings from cache:", err);
@@ -432,6 +443,16 @@ store.subscribe((state) => {
   if (el.viewTraceBtn && el.viewTargetBtn) {
     el.viewTraceBtn.classList.toggle("active", state.chartView === "line");
     el.viewTargetBtn.classList.toggle("active", state.chartView === "target");
+  }
+
+  if (el.liveDurationContainer && el.liveDurationDivider) {
+    const showDuration = !state.reviewMode;
+    el.liveDurationContainer.classList.toggle("hidden", !showDuration);
+    el.liveDurationDivider.classList.toggle("hidden", !showDuration);
+    if (showDuration && el.liveDurationSlider && el.liveDurationValue) {
+      el.liveDurationSlider.value = state.liveTraceDuration;
+      el.liveDurationValue.textContent = state.liveTraceDuration;
+    }
   }
 
     if (el.reviewCompareLegend) {
@@ -831,6 +852,15 @@ if (el.levelToleranceSlider && el.levelToleranceValue) {
     const val = Number(e.target.value);
     el.levelToleranceValue.textContent = val.toFixed(1);
     store.set({ levelTolerance: val });
+    saveSettingsToCache();
+  });
+}
+
+if (el.liveDurationSlider) {
+  el.liveDurationSlider.addEventListener("input", (e) => {
+    const val = Number(e.target.value);
+    if (el.liveDurationValue) el.liveDurationValue.textContent = val;
+    store.set({ liveTraceDuration: val });
     saveSettingsToCache();
   });
 }

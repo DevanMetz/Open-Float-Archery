@@ -210,7 +210,7 @@ export function drawTraceTargetPreview(canvas, tracePayload, options = {}) {
   const center = reviewTraceCenter(data, releaseIdx, hasRelease, holdData);
   const scale = computePreviewMapScale(data, center, maxRadius);
   const mapPoint = (pt) => ({
-    x: cx + ((pt.roll || 0) - center.roll) * scale,
+    x: cx - ((pt.roll || 0) - center.roll) * scale,
     y: cy - ((pt.pitch || 0) - center.pitch) * scale,
   });
 

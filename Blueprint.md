@@ -31,8 +31,8 @@ hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
 - Two telemetry transports carrying the same data:
   - **USB / Web Serial**: human-readable `OFRAW` text lines at ~11 Hz
     (every 100th output frame) plus `#` comment/banner lines and `OFSHOT` events.
-  - **BLE**: a custom GATT service notifying compact 29-byte binary frames (including on-device quaternions).
-    Live-sample frames are batched six per 174-byte notification; shot-event and
+  - **BLE**: a custom GATT service notifying compact binary frames, including 20-byte live quaternion frames.
+    Live-sample frames are batched six per 120-byte notification; shot-event and
     count-sync frames are sent as standalone notifications.
 - Browser dashboard: `index.html` connects over Web Bluetooth (BLE) from the
   header status badge. (The serial `OFRAW` decoder and demo adapter remain in
@@ -298,30 +298,32 @@ packet_footer:
 
 The browser converts fixed-point values into physical units using scale factors announced by the device.
 
-### Implemented v1 Live Frame
+### Implemented v2 Live Frame
 
 The CRC-footed packet above is the longer-term target. The current firmware
-   ships a **fixed 29-byte** frame (carrying on-board quaternions and raw audio envelope) whose meaning is selected
-   by the type byte. Live-sample frames (type 1) are batched six per BLE notification
-   (a **174-byte payload**); text serial emits `OFRAW` lines instead:
+   ships a compact **20-byte** live frame carrying 8-bit accel, on-board
+   quaternions, and a raw audio envelope. Live-sample frames (type 1) are batched
+   six per BLE notification (a **120-byte payload**); text serial emits `OFRAW`
+   lines instead:
 
 ```text
 offset 0  magic[2]      "OF"
-offset 2  proto u8       1
+offset 2  proto u8       2
 offset 3  type u8        1 (live raw sample)
 offset 4  sequence u16   little-endian, wraps at 65536
 offset 6  dt_us u16      group window (~900 us = SAMPLES_PER_OUTPUT / ODR)
-offset 8  accel_mg int16[3]   milli-g, scale 1 mg/LSB
-offset 14 gyro int16[3]       deg/s in Q4 fixed point (LSB = 1/16 deg/s)
-offset 20 quat int16[4]       quaternion (qw, qx, qy, qz) scaled by 10000 (LSB = 1/10000)
-offset 28 mic_amp u8          noise-gated peak envelope, scale 1/3.0f (0..255)
+offset 8  accel_deci_g int8[3] signed deci-g, scale 0.1 g/LSB
+offset 11 quat int16[4]        quaternion (qw, qx, qy, qz) scaled by 10000 (LSB = 1/10000)
+offset 19 mic_amp u8           noise-gated peak envelope, scale 1/3.0f (0..255)
 ```
 
 Each type-1 frame is the average of `SAMPLES_PER_OUTPUT` (3) raw IMU samples, so
 `dt_us` is the fixed group window rather than a per-sample delta. There is **no
-CRC and no flags field** in the frame; sequence is `u16`, not `u32`.
+CRC, no flags field, and no gyro vector** in the frame; sequence is `u16`, not
+`u32`. Browser scoring derives angular-rate magnitude from successive
+quaternions when gyro data is absent.
 
-The same 29-byte envelope carries other frame types, demultiplexed by the type
+The 29-byte envelope still carries other frame types, demultiplexed by the type
 byte (see section 8): **type 2** live shot events (shot_count u16 @4, shot_id
 u16 @6, accel_mg int16[3] @8, threshold_cg u16 @14, roll/pitch/yaw cdeg @16/@18/@20, clicker_dt_ms u16 @22 (unused/0), impact_dt_ms u16 @24 (unused/0), shot_sequence u16 @26, padded to 29 bytes)
 sent on each detected shot, **type 3** count-sync (same shot_count/shot_id
@@ -338,7 +340,7 @@ To support bow-mounted acoustic events (such as clicker drops and bow releases) 
   $$smooth\_mic_{t} = \max(peak\_raw, smooth\_mic_{t-dt} \cdot e^{-dt_s / \tau})$$
   where $dt_s$ is the audio block duration in seconds, and $\tau$ is the decay time constant set to **5 ms** (`AUDIO_ENVELOPE_TAU_S = 0.005`). Attack is instant; release is exponential, so clicker and release transients separate cleanly instead of smearing into a long tail.
 - **Continuous Tracking**: The telemetry builder does not clear the audio value or perform additional smoothing. The audio thread updates the envelope at ~1143 Hz; each ~1110 Hz live BLE frame samples the latest `audio_peak_raw` into `mic_amp`. The browser dashboard displays that byte directly (no extra client-side smoothing).
-- **Serialization**: The tracked `smooth_mic` float is scaled by $1/3$ (`AUDIO_BLE_SCALE_DIVISOR`) to fit in a single byte (0–255) and packed at byte offset 28 of the live binary frame.
+- **Serialization**: The tracked `smooth_mic` float is scaled by $1/3$ (`AUDIO_BLE_SCALE_DIVISOR`) to fit in a single byte (0–255) and packed at byte offset 19 of the v2 live binary frame.
 
 The serial `OFRAW` text line carries the same accel/gyro plus the on-device
 Euler angles, quaternion, and shot count; `OFSHOT` lines carry shot events.
@@ -476,13 +478,13 @@ Command Characteristic
 
 ```text
 Service          8f3f3b10-0f5a-4f4c-9a2d-000000000001 (Custom OpenFloat Service)
-Live             8f3f3b10-0f5a-4f4c-9a2d-000000000002  notify  (29-byte frames, typed)
+Live             8f3f3b10-0f5a-4f4c-9a2d-000000000002  notify  (20-byte live frames, 29-byte non-live frames, typed)
 Control          8f3f3b10-0f5a-4f4c-9a2d-000000000003  write   (ASCII commands)
 Battery Service  0000180f-0000-1000-8000-00805f9b34fb (Standard BLE BAS)
   Level Char     00002a19-0000-1000-8000-00805f9b34fb  read/notify (0-100%)
 ```
 
-The live characteristic carries six 29-byte frame types, demultiplexed by the
+The live characteristic carries typed binary frames, demultiplexed by the
 type byte: type 1 live sample (batched 6/notification), type 2 shot event (sent
 on each detected shot), type 3 count sync (sent on subscribe so the persisted
 lifetime count displays immediately without logging a shot), type 4 stored
@@ -596,9 +598,9 @@ device, protocol, telemetry, ui) and connects over **Web Bluetooth (BLE)** from
 the header status badge. (The serial `OFRAW` decoder and demo adapter remain in
 `app/device` but are no longer surfaced in the dashboard UI; the serial decoder
 still backs `tools/openfloat_ble_client.py`.) Web Bluetooth
-decodes the 29-byte binary frames (live samples batched in 174-byte
-notifications, plus shot-event, count-sync, storage-status, stored-shot, and
-trace-chunk frames); those BLE frames carry the on-board Madgwick filter
+decodes compact binary frames (20-byte live samples batched in 120-byte
+notifications, plus 29-byte shot-event, count-sync, storage-status, stored-shot,
+and trace-chunk frames); those BLE frames carry the on-board Madgwick filter
 quaternion, allowing the browser to extract and convert it to Euler angles
 directly, aligning it with the serial stream. The app also includes local bow
 profiles, timestamp-derived practice sessions, manual trace recording, saved
@@ -841,10 +843,10 @@ not begun. See the Implementation Status section near the top for detail.
 
 ### Phase 3: Full-Rate BLE Live Stream  [partial]
 
-- Implement packed binary live packets. (29-byte v1 frames containing quaternions; firmware batches 6
-  distinct averaged frames into 174-byte notifications, read via INT1 watermark.)
+- Implement packed binary live packets. (20-byte v2 frames containing 8-bit accel and quaternions; firmware batches 6
+  distinct averaged frames into 120-byte notifications, read via INT1 watermark.)
 - Tune BLE connection interval and MTU. (212-byte L2CAP TX MTU, 217-byte ACL
-  TX/RX buffers, and 7.5 ms preferred interval are in use; 174-byte BLE
+  TX/RX buffers, and 7.5 ms preferred interval are in use; 120-byte BLE
   payloads verified on Windows/Bleak at about 161 notifications/s with zero
   sequence loss.)
 - Detect packet loss in the browser and Python client. (Both use the sequence

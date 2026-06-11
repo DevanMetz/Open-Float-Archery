@@ -71,7 +71,7 @@ warning: BT_HCI_TX_STACK_SIZE was assigned 2048 but got 1536
 > The BLE config keeps a larger MTU / data-length than the Zephyr defaults
 > (`CONFIG_BT_BUF_ACL_RX_SIZE=217`, `CONFIG_BT_BUF_ACL_TX_SIZE=217`,
 > `CONFIG_BT_L2CAP_TX_MTU=212`) so the high-rate notification path can batch six
-> 29-byte frames into 174-byte notifications. The tiny defaults fragment or
+> 20-byte live frames into 120-byte notifications. The tiny defaults fragment or
 > block that path; very large 251-byte settings caused net-buffer faults during
 > bring-up. Retest boot and BLE if these values change.
 

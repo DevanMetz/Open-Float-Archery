@@ -13,7 +13,7 @@ import {
   computeFloatScoreFromTrace,
   computeLiveFloatScore,
   FLOAT_SCORE_VERSION,
-} from "./score.js?v=shot-store-99";
+} from "./score.js?v=shot-store-123";
 
 export const MAX_TRACE_POINTS = 1000;
 
@@ -130,6 +130,35 @@ function angleDistanceDeg(a, b) {
   return Math.abs(wrapAngleDeg(Number(a) - Number(b)));
 }
 
+function sampleQuaternion(sample) {
+  const qw = Number(sample.qw);
+  const qx = Number(sample.qx);
+  const qy = Number(sample.qy);
+  const qz = Number(sample.qz);
+  if (![qw, qx, qy, qz].every(Number.isFinite)) return null;
+  const mag = Math.hypot(qw, qx, qy, qz);
+  if (!Number.isFinite(mag) || mag <= 0) return null;
+  return {
+    qw: qw / mag,
+    qx: qx / mag,
+    qy: qy / mag,
+    qz: qz / mag,
+  };
+}
+
+function quaternionAngularSpeedDps(previous, current, dtUs) {
+  if (!previous || !current || !(dtUs > 0)) return 0;
+  const dot = Math.abs(
+    previous.qw * current.qw +
+      previous.qx * current.qx +
+      previous.qy * current.qy +
+      previous.qz * current.qz,
+  );
+  const clampedDot = clamp(dot, -1, 1);
+  const angleRad = 2 * Math.acos(clampedDot);
+  return (angleRad * 180) / Math.PI / (dtUs / 1000000);
+}
+
 export class TelemetryStore {
   constructor(bus, store) {
     this.bus = bus;
@@ -176,6 +205,7 @@ export class TelemetryStore {
     this.filteredRoll = 0;
     this.filteredPitch = 0;
     this.filteredYaw = 0;
+    this.lastQuat = null;
     this.trace.length = 0;
     this.shotTraceBuffer.length = 0;
     this.micRingBuffer.length = 0;
@@ -213,6 +243,10 @@ export class TelemetryStore {
       roll: 0,
       pitch: 0,
       yaw: 0,
+      qw: null,
+      qx: null,
+      qy: null,
+      qz: null,
       sample: null,
       formScore: null,
       holdStability: null,
@@ -303,6 +337,15 @@ export class TelemetryStore {
       yaw = this.filteredYaw;
     }
 
+    const quat = sampleQuaternion(sample);
+    const rawGyroMag = Math.hypot(sample.gxDps || 0, sample.gyDps || 0, sample.gzDps || 0);
+    const quatRateDps =
+      quat && sample.gyroAvailable === false
+        ? quaternionAngularSpeedDps(this.lastQuat, quat, sampleDtUs)
+        : 0;
+    const gyroMag = sample.gyroAvailable === false ? quatRateDps : rawGyroMag;
+    this.lastQuat = quat || null;
+
     const tracePoint = {
       ax,
       ay,
@@ -310,14 +353,37 @@ export class TelemetryStore {
       gx: sample.gxDps,
       gy: sample.gyDps,
       gz: sample.gzDps,
+      rotDps: gyroMag,
       roll,
       pitch,
       yaw,
-      micAmp: sample.micAmp || 0
+      ...(quat || {}),
+      micAmp: sample.micAmp || 0,
+      tUs: this.elapsedUs
     };
 
     this.trace.push(tracePoint);
-    if (this.trace.length > MAX_TRACE_POINTS) this.trace.shift();
+    
+    // Prune the live trace rolling buffer based on the configured live duration (in seconds).
+    // Instead of shift()-ing one element at a time (O(n) per shift), we find
+    // the first in-range index and batch-splice when the stale head grows large
+    // enough to amortise the array reindex cost.
+    const liveDurationSec = this.store.get().liveTraceDuration ?? 10;
+    const durationUs = liveDurationSec * 1000000;
+    const cutoffUs = this.elapsedUs - durationUs;
+    if (this.trace.length > 0 && this.trace[0].tUs < cutoffUs) {
+      // Binary search for the first index >= cutoffUs
+      let lo = 0, hi = this.trace.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (this.trace[mid].tUs < cutoffUs) lo = mid + 1;
+        else hi = mid;
+      }
+      // Only splice when we have a meaningful batch to remove (amortised O(1))
+      if (lo >= 512 || lo >= this.trace.length * 0.25) {
+        this.trace.splice(0, lo);
+      }
+    }
 
     const configuredShotTraceRate = configuredBrowserShotTraceRateHz();
     if (configuredShotTraceRate !== this.shotTraceRateHz) {
@@ -373,9 +439,11 @@ export class TelemetryStore {
         gx: sample.gxDps,
         gy: sample.gyDps,
         gz: sample.gzDps,
+        rotDps: gyroMag,
         roll,
         pitch,
         yaw,
+        ...(quat || {}),
         micAmp: sample.micAmp || 0,
       });
       this.manualRecordingDurationUs += (sample.dtUs || 19230);
@@ -385,7 +453,6 @@ export class TelemetryStore {
       });
     }
 
-    const gyroMag = Math.hypot(sample.gxDps, sample.gyDps, sample.gzDps);
     const score = computeLiveFloatScore({ roll, pitch, gyroMag, accelG, trace: this.trace });
     const coaching = coachForScore({ ...score, roll });
 
@@ -400,6 +467,10 @@ export class TelemetryStore {
       roll,
       pitch,
       yaw,
+      qw: quat ? quat.qw : null,
+      qx: quat ? quat.qx : null,
+      qy: quat ? quat.qy : null,
+      qz: quat ? quat.qz : null,
       ...score,
       ...coaching,
     });
@@ -812,9 +883,11 @@ export class TelemetryStore {
           gx: pt.gx || 0,
           gy: pt.gy || 0,
           gz: pt.gz || 0,
+          rotDps: pt.rotDps || 0,
           roll: pt.roll,
           pitch: pt.pitch,
           yaw: pt.yaw || 0,
+          ...(sampleQuaternion(pt) || {}),
           micAmp: pt.micAmp || 0,
           tUs: Math.round((index * 1000000) / hz),
         };
@@ -967,9 +1040,11 @@ export class TelemetryStore {
           gx: pt.gx || 0,
           gy: pt.gy || 0,
           gz: pt.gz || 0,
+          rotDps: pt.rotDps || 0,
           roll: pt.roll,
           pitch: pt.pitch,
           yaw: pt.yaw || 0,
+          ...(sampleQuaternion(pt) || {}),
           micAmp: pt.micAmp || 0,
           tUs: Math.round((index * 1000000) / 52),
         };
