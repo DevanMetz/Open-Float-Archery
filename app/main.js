@@ -5,6 +5,7 @@ import { createStore, EventBus } from "./core/store.js";
 import { TelemetryStore, coachForScore } from "./telemetry/telemetry.js?v=shot-store-105";
 import { createAdapter } from "./device/adapters.js?v=shot-store-118";
 import {
+  MOUNT_ORIENTATIONS,
   cloneMountAxes,
   mountBowShop,
   mountDashboard,
@@ -65,6 +66,7 @@ const ELEMENT_IDS = [
   "zeroBtn", "zeroYawBtn", "batteryBadge", "batteryText",
   "mountOrientationSelect", "mountOrientationCanvas", "mountOrientationDescription",
   "mountLiveCantValue", "mountLivePitchValue",
+  "mountWizardText", "mountWizardPrimaryBtn", "mountWizardCancelBtn",
   "mountViewRollSlider", "mountViewRollValue",
   "mountPositionXSlider", "mountPositionYSlider", "mountPositionZSlider",
   "mountPositionXValue", "mountPositionYValue", "mountPositionZValue",
@@ -973,6 +975,217 @@ function resetMountPreview() {
   });
   bus.emit("log", `Mount orientation, position, and view roll reset to "${preset.label}".`);
   saveSettingsToCache();
+}
+
+// --- Guided mount setup wizard ---------------------------------------------
+// Detects the board mounting from two gravity captures: the bow held upright
+// and level, then canted 90 degrees to the right. Each capture averages the
+// most recent accel samples; the two measured "up" directions are snapped to
+// the nearest signed IMU axes and matched against the mount presets.
+const WIZARD_CAPTURE_MS = 1300;
+const WIZARD_SAMPLE_COUNT = 40;
+const WIZARD_IDLE_TEXT =
+  "With the sensor connected and streaming, two quick captures detect the board position automatically — no axis-thinking required. Detection is relative to the data the sensor currently streams.";
+
+let wizardStep = "idle"; // idle | level | tilted | result
+let wizardLevelVec = null;
+let wizardResult = null;
+
+function wizardVecNormalize(v) {
+  const mag = Math.hypot(v[0], v[1], v[2]);
+  return mag > 0 ? v.map((c) => c / mag) : [0, 0, 0];
+}
+
+function wizardVecDot(a, b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function wizardVecCross(a, b) {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+function wizardSnapAxis(v) {
+  const abs = v.map(Math.abs);
+  const index = abs.indexOf(Math.max(...abs));
+  const sign = v[index] >= 0 ? "" : "-";
+  return { label: `${sign}${["IMU X", "IMU Y", "IMU Z"][index]}`, index };
+}
+
+function wizardUi(text, primaryLabel, { disabled = false, cancel = true } = {}) {
+  if (el.mountWizardText) el.mountWizardText.textContent = text;
+  if (el.mountWizardPrimaryBtn) {
+    el.mountWizardPrimaryBtn.textContent = primaryLabel;
+    el.mountWizardPrimaryBtn.disabled = disabled;
+  }
+  if (el.mountWizardCancelBtn) el.mountWizardCancelBtn.classList.toggle("hidden", !cancel);
+}
+
+function wizardReset(text = WIZARD_IDLE_TEXT) {
+  wizardStep = "idle";
+  wizardLevelVec = null;
+  wizardResult = null;
+  wizardUi(text, "Start Guided Setup", { cancel: false });
+}
+
+function wizardPromptForStep() {
+  if (wizardStep === "level") {
+    wizardUi(
+      "Step 1 of 2 — Hold the bow upright and level, as if aiming with no cant. Keep it still, then press Capture.",
+      "Capture Level Pose",
+    );
+  } else {
+    wizardUi(
+      "Step 2 of 2 — Cant the bow 90° to the right so the top limb points to the right. Hold still, then press Capture.",
+      "Capture Canted Pose",
+    );
+  }
+}
+
+function wizardCollectGravity() {
+  return new Promise((resolve) => {
+    const before = telemetry.getTrace();
+    const lastBefore = before.length ? before[before.length - 1] : null;
+    setTimeout(() => {
+      const trace = telemetry.getTrace();
+      const lastAfter = trace.length ? trace[trace.length - 1] : null;
+      if (!lastAfter || lastAfter === lastBefore) {
+        resolve({ error: "No live sensor data. Connect the sensor (status badge, top right) and make sure it is streaming, then retry." });
+        return;
+      }
+      const pts = trace.slice(-WIZARD_SAMPLE_COUNT);
+      if (pts.length < 10) {
+        resolve({ error: "Not enough samples yet — keep the sensor streaming for a moment and retry." });
+        return;
+      }
+      const mean = [0, 0, 0];
+      for (const pt of pts) {
+        mean[0] += pt.ax || 0;
+        mean[1] += pt.ay || 0;
+        mean[2] += pt.az || 0;
+      }
+      mean[0] /= pts.length;
+      mean[1] /= pts.length;
+      mean[2] /= pts.length;
+      const mag = Math.hypot(mean[0], mean[1], mean[2]);
+      if (mag < 0.5 || mag > 1.5) {
+        resolve({ error: `Unexpected acceleration (${mag.toFixed(2)} g). Hold the bow still — only gravity should be acting on it — and retry.` });
+        return;
+      }
+      let maxVariance = 0;
+      for (let axis = 0; axis < 3; axis++) {
+        let variance = 0;
+        for (const pt of pts) {
+          const value = [pt.ax || 0, pt.ay || 0, pt.az || 0][axis];
+          variance += (value - mean[axis]) ** 2;
+        }
+        maxVariance = Math.max(maxVariance, variance / pts.length);
+      }
+      if (Math.sqrt(maxVariance) > 0.12) {
+        resolve({ error: "Too much movement during the capture. Hold the bow steady and retry." });
+        return;
+      }
+      resolve({ vec: wizardVecNormalize(mean) });
+    }, WIZARD_CAPTURE_MS);
+  });
+}
+
+function wizardComputeResult(levelVec, tiltedVec) {
+  const angleDeg = (Math.acos(Math.max(-1, Math.min(1, wizardVecDot(levelVec, tiltedVec)))) * 180) / Math.PI;
+  if (angleDeg < 45) {
+    return { error: "The two captures look too similar. Make sure the bow is canted a full 90° to the right for step 2, then retry." };
+  }
+  // Accel at rest reads "up" in board coords. Level pose: up = bow Y.
+  // Canted 90° right: up = -bow Z, so bow Z = -capture.
+  const yBow = levelVec;
+  let zBow = tiltedVec.map((c) => -c);
+  const projection = wizardVecDot(zBow, yBow);
+  zBow = wizardVecNormalize(zBow.map((c, i) => c - projection * yBow[i]));
+  const xBow = wizardVecCross(yBow, zBow);
+
+  const snapX = wizardSnapAxis(xBow);
+  const snapY = wizardSnapAxis(yBow);
+  const snapZ = wizardSnapAxis(zBow);
+  if (snapX.index === snapY.index || snapX.index === snapZ.index || snapY.index === snapZ.index) {
+    return { error: "Could not resolve three distinct axes — the bow was probably between positions. Repeat both captures with the bow square in each pose." };
+  }
+
+  const axes = { x: snapX.label, y: snapY.label, z: snapZ.label };
+  const preset = MOUNT_ORIENTATIONS.find(
+    (o) => o.axes.x === axes.x && o.axes.y === axes.y && o.axes.z === axes.z,
+  ) || null;
+  return { axes, preset };
+}
+
+async function wizardCapture() {
+  const step = wizardStep;
+  wizardUi("Capturing — hold the bow still…", "Capturing…", { disabled: true });
+  const capture = await wizardCollectGravity();
+  if (wizardStep !== step) return; // cancelled mid-capture
+  if (capture.error) {
+    wizardUi(`${capture.error}`, step === "level" ? "Retry Level Capture" : "Retry Canted Capture");
+    return;
+  }
+  if (step === "level") {
+    wizardLevelVec = capture.vec;
+    wizardStep = "tilted";
+    wizardPromptForStep();
+    return;
+  }
+  const result = wizardComputeResult(wizardLevelVec, capture.vec);
+  if (result.error) {
+    wizardStep = "level";
+    wizardLevelVec = null;
+    wizardUi(`${result.error}`, "Restart From Step 1");
+    return;
+  }
+  wizardResult = result;
+  wizardStep = "result";
+  const mappingText = `Bow X ${result.axes.x}, Bow Y ${result.axes.y}, Bow Z ${result.axes.z}`;
+  if (result.preset) {
+    wizardUi(`Detected "${result.preset.label}" (${mappingText}). Press Apply to use it.`, "Apply Detected Mount");
+  } else {
+    wizardUi(`Detected a custom mapping (${mappingText}). Press Apply to use it — the small board in the preview may not visually match a custom mapping.`, "Apply Custom Mapping");
+  }
+}
+
+function wizardApply() {
+  if (!wizardResult) return;
+  const { axes, preset } = wizardResult;
+  if (preset) {
+    store.set({
+      mountOrientation: preset.id,
+      mountBaseOrientation: preset.id,
+      mountAxes: cloneMountAxes(preset.axes),
+      mountRotation: [...preset.rotation],
+    });
+    bus.emit("log", `Guided setup applied mount "${preset.label}". Rebuild firmware with the matching axis mapping for device-computed angles.`);
+  } else {
+    store.set({ mountOrientation: "custom", mountAxes: cloneMountAxes(axes) });
+    bus.emit("log", `Guided setup applied a custom mount mapping: Bow X ${axes.x}, Bow Y ${axes.y}, Bow Z ${axes.z}.`);
+  }
+  saveSettingsToCache();
+  wizardReset("Applied. Rebuild the firmware with this mapping so device-computed angles match. You can re-run guided setup any time.");
+}
+
+if (el.mountWizardPrimaryBtn) {
+  el.mountWizardPrimaryBtn.addEventListener("click", () => {
+    if (wizardStep === "idle") {
+      wizardStep = "level";
+      wizardPromptForStep();
+    } else if (wizardStep === "level" || wizardStep === "tilted") {
+      wizardCapture();
+    } else if (wizardStep === "result") {
+      wizardApply();
+    }
+  });
+}
+
+if (el.mountWizardCancelBtn) {
+  el.mountWizardCancelBtn.addEventListener("click", () => wizardReset());
 }
 
 el.mountViewRollSlider.addEventListener("input", () => {

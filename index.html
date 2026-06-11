@@ -504,6 +504,15 @@
 
                 <p class="note alignment-warning">&#9888; Picking a position here only previews the mapping. The sensor itself keeps reporting with the mapping compiled into its firmware &mdash; rebuild and flash the firmware with the matching mount mapping to change the data.</p>
 
+                <div class="alignment-wizard">
+                  <div class="alignment-sub-label">Guided setup &mdash; let the sensor find the mount</div>
+                  <p class="note" id="mountWizardText">With the sensor connected and streaming, two quick captures detect the board position automatically &mdash; no axis-thinking required. Detection is relative to the data the sensor currently streams.</p>
+                  <div class="mount-wizard-actions">
+                    <button id="mountWizardPrimaryBtn" type="button" class="accent">Start Guided Setup</button>
+                    <button id="mountWizardCancelBtn" type="button" class="hidden">Cancel</button>
+                  </div>
+                </div>
+
                 <div class="alignment-sub-label">Nudge the mount in 90&deg; steps</div>
                 <div class="mount-rotate-controls" aria-label="Rotate IMU module in 90 degree steps">
                   <button id="mountRotateXBtn" type="button" title="Rotate the board 90 degrees around the bow's forward axis (the cant direction)">Roll &#8635;<small class="rotate-axis-hint">forward axis</small></button>

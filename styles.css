@@ -2813,6 +2813,31 @@ canvas,
   color: var(--amber);
 }
 
+/* Guided mount setup wizard inside the sensor mount section */
+.alignment-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed rgba(53, 199, 232, 0.4);
+  border-radius: 8px;
+}
+
+.alignment-wizard .note {
+  margin: 0;
+}
+
+.mount-wizard-actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.mount-wizard-actions button {
+  min-height: 40px;
+  padding: 0 14px;
+}
+
 /* Collapsed firmware mapping details inside the sensor mount section */
 .alignment-dev-details {
   border: 1px dashed var(--line);
