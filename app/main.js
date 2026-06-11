@@ -64,6 +64,7 @@ const ELEMENT_IDS = [
   "speedValue", "traceScrubSlider", "traceScrubValue", "tracePhaseRail",
   "zeroBtn", "zeroYawBtn", "batteryBadge", "batteryText",
   "mountOrientationSelect", "mountOrientationCanvas", "mountOrientationDescription",
+  "mountLiveCantValue", "mountLivePitchValue",
   "mountViewRollSlider", "mountViewRollValue",
   "mountPositionXSlider", "mountPositionYSlider", "mountPositionZSlider",
   "mountPositionXValue", "mountPositionYValue", "mountPositionZValue",

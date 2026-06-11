@@ -2642,6 +2642,10 @@ canvas,
   border-left-color: var(--violet);
 }
 
+.alignment-view {
+  border-left-color: var(--amber);
+}
+
 .alignment-section > summary.alignment-head {
   list-style: none;
   cursor: pointer;
@@ -2703,6 +2707,10 @@ canvas,
   background: var(--violet);
 }
 
+.alignment-view .alignment-step {
+  background: var(--amber);
+}
+
 .alignment-head-text h4 {
   margin: 0 0 4px 0;
   font-size: 14px;
@@ -2739,6 +2747,12 @@ canvas,
   background: rgba(155, 140, 255, 0.12);
 }
 
+.tag-view {
+  color: var(--amber);
+  border-color: rgba(243, 191, 76, 0.45);
+  background: rgba(243, 191, 76, 0.12);
+}
+
 .alignment-sub-label {
   font-size: 10px;
   font-weight: 800;
@@ -2760,6 +2774,67 @@ canvas,
 
 .alignment-preview-only .note {
   margin: 0;
+}
+
+/* Live wiggle-test readouts under the alignment preview */
+.alignment-live-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  padding: 10px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.alignment-live-strip strong {
+  font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.alignment-live-label {
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--green);
+}
+
+.alignment-live-strip small {
+  flex-basis: 100%;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.alignment-warning {
+  color: var(--amber);
+}
+
+/* Collapsed firmware mapping details inside the sensor mount section */
+.alignment-dev-details {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.alignment-dev-details > summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.alignment-dev-details[open] > summary {
+  margin-bottom: 10px;
+}
+
+.alignment-dev-details .mount-axis-grid {
+  margin-bottom: 10px;
 }
 
 .alignment-preview-tag {
@@ -2837,11 +2912,21 @@ canvas,
 
 .mount-rotate-controls button,
 .model-rotate-controls button {
-  min-height: 38px;
-  padding: 0 8px;
+  min-height: 48px;
+  padding: 6px 8px;
   border-color: rgba(53, 199, 232, 0.25);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.15;
+}
+
+.rotate-axis-hint {
+  display: block;
+  margin-top: 3px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .mount-rotate-controls button:last-child,

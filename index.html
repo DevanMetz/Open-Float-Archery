@@ -459,11 +459,22 @@
                 <strong class="ink-sensor">where the sensor sits</strong> (changes the
                 data the firmware reports) and
                 <strong class="ink-model">how the 3D bow looks</strong> (display only).
-                Adjust each in its own section below.
+                With a sensor connected the preview moves live &mdash; tilt your bow
+                and check the model follows.
               </p>
 
               <!-- Shared 3D preview for both sections -->
               <canvas id="mountOrientationCanvas" aria-label="Bow and XIAO module 3D alignment preview"></canvas>
+
+              <!-- Live wiggle-test readouts under the preview -->
+              <div class="alignment-live-strip" aria-label="Live sensor check">
+                <span class="alignment-live-label">Live check</span>
+                <span>Cant <strong id="mountLiveCantValue">--</strong> deg</span>
+                <span>Pitch <strong id="mountLivePitchValue">--</strong> deg</span>
+                <small>Tilt the top of the bow toward your sight: cant should go positive
+                and the 3D bow should lean the same way. If it mirrors or tips instead,
+                fix the sensor mount below; if only the picture is wrong, fix the 3D model.</small>
+              </div>
 
               <!-- 1. Sensor Mount (changes the data) -->
               <details class="alignment-section alignment-sensor" open>
@@ -475,10 +486,10 @@
                   <span class="alignment-chevron" aria-hidden="true"></span>
                 </summary>
                 <div class="alignment-section-body">
-                <p class="note">Where the XIAO board is physically mounted. This sets which IMU axis points up, forward, and sideways so cant, pitch, and yaw read correctly. Pick the matching preset, then rebuild firmware with the same axis mapping.</p>
+                <p class="note">Tell the app which way the sensor board sits on your riser so cant, pitch, and yaw read correctly. Pick the position that matches your build &mdash; the small board in the preview shows what you picked.</p>
 
                 <div class="field">
-                  <label for="mountOrientationSelect">XIAO position on bow</label>
+                  <label for="mountOrientationSelect">Sensor board position</label>
                   <select id="mountOrientationSelect">
                     <option value="firmware-x-90" selected>Current firmware mount</option>
                     <option value="firmware-x-90-flipped">Current mount, inverted sign</option>
@@ -491,47 +502,27 @@
                   <p id="mountOrientationDescription" class="note">Preview the selected board mounting direction before updating firmware axis mapping.</p>
                 </div>
 
-                <div class="alignment-sub-label">Fine-tune the mount in 90° steps</div>
+                <p class="note alignment-warning">&#9888; Picking a position here only previews the mapping. The sensor itself keeps reporting with the mapping compiled into its firmware &mdash; rebuild and flash the firmware with the matching mount mapping to change the data.</p>
+
+                <div class="alignment-sub-label">Nudge the mount in 90&deg; steps</div>
                 <div class="mount-rotate-controls" aria-label="Rotate IMU module in 90 degree steps">
-                  <button id="mountRotateXBtn" type="button">Rotate 90° Bow X</button>
-                  <button id="mountRotateYBtn" type="button">Rotate 90° Bow Y</button>
-                  <button id="mountRotateZBtn" type="button">Rotate 90° Bow Z</button>
-                  <button id="mountResetBtn" type="button">Reset Preset</button>
+                  <button id="mountRotateXBtn" type="button" title="Rotate the board 90 degrees around the bow's forward axis (the cant direction)">Roll &#8635;<small class="rotate-axis-hint">forward axis</small></button>
+                  <button id="mountRotateYBtn" type="button" title="Rotate the board 90 degrees around the bow's vertical axis (spin it flat)">Spin &#8635;<small class="rotate-axis-hint">vertical axis</small></button>
+                  <button id="mountRotateZBtn" type="button" title="Rotate the board 90 degrees around the bow's side axis (tip it forward/back)">Tip &#8635;<small class="rotate-axis-hint">side axis</small></button>
+                  <button id="mountResetBtn" type="button" title="Return to the selected preset position">Reset<small class="rotate-axis-hint">back to preset</small></button>
                 </div>
 
-                <div class="alignment-sub-label">Resulting firmware axis mapping</div>
-                <div class="mount-axis-grid" aria-label="Firmware axis mapping">
-                  <span>Bow X <strong id="mountAxisXValue">IMU X</strong></span>
-                  <span>Bow Y <strong id="mountAxisYValue">-IMU Z</strong></span>
-                  <span>Bow Z <strong id="mountAxisZValue">IMU Y</strong></span>
-                </div>
-                <p id="mountFirmwareNote" class="note">
-                  Firmware-computed BLE/serial angles need the same mount mapping compiled into the device.
-                </p>
-
-                <div class="alignment-preview-only">
-                  <p class="note"><span class="alignment-preview-tag">Preview only</span> these just move the 3D view above — they do not change data or firmware.</p>
-                  <div class="mount-view-controls">
-                    <div class="field">
-                      <label for="mountViewRollSlider">View roll - <span id="mountViewRollValue">0</span> deg</label>
-                      <input type="range" id="mountViewRollSlider" min="-180" max="180" step="1" value="0">
-                    </div>
+                <details class="alignment-dev-details">
+                  <summary>Developer details &mdash; firmware axis mapping</summary>
+                  <div class="mount-axis-grid" aria-label="Firmware axis mapping">
+                    <span>Bow X <strong id="mountAxisXValue">IMU X</strong></span>
+                    <span>Bow Y <strong id="mountAxisYValue">-IMU Z</strong></span>
+                    <span>Bow Z <strong id="mountAxisZValue">IMU Y</strong></span>
                   </div>
-                  <div class="mount-position-controls" aria-label="Move XIAO module preview along bow axes">
-                    <div class="field">
-                      <label for="mountPositionXSlider">Bow X - <span id="mountPositionXValue">0.00</span></label>
-                      <input type="range" id="mountPositionXSlider" min="-0.8" max="0.8" step="0.01" value="0">
-                    </div>
-                    <div class="field">
-                      <label for="mountPositionYSlider">Bow Y - <span id="mountPositionYValue">0.00</span></label>
-                      <input type="range" id="mountPositionYSlider" min="-1.2" max="1.2" step="0.01" value="0">
-                    </div>
-                    <div class="field">
-                      <label for="mountPositionZSlider">Bow Z - <span id="mountPositionZValue">0.00</span></label>
-                      <input type="range" id="mountPositionZSlider" min="-0.8" max="0.8" step="0.01" value="0">
-                    </div>
-                  </div>
-                </div>
+                  <p id="mountFirmwareNote" class="note">
+                    Firmware-computed BLE/serial angles need the same mount mapping compiled into the device.
+                  </p>
+                </details>
                 </div>
               </details>
 
@@ -547,12 +538,12 @@
                 <div class="alignment-section-body">
                 <p class="note">Adjust only the on-screen bow model. Use this when the sensor data is right but the model leans, rolls, or pitches the wrong way. This never changes saved data.</p>
 
-                <div class="alignment-sub-label">Rotate the model in 90° steps</div>
+                <div class="alignment-sub-label">Rotate the model in 90&deg; steps</div>
                 <div class="model-rotate-controls" aria-label="Rotate Blender bow model in 90 degree steps">
-                  <button id="modelRotateXBtn" type="button">Rotate 90° Model X</button>
-                  <button id="modelRotateYBtn" type="button">Rotate 90° Model Y</button>
-                  <button id="modelRotateZBtn" type="button">Rotate 90° Model Z</button>
-                  <button id="modelResetBtn" type="button">Reset Model</button>
+                  <button id="modelRotateXBtn" type="button" title="Rotate the 3D bow 90 degrees around its roll axis">Roll &#8635;<small class="rotate-axis-hint">model X</small></button>
+                  <button id="modelRotateYBtn" type="button" title="Rotate the 3D bow 90 degrees around its vertical axis">Spin &#8635;<small class="rotate-axis-hint">model Y</small></button>
+                  <button id="modelRotateZBtn" type="button" title="Rotate the 3D bow 90 degrees around its pitch axis">Tip &#8635;<small class="rotate-axis-hint">model Z</small></button>
+                  <button id="modelResetBtn" type="button" title="Clear all model rotation">Reset<small class="rotate-axis-hint">clear rotation</small></button>
                 </div>
                 <div class="model-toggle-grid">
                   <label for="modelInvertRollToggle">
@@ -573,6 +564,40 @@
                   <span>Model X <strong id="modelAxisXValue">0 deg</strong></span>
                   <span>Model Y <strong id="modelAxisYValue">0 deg</strong></span>
                   <span>Model Z <strong id="modelAxisZValue">0 deg</strong></span>
+                </div>
+                </div>
+              </details>
+
+              <!-- 3. Preview camera & module placement (view only, never data) -->
+              <details class="alignment-section alignment-view">
+                <summary class="alignment-head">
+                  <span class="alignment-step">3</span>
+                  <div class="alignment-head-text">
+                    <h4>Preview Camera &amp; Board Position <span class="alignment-tag tag-view">preview only</span></h4>
+                  </div>
+                  <span class="alignment-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="alignment-section-body">
+                <p class="note">These only move the 3D view above &mdash; tilt the camera or slide the little board to where it sits on your riser. They never change data or firmware.</p>
+                <div class="mount-view-controls">
+                  <div class="field">
+                    <label for="mountViewRollSlider">View roll - <span id="mountViewRollValue">0</span> deg</label>
+                    <input type="range" id="mountViewRollSlider" min="-180" max="180" step="1" value="0">
+                  </div>
+                </div>
+                <div class="mount-position-controls" aria-label="Move XIAO module preview along bow axes">
+                  <div class="field">
+                    <label for="mountPositionXSlider">Board position X - <span id="mountPositionXValue">0.00</span></label>
+                    <input type="range" id="mountPositionXSlider" min="-0.8" max="0.8" step="0.01" value="0">
+                  </div>
+                  <div class="field">
+                    <label for="mountPositionYSlider">Board position Y - <span id="mountPositionYValue">0.00</span></label>
+                    <input type="range" id="mountPositionYSlider" min="-1.2" max="1.2" step="0.01" value="0">
+                  </div>
+                  <div class="field">
+                    <label for="mountPositionZSlider">Board position Z - <span id="mountPositionZValue">0.00</span></label>
+                    <input type="range" id="mountPositionZSlider" min="-0.8" max="0.8" step="0.01" value="0">
+                  </div>
                 </div>
                 </div>
               </details>

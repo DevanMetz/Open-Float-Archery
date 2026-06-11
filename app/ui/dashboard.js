@@ -1321,7 +1321,32 @@ export async function mountOrientationSettings({ store, el }) {
   scene.add(bow);
   let viewRoll = 0;
 
+  // Live orientation so users can wiggle-test the mount from this card.
+  // Mirrors the dashboard visualizer; 12 deg base yaw keeps the static
+  // three-quarter view when no sensor is streaming.
+  const MOUNT_PREVIEW_BASE_YAW_DEG = 12;
+  let targetRoll = 0;
+  let targetPitch = 0;
+  let targetYaw = 0;
+  let visualRoll = 0;
+  let visualPitch = 0;
+  let visualYaw = 0;
+  let modelRollSign = 1;
+  let modelPitchSign = -1;
+  let modelSwapRollPitch = false;
+  let modelIgnoreYaw = false;
+
   function updateOrientation(state) {
+    targetRoll = calibratedAngle(state.roll, state.cantOffset);
+    targetPitch = calibratedAngle(state.pitch, state.pitchOffset);
+    targetYaw = wrapAngleDeg(calibratedAngle(state.yaw || 0, state.yawOffset));
+    modelRollSign = state.modelInvertRoll ? -1 : 1;
+    modelPitchSign = state.modelInvertPitch ? 1 : -1;
+    modelSwapRollPitch = !!state.modelSwapRollPitch;
+    modelIgnoreYaw = !!state.modelIgnoreYaw;
+    if (el.mountLiveCantValue) el.mountLiveCantValue.textContent = targetRoll.toFixed(1);
+    if (el.mountLivePitchValue) el.mountLivePitchValue.textContent = targetPitch.toFixed(1);
+
     const orientation = mountOrientationState(state);
     applyModuleOrientation(bow.userData.xiaoModule, state);
     applyModulePosition(bow.userData.xiaoModule, state);
@@ -1378,7 +1403,22 @@ export async function mountOrientationSettings({ store, el }) {
       resize();
     }
 
-    bow.rotation.y = radians(12);
+    visualRoll += (targetRoll - visualRoll) * 0.16;
+    visualPitch += (targetPitch - visualPitch) * 0.16;
+    visualYaw = blendAngleDeg(visualYaw, modelIgnoreYaw ? 0 : targetYaw, 0.16);
+
+    // Same axis convention as the dashboard visualizer: cant on model X,
+    // pitch on model Z, with the swap toggle as a compatibility escape hatch.
+    const modelXAngle = modelSwapRollPitch
+      ? modelPitchSign * radians(visualPitch)
+      : modelRollSign * radians(visualRoll);
+    const modelZAngle = modelSwapRollPitch
+      ? modelRollSign * radians(visualRoll)
+      : modelPitchSign * radians(visualPitch);
+
+    bow.rotation.x = modelXAngle;
+    bow.rotation.z = modelZAngle;
+    bow.rotation.y = radians(MOUNT_PREVIEW_BASE_YAW_DEG + visualYaw);
     if (controls) controls.update();
     applyCameraViewRoll(camera, viewRoll, baseCameraQuaternion, controls);
     renderer.render(scene, camera);
