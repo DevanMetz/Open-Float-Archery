@@ -64,6 +64,7 @@ const ELEMENT_IDS = [
   "reviewScrubBar", "replayTraceBtn", "speedDownBtn", "speedUpBtn",
   "speedValue", "traceScrubSlider", "traceScrubValue", "tracePhaseRail",
   "zeroBtn", "zeroYawBtn", "batteryBadge", "batteryText",
+  "calOffsetRollValue", "calOffsetPitchValue", "calOffsetYawValue",
   "mountOrientationSelect", "mountOrientationCanvas", "mountOrientationDescription",
   "mountLiveCantValue", "mountLivePitchValue",
   "mountWizardText", "mountWizardPrimaryBtn", "mountWizardCancelBtn",

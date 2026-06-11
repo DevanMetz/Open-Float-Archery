@@ -1225,6 +1225,15 @@ async function initOrientationVisualizer(el, store) {
     if (el.orientationYawValue) {
       el.orientationYawValue.textContent = targetYaw.toFixed(1);
     }
+    if (el.calOffsetRollValue) {
+      el.calOffsetRollValue.textContent = (Number(state.cantOffset) || 0).toFixed(1);
+    }
+    if (el.calOffsetPitchValue) {
+      el.calOffsetPitchValue.textContent = (Number(state.pitchOffset) || 0).toFixed(1);
+    }
+    if (el.calOffsetYawValue) {
+      el.calOffsetYawValue.textContent = (Number(state.yawOffset) || 0).toFixed(1);
+    }
   });
 
   function resize() {

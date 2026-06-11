@@ -357,10 +357,34 @@ input[type="range"] {
 }
 
 .orientation-copy,
-.orientation-readouts {
+.orientation-readouts,
+.orientation-cal-offsets {
   position: absolute;
   z-index: 2;
   pointer-events: none;
+}
+
+/* Stored zero-calibration offsets, bottom-right of the calibration view */
+.orientation-cal-offsets {
+  right: 18px;
+  bottom: 14px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.orientation-cal-offsets strong {
+  color: var(--text);
+}
+
+.cal-offsets-label {
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .orientation-copy {
@@ -1087,6 +1111,14 @@ td:last-child {
     top: auto;
     bottom: 12px;
     flex-wrap: wrap;
+  }
+
+  /* Live readouts take the bottom-left on small screens, so the stored
+     offsets move to the vacated top-right corner. */
+  .orientation-cal-offsets {
+    right: 12px;
+    bottom: auto;
+    top: 12px;
   }
 
 
