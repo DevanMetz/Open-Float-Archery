@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  web-tests:
+    name: Web app tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run unit tests
+        run: node --test test/
+
+  python-tools:
+    name: Python tool checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Follow-through trace verifier
+        run: python tools/verify_follow_through_trace.py
+      - name: Docs index is current
+        run: |
+          python tools/build_docs_index.py
+          git diff --exit-code docs/index.json

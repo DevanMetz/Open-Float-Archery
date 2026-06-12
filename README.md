@@ -1,5 +1,8 @@
 # OpenFloat Archery
 
+[![CI](https://github.com/DevanMetz/Open-Float-Archery/actions/workflows/ci.yml/badge.svg)](https://github.com/DevanMetz/Open-Float-Archery/actions/workflows/ci.yml)
+[![Firmware](https://github.com/DevanMetz/Open-Float-Archery/actions/workflows/firmware.yml/badge.svg)](https://github.com/DevanMetz/Open-Float-Archery/actions/workflows/firmware.yml)
+
 **Open-source bow telemetry you can build in an afternoon and run entirely in
 your browser.** OpenFloat pairs a tiny BLE sensor (Seeed XIAO nRF54L15 Sense,
 Zephyr/NCS firmware) with a local-first web dashboard that streams ~1110 Hz IMU
