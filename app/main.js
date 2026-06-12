@@ -4,7 +4,7 @@
 import { createStore, EventBus } from "./core/store.js";
 import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-123";
 import { createAdapter } from "./device/adapters.js?v=shot-store-123";
-import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-126";
+import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-127";
 import {
   MOUNT_ORIENTATIONS,
   cloneMountAxes,
@@ -22,7 +22,7 @@ import { initDataBackup } from "./ui/data-backup.js?v=shot-store-125";
 import { initHistory } from "./ui/history.js?v=shot-store-125";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-117";
 
-const APP_BUILD = "shot-store-126";
+const APP_BUILD = "shot-store-127";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
