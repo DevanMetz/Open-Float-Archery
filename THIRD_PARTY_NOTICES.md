@@ -41,7 +41,7 @@ compliance; it is not legal advice.
 ## Web Application
 
 ### Three.js (including GLTFLoader and OrbitControls)
-- **Used in:** `app/ui/dashboard.js` (3D orientation visualizer).
+- **Used in:** `app/ui/bow-3d.js` (3D orientation visualizer).
 - **License:** MIT.
 
 ### Supabase JavaScript client

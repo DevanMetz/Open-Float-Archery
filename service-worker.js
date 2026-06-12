@@ -1,4 +1,4 @@
-const CACHE_NAME = "openfloat-v125";
+const CACHE_NAME = "openfloat-v126";
 const ASSETS = [
   "./",
   "./index.html",
@@ -23,6 +23,9 @@ const ASSETS = [
   "./app/telemetry/score.js",
   "./app/telemetry/sync.js",
   "./app/ui/dashboard.js",
+  "./app/ui/bow-3d.js",
+  "./app/ui/data-backup.js",
+  "./app/ui/history.js",
   "./app/ui/session-review.js",
   "./app/ui/trace-preview.js",
   "./app/ui/training.js",
