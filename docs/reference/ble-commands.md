@@ -18,17 +18,25 @@ bring-up and debugging.
 ## Calibration
 
 - `zero` — Capture the current roll and pitch and save them as permanent level
-  offsets in RRAM.
+  offsets in RRAM. Yaw is still display-only in the browser and is not persisted
+  by firmware.
 
 ## Shot detection
 
 - `thresh:<g>` — Release detection threshold in g, clamped to `2.0`–`30.0`.
-- `shotreset` — Reset the persisted lifetime shot count to 0.
-- `shotset:<n>` — Set the persisted shot count to `n` (e.g. correct a miscount).
-- `shotack:<n>` — Confirm a shot was saved by the browser; frees its stored slot.
+- `shottrigger` — Generate a synthetic shot event for bench testing the
+  detection, stored-shot upload, trace freeze, and ack path.
+- `shotreset` — Reset the persisted lifetime shot count and 32-bit shot ID to 0;
+  also clears the stored-shot backlog.
+- `shotset:<n>` — Set the persisted shot count and 32-bit shot ID to `n` (e.g.
+  correct a miscount).
+- `shotack:<n>` — Confirm shot ID `n` was saved by the browser; frees its stored
+  slot. The ID is the 32-bit device shot ID from the stored-shot frame.
 - `shotdump` — Request upload of any stored-shot backlog plus a storage-status
   frame.
-- `tracereq:<n>` — Request chunked upload of a stored trace.
+- `tracereq:<n>` — Request chunked upload of the stored trace for 32-bit shot ID
+  `n`; if the trace slot is missing, firmware returns a trace-status frame so
+  the browser can ack the metadata without waiting for chunks.
 
 ## Power management
 

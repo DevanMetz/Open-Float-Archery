@@ -123,11 +123,13 @@ export class BleAdapter extends BaseAdapter {
   constructor(bus) {
     super(bus);
     this.controlQueue = Promise.resolve();
-    this.acknowledgedShotIds = new Set();
     this.pendingAckShotIds = new Set();
     this.pendingStoredShots = 0;
     this.storedShotWatchdog = null;
+    this.traceDownloadQueue = [];
     this.currentTraceDownloadShotId = null;
+    this.currentTraceChunkIndexes = new Set();
+    this.currentTraceTotalChunks = 0;
     this.traceTimer = null;
     this.reconnectTimer = null;
     this.reconnectAttempts = 0;
@@ -142,7 +144,10 @@ export class BleAdapter extends BaseAdapter {
     this.unsubscribeShotSaved = bus.on("shot-saved", (shot) => {
       if (shot && shot.shotId != null) {
         if (shot.stored) {
-          this._startTraceDownload(shot.shotId);
+          this.ackShot(shot.shotId);
+          if (!shot.duplicate) {
+            this._enqueueTraceDownload(shot.shotId);
+          }
         } else {
           this.ackShot(shot.shotId);
         }
@@ -275,16 +280,13 @@ export class BleAdapter extends BaseAdapter {
   }
 
   async ackShot(shotId) {
-    if (this.acknowledgedShotIds.has(shotId) || this.pendingAckShotIds.has(shotId)) {
+    if (this.pendingAckShotIds.has(shotId)) {
       return;
     }
 
     this.pendingAckShotIds.add(shotId);
     try {
-      const acked = await this.sendControl(`shotack:${shotId}`);
-      if (acked) {
-        this.acknowledgedShotIds.add(shotId);
-      }
+      await this.sendControl(`shotack:${shotId}`);
     } finally {
       this.pendingAckShotIds.delete(shotId);
     }
@@ -393,7 +395,10 @@ export class BleAdapter extends BaseAdapter {
     this.watchdog = null;
     this._stopStoredShotWatchdog();
     this._stopTraceDownloadTimer();
+    this.traceDownloadQueue = [];
     this.currentTraceDownloadShotId = null;
+    this.currentTraceChunkIndexes.clear();
+    this.currentTraceTotalChunks = 0;
     this.pendingStoredShots = 0;
     this.live = null;
     this.control = null;
@@ -467,9 +472,30 @@ export class BleAdapter extends BaseAdapter {
     }
   }
 
+  _enqueueTraceDownload(shotId) {
+    if (
+      this.currentTraceDownloadShotId === shotId ||
+      this.traceDownloadQueue.includes(shotId)
+    ) {
+      return;
+    }
+    this.traceDownloadQueue.push(shotId);
+    this._pumpTraceDownloadQueue();
+  }
+
+  _pumpTraceDownloadQueue() {
+    if (this.currentTraceDownloadShotId != null) return;
+    const nextShotId = this.traceDownloadQueue.shift();
+    if (nextShotId != null) {
+      this._startTraceDownload(nextShotId);
+    }
+  }
+
   _startTraceDownload(shotId) {
     this._stopTraceDownloadTimer();
     this.currentTraceDownloadShotId = shotId;
+    this.currentTraceChunkIndexes.clear();
+    this.currentTraceTotalChunks = 0;
     this.log(`Starting serialized trace download for shot ${shotId}...`);
     this.requestTrace(shotId);
     
@@ -483,8 +509,20 @@ export class BleAdapter extends BaseAdapter {
   _onTraceChunkReceived(trace) {
     if (trace.shotId === this.currentTraceDownloadShotId) {
       this._stopTraceDownloadTimer();
+
+      if (
+        trace.totalChunks > 0 &&
+        trace.chunkIndex >= 0 &&
+        trace.chunkIndex < trace.totalChunks
+      ) {
+        this.currentTraceTotalChunks = trace.totalChunks;
+        this.currentTraceChunkIndexes.add(trace.chunkIndex);
+      }
       
-      if (trace.chunkIndex === trace.totalChunks - 1) {
+      if (
+        this.currentTraceTotalChunks > 0 &&
+        this.currentTraceChunkIndexes.size === this.currentTraceTotalChunks
+      ) {
         this.log(`Trace download complete for shot ${trace.shotId}.`);
         this._completeTraceDownload(trace.shotId);
       } else {
@@ -500,7 +538,10 @@ export class BleAdapter extends BaseAdapter {
   _completeTraceDownload(shotId) {
     this._stopTraceDownloadTimer();
     this.currentTraceDownloadShotId = null;
+    this.currentTraceChunkIndexes.clear();
+    this.currentTraceTotalChunks = 0;
     this.ackShot(shotId);
+    this._pumpTraceDownloadQueue();
   }
 
   _stopTraceDownloadTimer() {

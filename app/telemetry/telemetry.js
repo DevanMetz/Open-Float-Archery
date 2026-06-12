@@ -181,13 +181,16 @@ export class TelemetryStore {
     bus.on("upload-status", ({ pending }) =>
       this.store.set({ uploadPending: Math.max(0, pending | 0) }),
     );
-    bus.on("status", ({ mode, text }) =>
+    bus.on("status", ({ mode, text }) => {
+      if (mode !== "live") {
+        this.connectionShotIds.clear();
+      }
       store.set({
         statusMode: mode,
         statusText: text,
         connected: mode === "live" || mode === "demo",
-      }),
-    );
+      });
+    });
 
     // Per-second frame rate.
     setInterval(() => {
@@ -1164,6 +1167,19 @@ export class TelemetryStore {
     }
 
     const pending = this.pendingTraces.get(chunk.shotId);
+    if (
+      chunk.totalChunks <= 0 ||
+      chunk.chunkIndex < 0 ||
+      chunk.chunkIndex >= chunk.totalChunks
+    ) {
+      this.bus.emit(
+        "log",
+        `Ignoring invalid trace chunk ${chunk.chunkIndex}/${chunk.totalChunks} for shot ID ${chunk.shotId}.`,
+      );
+      return;
+    }
+
+    pending.totalChunks = chunk.totalChunks;
     pending.chunks.set(chunk.chunkIndex, chunk.payload);
     if (chunk.pointStride > 0) {
       pending.pointStride = chunk.pointStride;
@@ -1171,7 +1187,15 @@ export class TelemetryStore {
 
     this.bus.emit("log", `Received trace chunk ${pending.chunks.size}/${pending.totalChunks} for shot ID ${chunk.shotId}.`);
 
-    if (pending.chunks.size === pending.totalChunks) {
+    let complete = pending.totalChunks > 0;
+    for (let i = 0; i < pending.totalChunks; i++) {
+      if (!pending.chunks.has(i)) {
+        complete = false;
+        break;
+      }
+    }
+
+    if (complete) {
       this.bus.emit("log", `All trace chunks received for shot ID ${chunk.shotId}. Reassembling...`);
 
       // 1. Flatten all chunks in order
