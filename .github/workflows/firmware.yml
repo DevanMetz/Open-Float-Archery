@@ -25,7 +25,7 @@ jobs:
         # Toolchain environment variables are only set in bash sessions.
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           path: openfloat
 
@@ -37,7 +37,7 @@ jobs:
 
       # Build the freestanding app out-of-tree from inside the west workspace.
       # NCS v3.3.0 ships the xiao_nrf54l15 board, so no BOARD_ROOT is needed
-      # (passing one fails the build — see firmware/BUILDING.md).
+      # (passing one fails the build; see firmware/BUILDING.md).
       - name: Build firmware
         working-directory: ncs
         run: |
@@ -46,7 +46,7 @@ jobs:
             "$GITHUB_WORKSPACE/openfloat/firmware"
 
       - name: Upload merged.hex
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: openfloat-merged-hex
           path: openfloat/firmware/build-ci/merged.hex
