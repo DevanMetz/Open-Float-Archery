@@ -64,7 +64,11 @@ architecture, design intent, and forward-looking targets, see
 - Live calibration views include a calibrated digital bubble level and a 3D bow
   orientation visualizer. Both apply the current zero offsets before rendering,
   so a properly zeroed bow appears level.
-- **On-Device Orientation Processing**: Consumes high-rate Madgwick filter quaternions directly from BLE notifications, avoiding client-side complementary filter lag.
+- **On-Device Orientation Processing**: Consumes high-rate Madgwick filter
+  quaternions directly from BLE notifications, avoiding client-side
+  complementary filter lag. Euler roll/pitch/yaw values are derived from that
+  quaternion for readouts, Float Score inputs, and compatibility with saved
+  traces recorded before the quaternion migration.
 - **Live Acoustic Envelope Meter**: When connected, the dashboard header shows a
   clicker/volume bar driven by the firmware microphone envelope byte in each live
   frame (~1110/s). The meter reflects the on-device peak follower (5 ms decay),

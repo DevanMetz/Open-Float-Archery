@@ -67,7 +67,9 @@ shot count and the newest 100 shot records to RRAM, and replays buffered traces
 to the browser on reconnect. The default config is battery-safe; a UART overlay
 adds USB bench logs.
 
-**Browser dashboard** is local-first and offline-capable (PWA). It renders a
+**Browser dashboard** is local-first and offline-capable (PWA). It consumes the
+firmware Madgwick quaternion directly for live orientation, derives Euler
+readouts for compatibility with scoring and saved traces, and renders a
 calibrated bubble level and 3D bow visualizer, phase-colored Pin Float shot
 review with replay scrubber and shot comparison, an independent open-source
 0–100 Float Score, Steady Aim hold training, automatic practice-session

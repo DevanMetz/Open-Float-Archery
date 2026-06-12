@@ -22,8 +22,10 @@ hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
   earlier experiment used the sensor's 6664 Hz max ODR, but the 1 MHz I2C bus
   could not drain it without ~1/s FIFO overruns; 3332 Hz removed the overruns
   (see caveat below).
-- On-device orientation: a Madgwick filter produces a quaternion and Euler
-  angles (cant/roll, pitch, yaw) **on the device**, not in the browser.
+- On-device orientation: a Madgwick filter produces the canonical quaternion
+  **on the device**, not in the browser. Euler angles (cant/roll, pitch, yaw)
+  are derived compatibility/readout values for the dashboard, scoring, and
+  stored traces.
 - Shot detection: a 12 g (117.72 m/s^2) acceleration-magnitude threshold with
   an 800 ms refractory window, surfaced as an `OFSHOT` serial event, a user LED
   pulse, and a BLE shot-event notification. The lifetime shot count is persisted
@@ -38,9 +40,11 @@ hardware** (Seeed XIAO nRF54L15 Sense, IMU `lsm6ds3tr_c`):
   header status badge. (The serial `OFRAW` decoder and demo adapter remain in
   `app/device` but are no longer surfaced in the dashboard UI; the serial
   decoder still backs `tools/openfloat_ble_client.py`.) BLE live frames carry
-  the firmware Madgwick quaternion, so the browser derives roll, pitch, and yaw
-  directly from the on-device 3D orientation estimate. If a transport omits
-  those angles, the browser falls back to local gyro/accelerometer tracking.
+  the firmware Madgwick quaternion as the canonical orientation value, and the
+  browser derives roll, pitch, and yaw from that on-device 3D estimate for
+  readouts, bubble-level rendering, and legacy trace/scoring surfaces. If a
+  custom or legacy transport omits those derived angles, the browser falls back
+  to local gyro/accelerometer tracking.
 - Dashboard calibration/review views include a calibrated digital bubble level,
   a Three.js bow orientation visualizer, and phase-colored Pin Float trace
   replay centered on the shot-detection point, with a 1-sigma float ellipse,
@@ -323,6 +327,8 @@ CRC, no flags field, and no gyro vector** in the frame; sequence is `u16`, not
 `u32`. Browser scoring derives angular-rate magnitude from successive
 quaternions when gyro data is absent.
 
+The legacy 29-byte live-frame decoder remains in the browser and Python client
+for older firmware, but shipped BLE live telemetry uses the 20-byte v2 frame.
 The 29-byte envelope still carries other frame types, demultiplexed by the type
 byte (see section 8): **type 2** live shot events (shot_count u16 @4, shot_id
 u16 @6, accel_mg int16[3] @8, threshold_cg u16 @14, roll/pitch/yaw cdeg @16/@18/@20, clicker_dt_ms u16 @22 (unused/0), impact_dt_ms u16 @24 (unused/0), shot_sequence u16 @26, padded to 29 bytes)
@@ -601,8 +607,9 @@ still backs `tools/openfloat_ble_client.py`.) Web Bluetooth
 decodes compact binary frames (20-byte live samples batched in 120-byte
 notifications, plus 29-byte shot-event, count-sync, storage-status, stored-shot,
 and trace-chunk frames); those BLE frames carry the on-board Madgwick filter
-quaternion, allowing the browser to extract and convert it to Euler angles
-directly, aligning it with the serial stream. The app also includes local bow
+quaternion as the canonical orientation value. The browser derives Euler angles
+only for readouts, scoring, and compatibility with older saved trace records.
+The app also includes local bow
 profiles, timestamp-derived practice sessions, manual trace recording, saved
 shot review/compare, Steady Aim hold training (`app/ui/training.js`), Bow Shop
 3D customization, independent OpenFloat Float Score metrics, session review
@@ -850,7 +857,8 @@ not begun. See the Implementation Status section near the top for detail.
   payloads verified on Windows/Bleak at about 161 notifications/s with zero
   sequence loss.)
 - Detect packet loss in the browser and Python client. (Both use the sequence
-  field from the v1 binary frame.)
+  field from the v2 live frame, with legacy 29-byte live decoding retained for
+  older firmware.)
 
 ### Phase 4: Shot Detection and Rolling Buffer  [partial]
 

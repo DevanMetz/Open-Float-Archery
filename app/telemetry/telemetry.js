@@ -295,6 +295,8 @@ export class TelemetryStore {
       this.filteredYaw = yaw;
       this.orientationReady = true;
     } else {
+      // Legacy/custom transport fallback. Current BLE and demo samples provide
+      // rollDeg/pitchDeg derived from the firmware Madgwick quaternion.
       const accelLooksLikeGravity =
         accelG >= ACCEL_TILT_MIN_G && accelG <= ACCEL_TILT_MAX_G;
       const dtS = Math.min(

@@ -5,7 +5,7 @@
 //             management/trace frames remain 29 bytes.
 //   - Serial: human-readable OFRAW / OFSHOT text lines plus "#" banner lines.
 //
-// See Blueprint.md section 6 "Implemented v1 Live Frame" for the byte layout.
+// See Blueprint.md section 6 "Implemented v2 Live Frame" for the byte layout.
 
 export const BINARY_FRAME_LEN = 29;
 export const BINARY_LIVE_V2_FRAME_LEN = 20;
