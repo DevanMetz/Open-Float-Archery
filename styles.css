@@ -115,6 +115,11 @@ h1 {
   background: var(--amber);
 }
 
+.status.reconnecting .dot {
+  background: var(--amber);
+  animation: pulse-reconnect 1.2s infinite;
+}
+
 .status .battery-status {
   display: inline-flex;
   align-items: center;
@@ -508,25 +513,25 @@ input[type="range"] {
 @keyframes pulse-cyan {
   0% {
     box-shadow: 0 0 0 0 rgba(53, 199, 232, 0.5);
-    background-color: #35c7e8;
+    background-color: var(--cyan);
   }
   70% {
     box-shadow: 0 0 0 6px rgba(53, 199, 232, 0);
-    background-color: #35c7e8;
+    background-color: var(--cyan);
   }
   100% {
     box-shadow: 0 0 0 0 rgba(53, 199, 232, 0);
-    background-color: #35c7e8;
+    background-color: var(--cyan);
   }
 }
 
 .metric-dot.upload {
-  background: #35c7e8;
+  background: var(--cyan);
   animation: pulse-cyan 1.2s infinite;
 }
 
 .inline-metric-item.upload-status .upload-label {
-  color: #35c7e8;
+  color: var(--cyan);
   font-weight: 700;
 }
 
@@ -596,6 +601,18 @@ input[type="range"] {
   100% {
     box-shadow: 0 0 0 0 rgba(53, 199, 232, 0);
     background-color: var(--cyan);
+  }
+}
+
+@keyframes pulse-reconnect {
+  0% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.3;
   }
 }
 

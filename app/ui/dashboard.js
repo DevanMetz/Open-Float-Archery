@@ -241,6 +241,10 @@ const CANVAS_INK_DEFAULTS = {
   crosshair: "rgba(255, 255, 255, 0.65)",
   label: "rgba(230, 244, 239, 0.72)",
   marker: "rgba(230, 244, 239, 0.44)",
+  release: "#FF5D73",
+  break: "#FFBE5C",
+  hold: "#30E39B",
+  cyan: "#35C7E8",
 };
 let canvasInk = { ...CANVAS_INK_DEFAULTS };
 
@@ -251,6 +255,10 @@ function refreshCanvasInk() {
     crosshair: cssVar("--trace-crosshair") || CANVAS_INK_DEFAULTS.crosshair,
     label: cssVar("--trace-label") || CANVAS_INK_DEFAULTS.label,
     marker: cssVar("--trace-marker") || CANVAS_INK_DEFAULTS.marker,
+    release: cssVar("--red") || CANVAS_INK_DEFAULTS.release,
+    break: cssVar("--amber") || CANVAS_INK_DEFAULTS.break,
+    hold: cssVar("--green") || CANVAS_INK_DEFAULTS.hold,
+    cyan: cssVar("--cyan") || CANVAS_INK_DEFAULTS.cyan,
   };
 }
 
@@ -327,10 +335,10 @@ function mean(values) {
 }
 
 function phaseColor(phase) {
-  if (phase === "release") return "#FF5D73";
-  if (phase === "break") return "#FFBE5C";
+  if (phase === "release") return canvasInk.release;
+  if (phase === "break") return canvasInk.break;
   if (phase === "follow") return canvasInk.follow;
-  return "#30E39B";
+  return canvasInk.hold;
 }
 
 function findReleaseIndex(data, inferWhenMissing = false, thresholdG = 12.0) {
@@ -444,7 +452,7 @@ function drawCompareReviewTrace(ctx, {
   });
 
   ctx.save();
-  ctx.strokeStyle = "#35C7E8";
+  ctx.strokeStyle = canvasInk.cyan;
   ctx.lineWidth = 2.6;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -459,12 +467,22 @@ function drawCompareReviewTrace(ctx, {
 
   // Release reticle at target center — same anchoring as the primary trace.
   if (hasRelease && visible.length > releaseIdx) {
-    ctx.strokeStyle = "rgba(53, 199, 232, 0.9)";
-    ctx.fillStyle = "rgba(53, 199, 232, 0.16)";
+    ctx.save();
+    ctx.strokeStyle = canvasInk.cyan;
+    ctx.fillStyle = canvasInk.cyan;
     ctx.lineWidth = 1.5;
+
+    ctx.save();
+    ctx.globalAlpha = 0.16;
     ctx.beginPath();
     ctx.arc(cx, cy, 10, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 10, 0, Math.PI * 2);
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(cx - 12, cy);
@@ -472,11 +490,14 @@ function drawCompareReviewTrace(ctx, {
     ctx.moveTo(cx, cy - 12);
     ctx.lineTo(cx, cy + 12);
     ctx.stroke();
+    ctx.restore();
+
+    ctx.restore();
   }
 
   const finalPt = mapPoint(visible[visible.length - 1]);
   ctx.globalAlpha = 1;
-  ctx.fillStyle = "#35C7E8";
+  ctx.fillStyle = canvasInk.cyan;
   ctx.beginPath();
   ctx.arc(finalPt.x, finalPt.y, 5, 0, Math.PI * 2);
   ctx.fill();
@@ -524,13 +545,24 @@ function drawSigmaEllipse(ctx, points, mapPoint) {
   ctx.save();
   ctx.translate(center.x, center.y);
   ctx.rotate(angle);
-  ctx.fillStyle = "rgba(48, 227, 155, 0.15)";
-  ctx.strokeStyle = "rgba(48, 227, 155, 0.72)";
-  ctx.lineWidth = 1.5;
+  ctx.fillStyle = canvasInk.hold;
+  ctx.strokeStyle = canvasInk.hold;
+
+  ctx.save();
+  ctx.globalAlpha = 0.15;
   ctx.beginPath();
   ctx.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  ctx.globalAlpha = 0.72;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
   ctx.stroke();
+  ctx.restore();
+
   ctx.restore();
 }
 
@@ -558,7 +590,7 @@ function makeAxisLabel(THREE, text, color) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.lineWidth = 8;
-  ctx.strokeStyle = "rgba(6, 16, 20, 0.9)";
+  ctx.strokeStyle = cssVar("--bg") || "#0b1512";
   ctx.strokeText(text, canvas.width / 2, canvas.height / 2);
   ctx.fillStyle = color;
   ctx.fillText(text, canvas.width / 2, canvas.height / 2);
@@ -587,14 +619,15 @@ function makeAxisGuide(THREE, options = {}) {
     showNegativeLabels = false,
   } = options;
   const guide = new THREE.Group();
+  const textColorStr = cssVar("--text") || "#E6F4EF";
   const colors = {
     x: 0x30e39b,
-    y: 0xe6f4ef,
+    y: new THREE.Color(textColorStr).getHex(),
     z: 0xffbe5c,
   };
   const labelColors = {
     x: "#30E39B",
-    y: "#E6F4EF",
+    y: textColorStr,
     z: "#FFBE5C",
   };
 
@@ -2356,7 +2389,7 @@ function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null, limit = 2) 
   ctx.stroke();
 }
 
-function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {}) {
+function drawMicSeries(ctx, data, key, baseColor, w, h, options = {}) {
   if (data.length < 2) return;
 
   let peak = 0;
@@ -2373,10 +2406,7 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
 
   ctx.save();
   ctx.lineWidth = 1.5;
-  ctx.strokeStyle = borderColor;
-  ctx.fillStyle = fillColor;
 
-  ctx.beginPath();
   const maxIdx = data.length - 1;
   const timeRangeUs = options.timeRangeUs || null;
   const xForPoint = (point, index) => {
@@ -2393,16 +2423,21 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
     }
     return (index / maxIdx) * w;
   };
-  ctx.moveTo(0, bandBottom);
 
-  // Decimate mic series when point count exceeds 2× canvas width
-  const maxVerts = Math.max(200, Math.round(w * 2));
-  const micStep = data.length > maxVerts ? data.length / maxVerts : 1;
-  const yForMicIdx = (idx) => {
-    const val = data[idx][key] || 0;
-    return bandBottom - (val / 255) * bandPixelHeight;
+  const yForMicIdx = (index) => {
+    const val = data[index][key] || 0;
+    const ratio = val / peak;
+    return bandBottom - ratio * bandPixelHeight;
   };
 
+  // 1. Draw fill
+  ctx.fillStyle = baseColor;
+  ctx.save();
+  ctx.globalAlpha = options.fillOpacity ?? 0.15;
+  ctx.beginPath();
+  ctx.moveTo(xForPoint(data[0], 0), bandBottom);
+  const maxVerts = Math.max(200, Math.round(w * 2));
+  const micStep = data.length > maxVerts ? data.length / maxVerts : 1;
   if (micStep <= 1) {
     for (let i = 0; i < data.length; i += 1) {
       ctx.lineTo(xForPoint(data[i], i), yForMicIdx(i));
@@ -2412,7 +2447,6 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
       const bStart = Math.round(b * micStep);
       const bEnd = Math.min(data.length - 1, Math.round((b + 1) * micStep) - 1);
       if (bStart > maxIdx) break;
-      // Keep the max-amplitude (min Y) sample per bucket for the fill envelope
       let bestIdx = bStart, bestY = Infinity;
       for (let j = bStart; j <= bEnd; j++) {
         const y = yForMicIdx(j);
@@ -2424,7 +2458,12 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
   ctx.lineTo(w, bandBottom);
   ctx.closePath();
   ctx.fill();
+  ctx.restore();
 
+  // 2. Draw stroke
+  ctx.strokeStyle = baseColor;
+  ctx.save();
+  ctx.globalAlpha = options.strokeOpacity ?? 0.45;
   ctx.beginPath();
   if (micStep <= 1) {
     for (let i = 0; i < data.length; i += 1) {
@@ -2448,6 +2487,7 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
     }
   }
   ctx.stroke();
+  ctx.restore();
 
   if (options.label) {
     ctx.fillStyle = canvasInk.label;
@@ -2471,10 +2511,9 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
         Math.min(w, ((tUs - timeRangeUs.start) / (timeRangeUs.end - timeRangeUs.start)) * w),
       );
     }
-    if (idx !== null && idx !== undefined && idx >= 0) {
-      return (idx / maxIdx) * w;
-    }
-    return null;
+    return idx !== null && idx !== undefined && idx >= 0
+      ? (idx / maxIdx) * w
+      : null;
   };
 
   const xRelease = getXForTime(options.releaseTimeMs, options.releaseIdx);
@@ -2482,7 +2521,7 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
 
   if (xRelease !== null && xRelease >= 0 && xRelease <= w) {
     ctx.save();
-    ctx.strokeStyle = "rgba(239, 68, 68, 0.75)"; // Red for release
+    ctx.strokeStyle = canvasInk.release;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -2490,7 +2529,7 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
     ctx.lineTo(xRelease, bandBottom);
     ctx.stroke();
 
-    ctx.fillStyle = "rgba(239, 68, 68, 0.85)";
+    ctx.fillStyle = canvasInk.release;
     ctx.font = "700 9px sans-serif";
     ctx.textAlign = "right";
     ctx.fillText("RELEASE", xRelease - 4, bandTop + 4);
@@ -2499,7 +2538,7 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
 
   if (xHit !== null && xHit >= 0 && xHit <= w) {
     ctx.save();
-    ctx.strokeStyle = "rgba(53, 199, 232, 0.8)"; // Cyan for hit
+    ctx.strokeStyle = canvasInk.cyan;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -2507,7 +2546,7 @@ function drawMicSeries(ctx, data, key, borderColor, fillColor, w, h, options = {
     ctx.lineTo(xHit, bandBottom);
     ctx.stroke();
 
-    ctx.fillStyle = "rgba(53, 199, 232, 0.9)";
+    ctx.fillStyle = canvasInk.cyan;
     ctx.font = "700 9px sans-serif";
     ctx.textAlign = "left";
     ctx.fillText("HIT", xHit + 4, bandTop + 4);

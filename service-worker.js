@@ -1,8 +1,9 @@
-const CACHE_NAME = "openfloat-v124";
+const CACHE_NAME = "openfloat-v125";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
+  "./theme-graph-paper.css",
   "./manifest.json",
   "./favicon.ico",
   "./icon-192.png",

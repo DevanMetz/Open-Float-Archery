@@ -6,11 +6,41 @@
   <title>OpenFloat Shot Trainer</title>
   <link rel="stylesheet" href="styles.css?v=shot-store-120">
   <link rel="stylesheet" href="theme-graph-paper.css?v=proto-1" id="graphThemeLink">
+  <meta name="theme-color" content="#061014" id="themeMetaColor">
+  <script>
+    (function () {
+      const KEY = "of-theme-proto";
+      const MODES = ["paper", "dark", "classic"];
+      function normalize(value) {
+        if (value === "1") return "paper";
+        if (value === "0") return "classic";
+        return MODES.includes(value) ? value : "paper";
+      }
+      const mode = normalize(localStorage.getItem(KEY));
+      const link = document.getElementById("graphThemeLink");
+      if (link) {
+        link.disabled = mode === "classic";
+      }
+      let themeColor = "#061014";
+      if (mode === "dark") {
+        document.documentElement.setAttribute("data-theme", "dark");
+        themeColor = "#10171a";
+      } else {
+        document.documentElement.removeAttribute("data-theme");
+        if (mode === "paper") {
+          themeColor = "#f9f8f2";
+        }
+      }
+      const meta = document.getElementById("themeMetaColor");
+      if (meta) {
+        meta.setAttribute("content", themeColor);
+      }
+    })();
+  </script>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="favicon.ico?v=shot-store-118" sizes="any">
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png?v=shot-store-118">
   <link rel="apple-touch-icon" href="apple-touch-icon.png?v=shot-store-118">
-  <meta name="theme-color" content="#061014">
 </head>
 <body>
   <div class="app">
@@ -771,8 +801,8 @@
   </style>
   <script>
     (function () {
-      const link = document.getElementById("graphThemeLink");
       const btn = document.getElementById("themeProtoToggle");
+      const link = document.getElementById("graphThemeLink");
       const KEY = "of-theme-proto";
       const MODES = ["paper", "dark", "classic"];
       function normalize(value) {
@@ -782,16 +812,26 @@
       }
       function apply(mode) {
         link.disabled = mode === "classic";
+        let themeColor = "#061014";
         if (mode === "dark") {
           document.documentElement.setAttribute("data-theme", "dark");
+          themeColor = "#10171a";
         } else {
           document.documentElement.removeAttribute("data-theme");
+          if (mode === "paper") {
+            themeColor = "#f9f8f2";
+          }
+        }
+        const meta = document.getElementById("themeMetaColor");
+        if (meta) {
+          meta.setAttribute("content", themeColor);
         }
         btn.textContent = `THEME: ${mode.toUpperCase()}`;
         localStorage.setItem(KEY, mode);
+        window.dispatchEvent(new Event("themechange"));
       }
       let mode = normalize(localStorage.getItem(KEY));
-      apply(mode);
+      btn.textContent = `THEME: ${mode.toUpperCase()}`;
       btn.addEventListener("click", () => {
         mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
         apply(mode);

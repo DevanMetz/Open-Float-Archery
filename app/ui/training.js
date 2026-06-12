@@ -14,6 +14,9 @@ function canvasMarkerInk() {
   return {
     dotRing: styles.getPropertyValue("--trace-dot-ring").trim() || "#FFFFFF",
     crosshair: styles.getPropertyValue("--trace-crosshair").trim() || "rgba(255, 255, 255, 0.6)",
+    hold: styles.getPropertyValue("--green").trim() || "#30E39B",
+    liveDot: styles.getPropertyValue("--cyan").trim() || "#35C7E8",
+    refDot: styles.getPropertyValue("--red").trim() || "#FF5D73",
   };
 }
 
@@ -225,7 +228,9 @@ export function mountTraining({ store, telemetry, el, bus }) {
       const scale = (maxRadius * 0.6) / 1.5;
 
       // Draw Trace Path
-      ctx.strokeStyle = "rgba(48, 227, 155, 0.85)"; // Hold green
+      ctx.save();
+      ctx.strokeStyle = markerInk.hold;
+      ctx.globalAlpha = 0.85;
       ctx.lineWidth = 2.5;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -238,13 +243,14 @@ export function mountTraining({ store, telemetry, el, bus }) {
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
+      ctx.restore();
 
       // Draw Live Position Dot
       if (liveDotRoll !== null) {
         const lx = cx + (liveDotRoll - refRoll) * scale;
         const ly = cy - (liveDotPitch - refPitch) * scale;
         
-        ctx.fillStyle = "#35C7E8"; // Live indicator dot (cyan)
+        ctx.fillStyle = markerInk.liveDot; // Live indicator dot (cyan)
         ctx.beginPath();
         ctx.arc(lx, ly, 6, 0, Math.PI * 2);
         ctx.fill();
@@ -285,18 +291,29 @@ export function mountTraining({ store, telemetry, el, bus }) {
         ctx.save();
         ctx.translate(ecx, ecy);
         ctx.rotate(-ellipseData.angle);
-        ctx.fillStyle = "rgba(48, 227, 155, 0.12)";
-        ctx.strokeStyle = "rgba(48, 227, 155, 0.55)";
-        ctx.lineWidth = 1.5;
+        ctx.fillStyle = markerInk.hold;
+        ctx.strokeStyle = markerInk.hold;
+
+        ctx.save();
+        ctx.globalAlpha = 0.12;
         ctx.beginPath();
         ctx.ellipse(0, 0, ellipseData.radiusX, ellipseData.radiusY, 0, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, ellipseData.radiusX, ellipseData.radiusY, 0, 0, Math.PI * 2);
         ctx.stroke();
+        ctx.restore();
+
         ctx.restore();
       }
 
       // Draw Trace Path
-      ctx.strokeStyle = "#30E39B"; // Green trace
+      ctx.strokeStyle = markerInk.hold; // Green trace
       ctx.lineWidth = 2.8;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -311,7 +328,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
       ctx.stroke();
 
       // Draw final reference crosshair on the center of average float
-      ctx.fillStyle = "#FF5D73";
+      ctx.fillStyle = markerInk.refDot;
       ctx.strokeStyle = markerInk.dotRing;
       ctx.beginPath();
       ctx.arc(cx, cy, 4, 0, Math.PI * 2);

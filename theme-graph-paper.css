@@ -21,10 +21,9 @@
   --amber: #a9780f;
   --violet: #6a58d8;
   --ink: #0b1512; /* stays dark: code blocks + dark instrument surfaces */
-  /* Grid lines disabled for comparison — restore the rgba values to bring
-     the graph paper back: minor rgba(13,132,168,0.09), major rgba(13,132,168,0.18). */
-  --paper-grid: transparent;
-  --paper-grid-major: transparent;
+  /* Grid lines restored */
+  --paper-grid: rgba(13, 132, 168, 0.09);
+  --paper-grid-major: rgba(13, 132, 168, 0.18);
 
   /* Canvas draw colors read by the chart/preview JS (dark-theme fallbacks
      are hardcoded there for when this sheet is toggled off). */
@@ -43,6 +42,26 @@
   --tick: rgba(23, 36, 31, 0.5);
   --rail: rgba(23, 36, 31, 0.12);
   --overlay: rgba(23, 36, 31, 0.4);
+
+  /* Bubble level styles (translucent states) */
+  --level-ok-bg: rgba(12, 154, 104, 0.16);
+  --level-ok-border: rgba(12, 154, 104, 0.55);
+  --level-warn-bg: rgba(169, 120, 15, 0.16);
+  --level-warn-border: rgba(169, 120, 15, 0.5);
+  --level-danger-bg: rgba(216, 58, 82, 0.16);
+  --level-danger-border: rgba(216, 58, 82, 0.5);
+
+  /* Score ring border */
+  --score-ring-border: rgba(12, 154, 104, 0.22);
+
+  /* Alignment wizard & tags */
+  --tag-data-bg: rgba(13, 132, 168, 0.12);
+  --tag-data-border: rgba(13, 132, 168, 0.45);
+  --tag-visual-bg: rgba(106, 88, 216, 0.12);
+  --tag-visual-border: rgba(106, 88, 216, 0.45);
+  --tag-view-bg: rgba(169, 120, 15, 0.12);
+  --tag-view-border: rgba(169, 120, 15, 0.45);
+  --wizard-border: rgba(13, 132, 168, 0.45);
 }
 
 /* ---- 1b. Minimal dark: the same flat look with the lights off ------------ */
@@ -74,6 +93,26 @@ html[data-theme="dark"] {
   --tick: rgba(232, 241, 236, 0.55);
   --rail: rgba(232, 241, 236, 0.16);
   --overlay: rgba(0, 0, 0, 0.55);
+
+  /* Bubble level styles (translucent states) */
+  --level-ok-bg: rgba(47, 211, 148, 0.16);
+  --level-ok-border: rgba(47, 211, 148, 0.55);
+  --level-warn-bg: rgba(232, 181, 74, 0.16);
+  --level-warn-border: rgba(232, 181, 74, 0.5);
+  --level-danger-bg: rgba(255, 100, 120, 0.16);
+  --level-danger-border: rgba(255, 100, 120, 0.5);
+
+  /* Score ring border */
+  --score-ring-border: rgba(47, 211, 148, 0.22);
+
+  /* Alignment wizard & tags */
+  --tag-data-bg: rgba(62, 195, 232, 0.12);
+  --tag-data-border: rgba(62, 195, 232, 0.45);
+  --tag-visual-bg: rgba(155, 140, 255, 0.12);
+  --tag-visual-border: rgba(155, 140, 255, 0.45);
+  --tag-view-bg: rgba(232, 181, 74, 0.12);
+  --tag-view-border: rgba(232, 181, 74, 0.45);
+  --wizard-border: rgba(62, 195, 232, 0.45);
 }
 
 /* ---- 2. The graph paper ------------------------------------------------- */
@@ -134,6 +173,8 @@ input:not([type="checkbox"]):not([type="radio"]),
 .session-float-plot,
 .session-review-stat,
 .session-review-drills span:not(.session-review-drills-label),
+.session-edit-btn,
+.guide-content blockquote,
 .history-item,
 .history-item-preview-wrap,
 .history-item-checkbox,
@@ -348,18 +389,18 @@ button.accent {
 }
 
 .level-card.level-ok .bubble-level {
-  background: rgba(12, 154, 104, 0.16);
-  border-color: rgba(12, 154, 104, 0.55);
+  background: var(--level-ok-bg);
+  border-color: var(--level-ok-border);
 }
 
 .level-card.level-warn .bubble-level {
-  background: rgba(169, 120, 15, 0.16);
-  border-color: rgba(169, 120, 15, 0.5);
+  background: var(--level-warn-bg);
+  border-color: var(--level-warn-border);
 }
 
 .level-card.level-danger .bubble-level {
-  background: rgba(216, 58, 82, 0.16);
-  border-color: rgba(216, 58, 82, 0.5);
+  background: var(--level-danger-bg);
+  border-color: var(--level-danger-border);
 }
 
 .level-bubble {
@@ -384,7 +425,7 @@ button.accent {
 /* ---- 11. Panels & cards: paper on paper ----------------------------------- */
 .score-ring {
   background: var(--surface);
-  border: 9px solid rgba(12, 154, 104, 0.22);
+  border: 9px solid var(--score-ring-border);
   outline: 1px solid var(--green);
 }
 
@@ -484,4 +525,73 @@ button.accent {
 /* ---- 13. Guide: code blocks stay terminal-dark ----------------------------- */
 .guide-content pre code {
   color: #e9f2ed;
+}
+
+/* ---- 14. Hover states & custom overlays --------------------------------- */
+.session-header:hover {
+  background: rgba(13, 132, 168, 0.05) !important;
+  border-color: var(--text) !important;
+}
+
+.history-item:hover,
+.recent-shot-card:hover {
+  background: rgba(13, 132, 168, 0.04) !important;
+  border-color: var(--text) !important;
+}
+
+.session-review-stat.as-button:hover {
+  border-color: var(--green) !important;
+  background: rgba(12, 154, 104, 0.06) !important;
+}
+
+.history-item-delete-btn:hover {
+  background: rgba(216, 58, 82, 0.08) !important;
+  border-color: var(--red) !important;
+}
+
+.history-item-export-btn:hover {
+  background: rgba(13, 132, 168, 0.08) !important;
+  border-color: var(--cyan) !important;
+}
+
+.tag-data {
+  background: var(--tag-data-bg) !important;
+  border-color: var(--tag-data-border) !important;
+}
+
+.tag-visual {
+  background: var(--tag-visual-bg) !important;
+  border-color: var(--tag-visual-border) !important;
+}
+
+.tag-view {
+  background: var(--tag-view-bg) !important;
+  border-color: var(--tag-view-border) !important;
+}
+
+.alignment-wizard {
+  border-color: var(--wizard-border) !important;
+}
+
+/* ---- 15. Form Inputs & Textareas --------------------------------------- */
+input[type="text"],
+input[type="number"],
+input[type="password"],
+textarea {
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  color: var(--text);
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  border-radius: 0;
+  width: 100%;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="password"]:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--text);
 }

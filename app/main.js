@@ -3030,4 +3030,14 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+// Redraw previews when the theme is cycled
+window.addEventListener("themechange", async () => {
+  try {
+    await loadRecentShotsList();
+    await loadShotHistoryList();
+  } catch (err) {
+    console.error("Failed to reload shots lists on theme change:", err);
+  }
+});
+
 bus.emit("log", `Ready (${APP_BUILD}). Click the status badge to connect a sensor.`);
