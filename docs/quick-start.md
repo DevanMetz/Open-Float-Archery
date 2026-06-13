@@ -51,6 +51,11 @@ firmware toolchain once.
 
 ## 3. Build the firmware
 
+> **Skip this step entirely** by downloading the prebuilt `merged.hex` from the
+> [latest GitHub release](https://github.com/DevanMetz/Open-Float-Archery/releases/latest)
+> — CI builds it from the tagged source. You still need OpenOCD to flash
+> (step 4), but not the NCS toolchain.
+
 The firmware lives in `firmware/` and targets
 `xiao_nrf54l15/nrf54l15/cpuapp`. Build it with the NCS v3.3.0 toolchain. On a
 typical Windows install the tested command is:

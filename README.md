@@ -43,10 +43,12 @@ http://localhost:4178/
 Connect the sensor from the status badge in the header to start streaming live
 telemetry.
 
-**Building a sensor from scratch?** The [Quick Start](docs/quick-start.md) walks
-through the ~1 hour first build: parts list, firmware toolchain, flashing, and
-first calibration. Firmware build/flash/verify detail lives in
-[`firmware/BUILDING.md`](firmware/BUILDING.md).
+**Building a sensor from scratch?** Grab the prebuilt firmware from the
+[latest release](https://github.com/DevanMetz/Open-Float-Archery/releases/latest)
+and skip the toolchain install — flashing the attached `merged.hex` takes about
+ten minutes. The [Quick Start](docs/quick-start.md) walks through the full
+build: parts list, firmware, flashing, and first calibration. Firmware
+build/flash/verify detail lives in [`firmware/BUILDING.md`](firmware/BUILDING.md).
 
 <!-- 📸 IMAGE SPOT 2 of 5 — SENSOR PHOTO — docs/images/sensor-mounted-riser.jpg
      A clear, well-lit photo of the XIAO sensor mounted on your bow's riser
