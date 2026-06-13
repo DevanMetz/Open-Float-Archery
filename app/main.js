@@ -22,11 +22,11 @@ import { initDataBackup } from "./ui/data-backup.js?v=shot-store-125";
 import { initHistory } from "./ui/history.js?v=shot-store-125";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-117";
 
-const APP_BUILD = "shot-store-127";
+const APP_BUILD = "shot-store-128";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
-  "statusBadge", "statusText",
+  "statusBadge", "statusText", "demoBtn", "demoBtnText",
   "protocolValue", "typeValue", "sourceValue", "seqValue", "lossValue",
   "dtValue", "hzValue", "frameCountValue", "micVolumeItem", "volBar",
   "shotCountValue", "uploadStatusItem", "uploadCountValue", "eventLog", "traceCanvas",
@@ -596,13 +596,13 @@ async function disconnect() {
   adapter = null;
 }
 
-async function connect() {
+async function connect(kind = transport()) {
   await disconnect();
   telemetry.reset();
-  adapter = createAdapter(transport(), bus);
+  adapter = createAdapter(kind, bus);
   try {
     await adapter.connect();
-    if (transport() === "ble") {
+    if (kind === "ble") {
       await adapter.sendControl(`thresh:${thresholdGrams().toFixed(1)}`);
       await adapter.sendControl(`wakesens:${wakeSensitivityGrams().toFixed(1)}`);
       await adapter.sendControl(`sleeptime:${sleepTimeoutSeconds()}`);
@@ -772,6 +772,22 @@ el.statusBadge.addEventListener("click", async () => {
   } else {
     await connect();
   }
+});
+el.demoBtn.addEventListener("click", async () => {
+  if (store.get().statusMode === "demo") {
+    await disconnect();
+  } else {
+    await connect("demo");
+  }
+});
+store.subscribe((s) => {
+  const demoActive = s.statusMode === "demo";
+  el.demoBtnText.textContent = demoActive ? "Stop demo" : "Demo";
+  el.demoBtn.title = demoActive
+    ? "Stop the demo stream"
+    : "Watch a synthetic live stream — no hardware needed";
+  // Hide the demo entry point while real hardware is streaming.
+  el.demoBtn.classList.toggle("hidden", s.connected && !demoActive);
 });
 el.recordToggleBtn.addEventListener("click", async () => {
   if (store.get().manualRecordingActive) {

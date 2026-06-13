@@ -115,6 +115,20 @@ h1 {
   background: var(--amber);
 }
 
+/* Header demo-stream button: a .status pill that happens to be a <button>. */
+button.demo-btn {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  border-color: rgba(255, 190, 92, 0.4);
+  background: rgba(255, 190, 92, 0.08);
+}
+
+button.demo-btn:hover {
+  background: rgba(255, 190, 92, 0.18);
+  border-color: var(--amber);
+}
+
 .status.reconnecting .dot {
   background: var(--amber);
   animation: pulse-reconnect 1.2s infinite;
