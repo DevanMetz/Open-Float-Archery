@@ -26,7 +26,8 @@ app store, no account, and no cloud required.
 
 The hosted app at **[openfloatarchery.com](https://openfloatarchery.com)** loads
 with demo shots from real OpenFloat captures, so you can explore shot review,
-replay, scoring, and session analysis before building anything. It runs fully
+replay, scoring, and session analysis before building anything. Click **▶ Demo**
+in the header to watch the dashboard stream live synthetic motion. It runs fully
 offline once loaded (PWA).
 
 **Already have a sensor?** Serve the repo root over localhost so native ES
@@ -81,26 +82,13 @@ review with replay scrubber and shot comparison, an independent open-source
 grouping, a Bow Shop 3D customizer, full local backup/restore, and an optional
 self-hosted Supabase sync that never gates local use.
 
-<!-- 📸 IMAGE SPOT 3 of 5 — LIVE DASHBOARD — docs/images/dashboard-live.png
-     Screenshot of the dashboard while connected and streaming: bubble level,
-     3D bow visualizer, live rate (~1110 Hz), and the acoustic envelope meter
-     visible in the header. Suggested: full-window PNG, ~1400 px wide.
-     When ready, delete this comment and uncomment the line below. -->
-<!-- ![Live dashboard: bubble level, 3D bow visualizer, and ~1110 Hz telemetry](docs/images/dashboard-live.png) -->
+<!-- Current capture uses the built-in demo stream; reshoot connected to real
+     hardware to show the ~1110 Hz live rate in the header. -->
+![Live dashboard: bubble level, 3D bow visualizer, and the live telemetry trace](docs/images/dashboard-live.png)
 
-<!-- 📸 IMAGE SPOT 4 of 5 — SHOT REVIEW — docs/images/shot-review-pin-float.png
-     Screenshot of Pin Float trace review on a saved shot: phase-colored trace
-     (green hold / amber-red release / gray follow-through), 1-sigma ellipse,
-     release reticle, replay scrubber, and the Float Score breakdown.
-     When ready, delete this comment and uncomment the line below. -->
-<!-- ![Pin Float shot review: phase-colored trace, sigma ellipse, replay scrubber, and Float Score](docs/images/shot-review-pin-float.png) -->
+![Pin Float shot review: phase-colored trace, sigma ellipse, replay scrubber, and Float Score](docs/images/shot-review-pin-float.png)
 
-<!-- 📸 IMAGE SPOT 5 of 5 — TRAINING & SESSIONS — docs/images/steady-aim-session.png
-     Screenshot of either the Steady Aim drill mid-hold (live tracing +
-     steadiness scoring) or a Saved Shots session summary with the Float Score
-     progression plot — whichever looks best. A side-by-side of both also
-     works. When ready, delete this comment and uncomment the line below. -->
-<!-- ![Steady Aim hold training and practice session review](docs/images/steady-aim-session.png) -->
+![Steady Aim hold training mid-drill: live tracing against the target with countdown and cant readout](docs/images/steady-aim-session.png)
 
 ## Repository Layout
 

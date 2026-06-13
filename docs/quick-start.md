@@ -168,6 +168,11 @@ offline once loaded, and the hosted build lives at `openfloatarchery.com`.
 If the link drops, the app retries automatically (up to 6 times with backoff)
 and the firmware resumes advertising — usually it reconnects on its own.
 
+![The dashboard streaming: bubble level, 3D bow visualizer, and live trace](images/dashboard-live.png)
+
+> No sensor yet? The **▶ Demo** button in the header streams synthetic motion
+> so you can explore the whole dashboard first.
+
 ---
 
 ## 8. First calibration
