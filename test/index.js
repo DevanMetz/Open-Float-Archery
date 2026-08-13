@@ -2,3 +2,7 @@ import "./db.test.js";
 import "./frame.test.js";
 import "./score.test.js";
 import "./trace.test.js";
+import "./training-coach.test.js";
+import "./outcome.test.js";
+import "./session-review.test.js";
+import "./sync.test.js";

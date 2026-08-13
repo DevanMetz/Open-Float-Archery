@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-128">
+  <link rel="stylesheet" href="styles.css?v=shot-store-131">
   <link rel="stylesheet" href="theme-graph-paper.css?v=proto-1" id="graphThemeLink">
   <meta name="theme-color" content="#061014" id="themeMetaColor">
   <script>
@@ -245,6 +245,54 @@
               <button id="exportShotBtn" class="accent mini-btn" title="Export this single shot to a JSON file">Export Shot</button>
               <button id="exitReviewBtn" class="primary mini-btn">Exit Review</button>
             </div>
+            <div id="reviewOutcomePanel" class="review-outcome-panel hidden" aria-label="Record arrow result">
+              <div class="review-outcome-copy">
+                <span class="review-outcome-kicker">Arrow Outcome</span>
+                <strong id="reviewOutcomeStatus">Not scored</strong>
+                <p>Plot the impact or enter the score to discover which form metrics move your group.</p>
+              </div>
+              <div class="outcome-impact-editor">
+                <canvas id="outcomeImpactCanvas" width="200" height="200" tabindex="0" aria-label="Arrow impact target. Click or press Enter to place an arrow, then use arrow keys to adjust."></canvas>
+                <div class="outcome-impact-caption">
+                  <span id="outcomeImpactHint">Tap the target, or focus it and press Enter.</span>
+                  <button id="clearImpactBtn" type="button" class="secondary" disabled>Clear impact</button>
+                </div>
+              </div>
+              <div class="review-outcome-editor">
+                <div id="outcomeScoreButtons" class="outcome-score-buttons" role="group" aria-label="Arrow score">
+                  <button type="button" data-outcome-score="0" aria-label="Miss">M</button>
+                  <button type="button" data-outcome-score="1">1</button>
+                  <button type="button" data-outcome-score="2">2</button>
+                  <button type="button" data-outcome-score="3">3</button>
+                  <button type="button" data-outcome-score="4">4</button>
+                  <button type="button" data-outcome-score="5">5</button>
+                  <button type="button" data-outcome-score="6">6</button>
+                  <button type="button" data-outcome-score="7">7</button>
+                  <button type="button" data-outcome-score="8">8</button>
+                  <button type="button" data-outcome-score="9">9</button>
+                  <button type="button" data-outcome-score="10">10</button>
+                  <button type="button" data-outcome-score="10" data-outcome-x="true" aria-label="X ring">X</button>
+                </div>
+                <div class="outcome-context-fields">
+                  <label for="outcomeDistanceInput">Distance
+                    <input id="outcomeDistanceInput" type="number" min="0.5" max="300" step="0.5" inputmode="decimal" placeholder="20">
+                  </label>
+                  <label for="outcomeDistanceUnit">Unit
+                    <select id="outcomeDistanceUnit">
+                      <option value="yd" selected>yards</option>
+                      <option value="m">meters</option>
+                    </select>
+                  </label>
+                  <label for="outcomeFaceInput">Face (cm)
+                    <input id="outcomeFaceInput" type="number" min="1" max="200" step="1" inputmode="decimal" placeholder="40">
+                  </label>
+                </div>
+                <div class="review-outcome-actions">
+                  <button id="saveOutcomeBtn" type="button" class="primary">Save Result</button>
+                  <button id="clearOutcomeBtn" type="button" class="secondary">Clear</button>
+                </div>
+              </div>
+            </div>
             <div id="reviewScrubBar" class="review-scrub-bar hidden" aria-label="Trace timeline scrubber">
               <button id="replayTraceBtn" class="play-btn" title="Play replay" aria-label="Play replay">
                 <svg class="play-icon icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
@@ -287,11 +335,28 @@
           <!-- Training Setup & Controls -->
           <div class="panel training-control-card">
             <div class="panel-head">
-              <h2>Steady Aim Trainer</h2>
-              <p class="note">Practice holding your bow as steady as possible over a configured time window.</p>
+              <h2>Adaptive Trainer</h2>
+              <p class="note">Turn your recent telemetry into a focused dry-practice recommendation.</p>
             </div>
 
-            <div class="training-settings-group" style="margin-top: 14px;">
+            <div class="adaptive-coach-card" aria-live="polite">
+              <span class="adaptive-coach-kicker">Recommended next</span>
+              <strong id="adaptiveCoachTitle">Build your training baseline</strong>
+              <p id="adaptiveCoachText">Complete and save a hold so the coach can personalize your next drill.</p>
+              <span id="adaptiveCoachStats" class="adaptive-coach-stats">Steady Aim | New baseline | Target 80</span>
+            </div>
+
+            <div class="training-settings-group">
+              <div class="field">
+                <label for="trainingDrillSelect">Training Focus</label>
+                <select id="trainingDrillSelect">
+                  <option value="adaptive" selected>Coach Recommendation</option>
+                  <option value="steady">Steady Aim</option>
+                  <option value="level">Level Lock</option>
+                  <option value="settle">Settle &amp; Hold</option>
+                </select>
+                <p id="trainingDrillDescription" class="note training-drill-description"></p>
+              </div>
               <div class="field">
                 <label for="trainingDurationSelect">Hold Duration</label>
                 <select id="trainingDurationSelect">
@@ -319,8 +384,8 @@
           <div class="panel training-display-card">
             <div id="trainingDisplayDefault" class="training-display-default" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; height: 360px; gap: 12px;">
               <div class="target-graphic-placeholder" style="font-size: 64px;">🎯</div>
-              <h3>Ready to Begin</h3>
-              <p class="note" style="max-width: 280px; margin: 0;">Set your hold duration and click Start. Make sure your bow sensor is connected and calibrated.</p>
+              <h3 id="trainingReadyTitle">Steady Aim</h3>
+              <p id="trainingReadyText" class="note" style="max-width: 340px; margin: 0;">Connect a calibrated sensor, then follow the coaching cue through the full hold.</p>
             </div>
 
             <div id="trainingDisplayActive" class="training-display-active hidden" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 360px; gap: 24px;">
@@ -350,7 +415,7 @@
             </div>
             <div class="results-grid" style="display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 16px;">
               <div class="result-badge-large" style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; border-radius: 8px; border: 1px solid rgba(53, 199, 232, 0.25); background: rgba(53, 199, 232, 0.05); text-align: center;">
-                <span class="label" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Steadiness Score</span>
+                <span id="resultScoreLabel" class="label" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Training Score</span>
                 <span id="resultSteadinessScore" class="val" style="font-size: 48px; font-weight: 900; color: var(--cyan); line-height: 1;">--</span>
               </div>
               <div class="result-stats" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
@@ -844,6 +909,6 @@
     })();
   </script>
 
-  <script type="module" src="app/main.js?v=shot-store-128"></script>
+  <script type="module" src="app/main.js?v=shot-store-131"></script>
 </body>
 </html>

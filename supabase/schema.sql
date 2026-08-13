@@ -66,7 +66,16 @@ create table if not exists public.shots (
   level_consistency numeric,
   score_version     text,
   packet_loss_count integer,
-  label             text
+  label             text,
+  arrow_score       smallint check (arrow_score between 0 and 10),
+  arrow_is_x        boolean default false,
+  target_distance   numeric,
+  target_distance_unit text,
+  target_face_cm    numeric,
+  outcome_recorded_at timestamptz,
+  impact_x          numeric,
+  impact_y          numeric,
+  impact_recorded_at timestamptz
 );
 
 create table if not exists public.shot_traces (
@@ -104,7 +113,16 @@ alter table public.shots
   add column if not exists level_consistency numeric,
   add column if not exists score_version     text,
   add column if not exists packet_loss_count integer,
-  add column if not exists label             text;
+  add column if not exists label             text,
+  add column if not exists arrow_score       smallint,
+  add column if not exists arrow_is_x        boolean default false,
+  add column if not exists target_distance   numeric,
+  add column if not exists target_distance_unit text,
+  add column if not exists target_face_cm    numeric,
+  add column if not exists outcome_recorded_at timestamptz,
+  add column if not exists impact_x          numeric,
+  add column if not exists impact_y          numeric,
+  add column if not exists impact_recorded_at timestamptz;
 
 alter table public.shot_traces
   add column if not exists user_id            uuid default auth.uid(),

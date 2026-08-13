@@ -15,14 +15,14 @@ import {
   rotateMountAxes,
 } from "./ui/bow-3d.js?v=shot-store-126";
 import { initDb, getAll, get, put, remove, generateUUID } from "./core/db.js?v=shot-store-98";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-117";
-import { mountTraining } from "./ui/training.js?v=shot-store-99";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-130";
+import { mountTraining } from "./ui/training.js?v=shot-store-129";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-125";
-import { initHistory } from "./ui/history.js?v=shot-store-125";
-import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-117";
+import { initHistory } from "./ui/history.js?v=shot-store-131";
+import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-131";
 
-const APP_BUILD = "shot-store-128";
+const APP_BUILD = "shot-store-131";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -35,15 +35,19 @@ const ELEMENT_IDS = [
   "sbUrlInput", "sbKeyInput", "saveCloudSettingsBtn", "clearCloudSettingsBtn",
   "chartTitle", "reviewBanner", "reviewInfo", "reviewRangeEst", "reviewCompareSelect",
   "reviewCompareField", "reviewCompareLegend", "exportShotBtn", "exitReviewBtn",
+  "reviewOutcomePanel", "reviewOutcomeStatus", "outcomeScoreButtons", "outcomeDistanceInput",
+  "outcomeDistanceUnit", "outcomeFaceInput", "saveOutcomeBtn", "clearOutcomeBtn",
+  "outcomeImpactCanvas", "outcomeImpactHint", "clearImpactBtn",
   "navDashboardBtn", "navTrainingBtn", "navHistoryBtn", "navBowShopBtn", "navSettingsBtn", "navGuideBtn",
   "tabDashboard", "tabTraining", "tabHistory", "tabBowShop", "tabSettings", "tabGuide",
   "guideSidebar", "guideContent", "historyList",
   "historyBulkActions", "bulkSelectCount", "bulkDeleteBtn", "bulkCancelBtn", "historySelectModeBtn", "bulkSelectAllBtn", "historyDefaultActions",
-  "trainingDurationSelect", "startTrainingBtn", "cancelTrainingBtn",
+  "trainingDrillSelect", "trainingDrillDescription", "trainingDurationSelect", "startTrainingBtn", "cancelTrainingBtn",
+  "adaptiveCoachTitle", "adaptiveCoachText", "adaptiveCoachStats", "trainingReadyTitle", "trainingReadyText",
   "trainingStatusText", "trainingStatusDesc", "trainingDisplayDefault", "trainingDisplayActive",
   "timerProgress", "trainingCountdownVal", "trainingPhaseLabel", "trainingTargetWrapper",
   "trainingTargetCanvas", "trainingCantBadge", "trainingHoldTimerBadge", "trainingResultsCard",
-  "resultSteadinessScore", "resultAvgCantDev", "resultAvgPitchDev", "resultMaxFloat",
+  "resultScoreLabel", "resultSteadinessScore", "resultAvgCantDev", "resultAvgPitchDev", "resultMaxFloat",
   "resultCoachingTitle", "resultCoachingText", "saveTrainingShotBtn", "discardTrainingShotBtn",
   "recordToggleBtn", "recordToggleLabel", "recordStatusItem",
   "recordTimeText", "recordSamplesText", "discardRecordBtn",
@@ -412,7 +416,7 @@ const syncAdapter = new CloudSyncAdapter(bus, store);
 telemetry.syncAdapter = syncAdapter; // Register sync on telemetry store
 
 mountDashboard({ store, telemetry, el });
-mountTraining({ store, telemetry, el, bus });
+mountTraining({ store, el, bus });
 mountLog(bus, el.eventLog);
 mountOrientationSettings({ store, el });
 mountBowShop({ store, el, saveSettingsToCache });
@@ -463,7 +467,7 @@ store.subscribe((state) => {
     }
 
     if (el.reviewScrubBar && el.replayTraceBtn && el.speedValue) {
-      const pinReviewActive = state.reviewMode && state.chartView === "target";
+      const pinReviewActive = state.reviewMode && state.chartView === "target" && state.reviewTrace?.length > 1;
       el.reviewScrubBar.classList.toggle("hidden", !pinReviewActive);
     const playing = state.replayActive && !state.replayPaused;
     el.replayTraceBtn.classList.toggle("playing", playing);

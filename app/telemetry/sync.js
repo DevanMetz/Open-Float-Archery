@@ -290,7 +290,8 @@ export class CloudSyncAdapter {
       // Perform upsert to Supabase table. Older user schemas may not have every
       // locally-derived metric yet, so retry after dropping unknown columns.
       const droppedColumns = [];
-      for (let attempt = 0; attempt < 5; attempt++) {
+      const maxAttempts = Object.keys(finalPayload).length + 1;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const { error } = await sb.from(table).upsert(finalPayload);
         if (!error) {
           if (droppedColumns.length > 0) {
@@ -323,7 +324,7 @@ export class CloudSyncAdapter {
       }
 
       throw new Error(
-        `Database upsert failed: too many unsupported columns in ${table}`,
+        `Database upsert failed after removing unsupported columns from ${table}`,
       );
     } else if (action === "DELETE") {
       const idColumn = table === "shot_traces" ? "shot_id" : "id";

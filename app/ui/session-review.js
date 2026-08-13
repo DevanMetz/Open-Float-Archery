@@ -1,3 +1,10 @@
+import {
+  formatShotOutcome,
+  normalizeImpact,
+  summarizeImpactGroup,
+  summarizeSessionOutcomes,
+} from "../telemetry/outcome.js?v=shot-store-131";
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -76,8 +83,10 @@ function recurringIssueSummary(shots) {
   const ranked = components
     .map((component) => {
       const values = shots
-        .map((shot) => Number(shot[component.key]))
-        .filter((value) => Number.isFinite(value));
+        .map((shot) => shot[component.key])
+        .filter((value) => value != null && value !== "")
+        .map(Number)
+        .filter(Number.isFinite);
       return {
         ...component,
         count: values.length,
@@ -241,6 +250,113 @@ export function buildSessionFloatPlot(shots) {
         <span>Low ${low}</span>
         <span>Best ${best}</span>
         <span>${trendText}</span>
+      </div>
+    </div>
+  `;
+}
+
+export function buildSessionOutcomeReview(shots) {
+  const summary = summarizeSessionOutcomes(shots);
+  if (!summary.count) return "";
+
+  const average = summary.average.toFixed(1);
+  const trend = summary.trend == null
+    ? "Log 4 arrows for a trend"
+    : `${summary.trend >= 0 ? "+" : ""}${summary.trend.toFixed(1)} late vs early`;
+  const context = summary.mixedContext
+    ? "Mixed target setups"
+    : summary.context || "Target setup not recorded";
+
+  return `
+    <div class="session-outcome-review" aria-label="Target result summary">
+      <div class="session-outcome-head">
+        <div>
+          <span>Target Results</span>
+          <small>${escapeHtml(context)}</small>
+        </div>
+        <strong>${summary.total}<small> / ${summary.count} arrows</small></strong>
+      </div>
+      <div class="session-outcome-grid">
+        <div><span>Average</span><strong>${average}</strong></div>
+        <div><span>10s</span><strong>${summary.tenCount}</strong></div>
+        <div><span>Xs</span><strong>${summary.xCount}</strong></div>
+        <div><span>Misses</span><strong>${summary.missCount}</strong></div>
+        <div><span>Scoring trend</span><strong>${escapeHtml(trend)}</strong></div>
+      </div>
+      <div class="session-outcome-insight ${escapeHtml(summary.insight.status)}">
+        <span>Form-to-score insight</span>
+        <strong>${escapeHtml(summary.insight.title)}</strong>
+        <p>${escapeHtml(summary.insight.detail)}</p>
+      </div>
+    </div>
+  `;
+}
+
+export function buildSessionImpactReview(shots) {
+  const summary = summarizeImpactGroup(shots);
+  if (!summary.count) return "";
+
+  const center = 130;
+  const radius = 100;
+  const targetRings = [
+    [100, "#f5f1e8"],
+    [80, "#171b21"],
+    [60, "#2494ca"],
+    [40, "#e34c52"],
+    [20, "#f3bf4c"],
+  ].map(([ringRadius, fill]) => (
+    `<circle cx="${center}" cy="${center}" r="${ringRadius}" fill="${fill}"></circle>`
+  )).join("");
+  const ringLines = Array.from({ length: 10 }, (_, index) => {
+    const ring = index + 1;
+    return `<circle cx="${center}" cy="${center}" r="${ring * 10}" class="session-impact-ring ${ring >= 9 ? "gold" : ""}"></circle>`;
+  }).join("");
+  const markers = (shots || []).map((shot, index) => {
+    const impact = normalizeImpact(shot);
+    if (!impact) return "";
+    const x = center + impact.x * radius;
+    const y = center - impact.y * radius;
+    const label = `${formatShotOutcome(shot)} - arrow ${index + 1}`;
+    return `<g class="session-impact-marker"><circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="5"><title>${escapeHtml(label)}</title></circle><text x="${x.toFixed(2)}" y="${(y + 2.5).toFixed(2)}">${index + 1}</text></g>`;
+  }).join("");
+  const ellipse = summary.ellipse
+    ? `<ellipse cx="${(center + summary.centerX * radius).toFixed(2)}" cy="${(center - summary.centerY * radius).toFixed(2)}" rx="${(summary.ellipse.radiusMajor * radius).toFixed(2)}" ry="${Math.max(1.5, summary.ellipse.radiusMinor * radius).toFixed(2)}" transform="rotate(${(-summary.ellipse.angleRad * 180 / Math.PI).toFixed(2)} ${(center + summary.centerX * radius).toFixed(2)} ${(center - summary.centerY * radius).toFixed(2)})" class="session-impact-ellipse"><title>One standard-deviation group ellipse</title></ellipse>`
+    : "";
+  const centerX = center + summary.centerX * radius;
+  const centerY = center - summary.centerY * radius;
+  const spread = summary.spreadCm != null
+    ? `${summary.spreadCm.toFixed(1)} cm`
+    : `${Math.round(summary.maxSpread * 100)}% radius`;
+
+  return `
+    <div class="session-impact-review" aria-label="Arrow impact group summary">
+      <div class="session-impact-head">
+        <div>
+          <span>Impact Group</span>
+          <strong>${summary.count} plotted arrow${summary.count === 1 ? "" : "s"}</strong>
+        </div>
+        <span>Normalized target face</span>
+      </div>
+      <div class="session-impact-layout">
+        <svg viewBox="0 0 260 260" role="img" aria-label="Target plot of ${summary.count} arrow impacts. Group center is ${escapeHtml(summary.centerDirection)}.">
+          ${targetRings}
+          ${ringLines}
+          ${ellipse}
+          ${markers}
+          <path d="M ${(centerX - 7).toFixed(2)} ${centerY.toFixed(2)} H ${(centerX + 7).toFixed(2)} M ${centerX.toFixed(2)} ${(centerY - 7).toFixed(2)} V ${(centerY + 7).toFixed(2)}" class="session-impact-center"><title>Group center</title></path>
+        </svg>
+        <div class="session-impact-details">
+          <div class="session-impact-metrics">
+            <div><span>Group center</span><strong>${escapeHtml(summary.centerDirection)}</strong></div>
+            <div><span>Max spread</span><strong>${escapeHtml(spread)}</strong></div>
+          </div>
+          <div class="session-outcome-insight ${escapeHtml(summary.insight.status)}">
+            <span>Direction insight</span>
+            <strong>${escapeHtml(summary.insight.title)}</strong>
+            <p>${escapeHtml(summary.insight.detail)}</p>
+          </div>
+          <p class="session-impact-note">The dashed ellipse shows one standard deviation. Direction links are leads to test, not diagnoses.</p>
+        </div>
       </div>
     </div>
   `;

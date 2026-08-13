@@ -579,8 +579,10 @@ UI
     envelope meter, dynamic target trace, inline Record button, and a
     stored-shot "Uploading N" indicator)
   - shot review (aiming hold, release, follow-through phases)
-  - Steady Aim training tab (countdown, configurable hold drill, live target
-    trace, steadiness scoring, coaching feedback, save to IndexedDB)
+  - optional per-arrow target result entry and session form-to-score analysis
+  - adaptive training tab (recent-shot weakness analysis, Steady Aim, Level
+    Lock, and Settle & Hold drills, countdown, live target trace, drill-specific
+    scoring and cues, save to IndexedDB)
   - Bow Shop 3D customization tab that loads named materials from
     `Blender/BowModel.glb`, generates color controls for the compound bow
     materials, and applies those colors to every 3D bow preview
@@ -611,8 +613,9 @@ quaternion as the canonical orientation value. The browser derives Euler angles
 only for readouts, scoring, and compatibility with older saved trace records.
 The app also includes local bow
 profiles, timestamp-derived practice sessions, manual trace recording, saved
-shot review/compare, Steady Aim hold training (`app/ui/training.js`), Bow Shop
-3D customization, independent OpenFloat Float Score metrics, session review
+shot review/compare, adaptive hold training (`app/ui/training.js`) backed by
+testable recommendation and drill-scoring rules (`app/ui/training-coach.js`),
+Bow Shop 3D customization, independent OpenFloat Float Score metrics, session review
 summaries with score trend plots, and an optional Supabase-backed sync queue
 configured from the Cloud modal. Additionally, a Progressive Web App (PWA)
 service worker (`service-worker.js`) is registered to cache all core markup,
@@ -764,6 +767,15 @@ shots
   stored_upload
   packet_loss_count
   label
+  arrow_score
+  arrow_is_x
+  target_distance
+  target_distance_unit
+  target_face_cm
+  outcome_recorded_at
+  impact_x          (normalized target radius, positive right)
+  impact_y          (normalized target radius, positive high)
+  impact_recorded_at
 
 shot_traces
   shot_id
@@ -799,12 +811,19 @@ Supabase/PostgreSQL, normalize sessions, shots, and trace payload references.
 The browser currently stores `device_shot_id` so reconnect uploads can be
 deduplicated, `shot_score` for the derived OpenFloat Float Score,
 `score_version` for scoring-model compatibility, and `stored_upload` to mark
-shots recovered from firmware nonvolatile storage.
+shots recovered from firmware nonvolatile storage. Optional arrow outcome fields
+tie each release to its target score and target context without requiring a
+separate cloud record. Optional normalized impact coordinates keep the browser
+independent of any one target-face diameter while still allowing physical group
+size when a consistent face size is known. Session review uses those points for
+a centroid, maximum pairwise spread, covariance ellipse, and cautious
+orientation-to-impact correlations.
 
 For both new and existing Supabase projects, run [`supabase/schema.sql`](supabase/schema.sql).
 It is idempotent (`create table if not exists` + `add column if not exists`),
 adds every field the client sends — including the ones earlier drafts missed
-(`yaw_angle_deg`, `label`, and a `user_id` on `shots`/`shot_traces`) — widens
+(`yaw_angle_deg`, `label`, arrow-result/impact context, and a `user_id` on
+`shots`/`shot_traces`) — widens
 `shot_traces.mic_series` from `jsonb` to gzip+base64 `text`, creates the
 device-shot dedup index, and installs the RLS policies. Without it the sync
 adapter silently drops unknown columns (it retries after stripping them and only
@@ -822,6 +841,12 @@ Initial metrics:
 - Hold stability score.
 - Follow-through movement.
 - Packet loss during live stream.
+- Adaptive dry-practice prescriptions from recent hold-stability and
+  level-consistency scores, with per-drill benchmarks.
+- Per-arrow target result, session score totals/trends, and transparent Pearson
+  correlations between target score and the four Float Score components. A
+  minimum of six paired arrows gates correlation coaching, and the UI reports
+  both `r` and `n` with a non-causation caveat.
 
 Later metrics:
 

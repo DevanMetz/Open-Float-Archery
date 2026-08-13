@@ -1,8 +1,15 @@
 // Steady Aim Training Game UI Module
 // Manages the prep countdown, audio tones, live target tracing, scoring, and DB persistence.
 
-import { put, generateUUID } from "../core/db.js?v=shot-store-98";
+import { getAll, put, generateUUID } from "../core/db.js?v=shot-store-98";
 import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=shot-store-99";
+import {
+  TRAINING_DRILLS,
+  analyzeTrainingHistory,
+  downsampleTrainingTrace,
+  scoreTrainingHold,
+  trainingFeedback,
+} from "./training-coach.js?v=shot-store-129";
 
 const TARGET_COLORS = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
 
@@ -24,33 +31,6 @@ function canvasMarkerInk() {
 function mean(values) {
   if (!values.length) return 0;
   return values.reduce((sum, v) => sum + v, 0) / values.length;
-}
-
-function stdDev(values) {
-  if (values.length < 2) return 0;
-  const m = mean(values);
-  const variance = mean(values.map((v) => (v - m) ** 2));
-  return Math.sqrt(variance);
-}
-
-function getMaxFloatSpan(samples) {
-  let maxDist = 0;
-  // If we have a lot of samples, decimate for performance
-  const step = Math.max(1, Math.floor(samples.length / 500));
-  const pts = [];
-  for (let i = 0; i < samples.length; i += step) {
-    pts.push(samples[i]);
-  }
-  
-  for (let i = 0; i < pts.length; i++) {
-    for (let j = i + 1; j < pts.length; j++) {
-      const dx = (pts[i].roll || 0) - (pts[j].roll || 0);
-      const dy = (pts[i].pitch || 0) - (pts[j].pitch || 0);
-      const dist = Math.hypot(dx, dy);
-      if (dist > maxDist) maxDist = dist;
-    }
-  }
-  return maxDist;
 }
 
 // Web Audio API tone generator
@@ -76,7 +56,7 @@ function playTone(frequency, durationMs) {
   }
 }
 
-export function mountTraining({ store, telemetry, el, bus }) {
+export function mountTraining({ store, el, bus }) {
   if (!el.trainingTargetCanvas) return;
 
   const ctx = el.trainingTargetCanvas.getContext("2d");
@@ -91,12 +71,57 @@ export function mountTraining({ store, telemetry, el, bus }) {
   let refPitch = 0;
   let trainingSamples = [];
   let currentHoldDuration = 10;
-  let latestSampleTime = 0;
+  let recommendation = analyzeTrainingHistory([]);
+  let activeDrill = TRAINING_DRILLS[recommendation.drillId];
+  let currentTarget = recommendation.target;
 
   // Render variables
   let liveDotRoll = null;
   let liveDotPitch = null;
-  let liveTimerProgress = 0;
+
+  function selectedDrillId() {
+    const selected = el.trainingDrillSelect?.value || "adaptive";
+    return selected === "adaptive" ? recommendation.drillId : selected;
+  }
+
+  function updateDrillUi({ applyDuration = false } = {}) {
+    activeDrill = TRAINING_DRILLS[selectedDrillId()] || TRAINING_DRILLS.steady;
+    const isAdaptive = (el.trainingDrillSelect?.value || "adaptive") === "adaptive";
+    currentTarget = isAdaptive ? recommendation.target : activeDrill.defaultTarget;
+
+    if (el.trainingDrillDescription) {
+      el.trainingDrillDescription.textContent = `${activeDrill.description} Cue: ${activeDrill.cue}`;
+    }
+    if (el.trainingReadyTitle) el.trainingReadyTitle.textContent = activeDrill.name;
+    if (el.trainingReadyText) {
+      el.trainingReadyText.textContent = `${activeDrill.cue} Target score: ${currentTarget}.`;
+    }
+    if (el.startTrainingBtn && gameState === "idle") {
+      el.startTrainingBtn.textContent = `Start ${activeDrill.name}`;
+    }
+    if (applyDuration && el.trainingDurationSelect) {
+      el.trainingDurationSelect.value = String(activeDrill.defaultDuration);
+    }
+  }
+
+  function renderRecommendation() {
+    if (el.adaptiveCoachTitle) el.adaptiveCoachTitle.textContent = recommendation.title;
+    if (el.adaptiveCoachText) el.adaptiveCoachText.textContent = recommendation.reason;
+    if (el.adaptiveCoachStats) {
+      const baseline = recommendation.baseline == null ? "New baseline" : `Baseline ${recommendation.baseline}`;
+      el.adaptiveCoachStats.textContent = `${TRAINING_DRILLS[recommendation.drillId].name} | ${baseline} | Target ${recommendation.target}`;
+    }
+  }
+
+  async function refreshRecommendation() {
+    try {
+      recommendation = analyzeTrainingHistory(await getAll("shots"));
+      renderRecommendation();
+      if (gameState === "idle") updateDrillUi();
+    } catch (error) {
+      console.warn("Failed to refresh adaptive training recommendation:", error);
+    }
+  }
 
   // React to connection states in the reactive store
   store.subscribe((state) => {
@@ -120,8 +145,8 @@ export function mountTraining({ store, telemetry, el, bus }) {
 
     // Live display updates during hold
     if (gameState === "holding" && state.sample) {
-      liveDotRoll = state.roll;
-      liveDotPitch = state.pitch;
+      liveDotRoll = state.roll - (state.cantOffset || 0);
+      liveDotPitch = state.pitch - (state.pitchOffset || 0);
       if (el.trainingCantBadge) {
         // Calculate calibrated cant
         const calRoll = state.roll - (state.cantOffset || 0);
@@ -139,8 +164,8 @@ export function mountTraining({ store, telemetry, el, bus }) {
     const now = performance.now();
     
     trainingSamples.push({
-      roll: state.roll,
-      pitch: state.pitch,
+      roll: state.roll - (state.cantOffset || 0),
+      pitch: state.pitch - (state.pitchOffset || 0),
       yaw: state.yaw || 0,
       gx: sample.gxDps || 0,
       gy: sample.gyDps || 0,
@@ -158,6 +183,16 @@ export function mountTraining({ store, telemetry, el, bus }) {
   el.cancelTrainingBtn.addEventListener("click", cancelSession);
   el.saveTrainingShotBtn.addEventListener("click", saveSession);
   el.discardTrainingShotBtn.addEventListener("click", discardSession);
+  el.trainingDrillSelect?.addEventListener("change", () => updateDrillUi({ applyDuration: true }));
+  bus.on("view-changed", (viewId) => {
+    if (viewId === "tabTraining") refreshRecommendation();
+  });
+  bus.on("shot-saved", () => {
+    window.setTimeout(refreshRecommendation, 0);
+  });
+  renderRecommendation();
+  updateDrillUi({ applyDuration: true });
+  refreshRecommendation();
 
   // Resize canvas handler
   function resizeCanvas() {
@@ -385,7 +420,8 @@ export function mountTraining({ store, telemetry, el, bus }) {
 
   function startSession() {
     if (gameState !== "idle") return;
-    
+
+    updateDrillUi();
     gameState = "countdown";
     countdownVal = 5;
     currentHoldDuration = Number(el.trainingDurationSelect.value);
@@ -403,7 +439,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
     el.trainingDurationSelect.disabled = true;
     
     el.trainingCountdownVal.textContent = countdownVal;
-    el.trainingPhaseLabel.textContent = "Draw Your Bow";
+    el.trainingPhaseLabel.textContent = activeDrill.cue;
     el.trainingPhaseLabel.style.color = "var(--amber)";
     
     // Setup timer circle
@@ -445,12 +481,12 @@ export function mountTraining({ store, telemetry, el, bus }) {
     
     // Take reference offset
     const activeState = store.get();
-    refRoll = activeState.roll;
-    refPitch = activeState.pitch;
+    refRoll = activeState.roll - (activeState.cantOffset || 0);
+    refPitch = activeState.pitch - (activeState.pitchOffset || 0);
     
     // Clear live indicator variables
-    liveDotRoll = activeState.roll;
-    liveDotPitch = activeState.pitch;
+    liveDotRoll = refRoll;
+    liveDotPitch = refPitch;
     
     // Start drawing
     resizeCanvas();
@@ -488,49 +524,19 @@ export function mountTraining({ store, telemetry, el, bus }) {
       return;
     }
     
-    // Calculate Stats
-    const rolls = trainingSamples.map((s) => s.roll);
-    const pitches = trainingSamples.map((s) => s.pitch);
-    const gyros = trainingSamples.map((s) => Math.hypot(s.gx || 0, s.gy || 0, s.gz || 0));
-    
-    const rollStd = stdDev(rolls);
-    const pitchStd = stdDev(pitches);
-    const avgGyroMag = mean(gyros);
-    
-    // Calculate steadiness score (using standard deviation + angular velocity)
-    const steadinessScore = Math.round(
-      Math.max(0, Math.min(100, 100 - (rollStd + pitchStd) * 18 - avgGyroMag * 0.7))
-    );
-    
-    const avgCantDev = rollStd;
-    const avgPitchDev = pitchStd;
-    const maxFloat = getMaxFloatSpan(trainingSamples);
-    
-    // Populate Results
-    el.resultSteadinessScore.textContent = steadinessScore;
-    el.resultAvgCantDev.textContent = `${avgCantDev.toFixed(2)}°`;
-    el.resultAvgPitchDev.textContent = `${avgPitchDev.toFixed(2)}°`;
-    el.resultMaxFloat.textContent = `${maxFloat.toFixed(2)}°`;
-    
-    // Coaching tip
-    let coachTitle = "";
-    let coachText = "";
-    if (steadinessScore >= 90) {
-      coachTitle = "Elite Stability";
-      coachText = "Outstanding control! Your float is exceptionally tight. Maintain this solid posture in your practice.";
-    } else if (steadinessScore >= 80) {
-      coachTitle = "Strong Foundation";
-      coachText = "Great hold. Your movement is well within the gold rings. Focus on a relaxed draw-arm shoulder to shrink the group further.";
-    } else if (steadinessScore >= 65) {
-      coachTitle = "Developing Float";
-      coachText = "Decent stability, but showing some wander. Try settling into your skeletal stack before starting your aim sequence.";
-    } else {
-      coachTitle = "Settle the Stance";
-      coachText = "Significant movement detected. Ensure you are not muscle-holding the weight. Align your posture and relax your grip.";
-    }
-    
-    el.resultCoachingTitle.textContent = coachTitle;
-    el.resultCoachingText.textContent = coachText;
+    const result = scoreTrainingHold(trainingSamples, {
+      drillId: activeDrill.id,
+      levelTolerance: store.get().levelTolerance || 2,
+    });
+    const feedback = trainingFeedback(result, currentTarget);
+
+    if (el.resultScoreLabel) el.resultScoreLabel.textContent = `${activeDrill.name} Score`;
+    el.resultSteadinessScore.textContent = result.score;
+    el.resultAvgCantDev.textContent = `${result.avgCantDev.toFixed(2)} deg`;
+    el.resultAvgPitchDev.textContent = `${result.avgPitchDev.toFixed(2)} deg`;
+    el.resultMaxFloat.textContent = `${result.maxFloat.toFixed(2)} deg`;
+    el.resultCoachingTitle.textContent = feedback.title;
+    el.resultCoachingText.textContent = `${feedback.text} Goal: ${feedback.target}.`;
     
     // Open results card
     el.trainingResultsCard.classList.remove("hidden");
@@ -557,8 +563,10 @@ export function mountTraining({ store, telemetry, el, bus }) {
       
       const sessionShotId = generateUUID();
       const timestamp = new Date().toISOString();
-      const label = `Steady Aim Hold (${currentHoldDuration}s)`;
-      const traceForScore = trainingSamples.map((s) => ({
+      const label = `${activeDrill.label} (${currentHoldDuration}s)`;
+      const savedSamples = downsampleTrainingTrace(trainingSamples, 52);
+      const traceStartTime = Number(savedSamples[0]?.timestamp) || 0;
+      const traceForScore = savedSamples.map((s) => ({
         ax: s.ax,
         ay: s.ay,
         az: s.az,
@@ -569,8 +577,12 @@ export function mountTraining({ store, telemetry, el, bus }) {
         pitch: s.pitch,
         yaw: s.yaw || 0,
         micAmp: s.micAmp || 0,
+        tUs: Math.max(0, Math.round(((Number(s.timestamp) || traceStartTime) - traceStartTime) * 1000)),
       }));
-      const floatScore = computeFloatScoreFromTrace(traceForScore, { sampleRateHz: 52 });
+      const floatScore = computeFloatScoreFromTrace(traceForScore, {
+        sampleRateHz: 52,
+        isManual: true,
+      });
       
       const shotRecord = {
         id: sessionShotId,
@@ -617,7 +629,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
         status: "pending"
       });
       
-      bus.emit("log", `Steady Aim training session saved successfully (ID: ${sessionShotId.slice(0, 8)}).`);
+      bus.emit("log", `${activeDrill.name} training session saved successfully (ID: ${sessionShotId.slice(0, 8)}).`);
       
       // Notify main app to refresh history list & recent shots
       bus.emit("shot-saved", {
@@ -648,7 +660,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
     if (gameState !== "countdown" && gameState !== "holding") return;
     
     clearInterval(timerInterval);
-    bus.emit("log", "Steady Aim Training session cancelled.");
+    bus.emit("log", `${activeDrill.name} training session cancelled.`);
     resetToIdle();
   }
 
@@ -673,5 +685,6 @@ export function mountTraining({ store, telemetry, el, bus }) {
     el.trainingDisplayDefault.classList.remove("hidden");
     
     trainingSamples = [];
+    updateDrillUi();
   }
 }

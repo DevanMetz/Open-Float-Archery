@@ -2,9 +2,22 @@
 
 import { getAll, get, put, remove, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-125";
 import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-125";
+import {
+  canRecordArrowOutcome,
+  formatShotOutcome,
+  impactDirectionLabel,
+  normalizeArrowOutcome,
+  normalizeImpact,
+} from "../telemetry/outcome.js?v=shot-store-131";
 import { resolveReviewMicSeries } from "../protocol/trace.js?v=shot-store-125";
 import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=shot-store-125";
-import { buildSessionFloatPlot, buildSessionReview } from "./session-review.js?v=shot-store-125";
+import {
+  buildSessionFloatPlot,
+  buildSessionImpactReview,
+  buildSessionOutcomeReview,
+  buildSessionReview,
+} from "./session-review.js?v=shot-store-131";
+import { mountImpactTarget } from "./impact-target.js?v=shot-store-131";
 
 export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab }) {
   // Escape user-entered text before injecting into innerHTML.
@@ -28,6 +41,161 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   function bowDisplayName(bow) {
     if (!bow) return "Default Bow";
     return bow.model + (bow.draw_weight ? ` (${bow.draw_weight} lbs)` : "");
+  }
+
+  const OUTCOME_CONTEXT_KEY = "openfloat_last_target_context";
+  let selectedOutcome = null;
+  let selectedImpact = null;
+  let currentOutcomeShotId = null;
+  let impactTarget = null;
+
+  function updateImpactHint() {
+    if (el.outcomeImpactHint) {
+      el.outcomeImpactHint.textContent = selectedImpact
+        ? `${impactDirectionLabel(selectedImpact)} / ${Math.round(selectedImpact.radius * 100)}% of target radius`
+        : "Tap the target, or focus it and press Enter.";
+    }
+    if (el.clearImpactBtn) el.clearImpactBtn.disabled = !selectedImpact;
+  }
+
+  impactTarget = mountImpactTarget({
+    canvas: el.outcomeImpactCanvas,
+    onSelect(impact) {
+      selectedImpact = impact;
+      if (impact) {
+        selectedOutcome = { score: impact.score, isX: false };
+      }
+      updateOutcomeButtons();
+      updateImpactHint();
+      if (el.reviewOutcomeStatus) {
+        el.reviewOutcomeStatus.textContent = impact
+          ? `Selected ${impact.score === 0 ? "M" : impact.score} ${impactDirectionLabel(impact)} - save to record`
+          : "Impact cleared - save to record";
+      }
+    },
+  });
+
+  function storedOutcomeContext() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(OUTCOME_CONTEXT_KEY) || "null");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function buildReviewInfo(shot) {
+    const score = shot.shot_score != null
+      ? Math.round(shot.shot_score)
+      : Math.round(shot.stability_score || 0);
+    const peakG = Number.isFinite(Number(shot.peak_g)) ? Number(shot.peak_g).toFixed(1) : "--";
+    const stability = shot.stability_score != null ? Math.round(shot.stability_score) : "--";
+    const outcome = normalizeArrowOutcome(shot);
+    const outcomePart = outcome ? ` | Arrow: ${outcome.label}` : "";
+    const timeStr = new Date(shot.timestamp).toLocaleTimeString();
+    return `Float Score: ${score}${outcomePart} | Peak Force: ${peakG}g | Stability: ${stability}% | Captured: ${timeStr}`;
+  }
+
+  function updateOutcomeButtons() {
+    el.outcomeScoreButtons?.querySelectorAll("[data-outcome-score]").forEach((button) => {
+      const score = Number(button.dataset.outcomeScore);
+      const isX = button.dataset.outcomeX === "true";
+      const selected = !!selectedOutcome && selectedOutcome.score === score && selectedOutcome.isX === isX;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+    if (el.saveOutcomeBtn) el.saveOutcomeBtn.disabled = !selectedOutcome;
+  }
+
+  function renderOutcomeEditor(shot) {
+    const canRecord = canRecordArrowOutcome(shot);
+    currentOutcomeShotId = canRecord ? shot.id : null;
+    el.reviewOutcomePanel?.classList.toggle("hidden", !canRecord);
+    if (!canRecord) return;
+
+    const outcome = normalizeArrowOutcome(shot);
+    selectedImpact = normalizeImpact(shot);
+    selectedOutcome = outcome ? { score: outcome.score, isX: outcome.isX } : null;
+    const context = storedOutcomeContext();
+    if (el.outcomeDistanceInput) {
+      el.outcomeDistanceInput.value = shot.target_distance ?? context.distance ?? "";
+    }
+    if (el.outcomeDistanceUnit) {
+      el.outcomeDistanceUnit.value = shot.target_distance_unit === "m"
+        ? "m"
+        : context.unit === "m" ? "m" : "yd";
+    }
+    if (el.outcomeFaceInput) {
+      el.outcomeFaceInput.value = shot.target_face_cm ?? context.faceCm ?? "";
+    }
+    if (el.reviewOutcomeStatus) {
+      el.reviewOutcomeStatus.textContent = outcome
+        ? formatShotOutcome(shot, { includeContext: true })
+        : "Not scored";
+    }
+    if (el.clearOutcomeBtn) el.clearOutcomeBtn.disabled = !outcome && !selectedImpact;
+    impactTarget?.setImpact(selectedImpact);
+    updateImpactHint();
+    updateOutcomeButtons();
+  }
+
+  function optionalPositiveNumber(input, label, max) {
+    const raw = input?.value?.trim() || "";
+    if (!raw) return null;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0 || value > max) {
+      throw new Error(`${label} must be between 0 and ${max}.`);
+    }
+    return value;
+  }
+
+  async function persistArrowOutcome({ clear = false } = {}) {
+    if (!currentOutcomeShotId) return;
+    if (!clear && !selectedOutcome) return;
+
+    const distance = clear ? null : optionalPositiveNumber(el.outcomeDistanceInput, "Distance", 300);
+    const faceCm = clear ? null : optionalPositiveNumber(el.outcomeFaceInput, "Face size", 200);
+    const unit = el.outcomeDistanceUnit?.value === "m" ? "m" : "yd";
+    const shot = await get("shots", currentOutcomeShotId);
+    if (!shot) throw new Error("The reviewed shot is no longer in local storage.");
+
+    const updatedShot = {
+      ...shot,
+      arrow_score: clear ? null : selectedOutcome.score,
+      arrow_is_x: clear ? false : selectedOutcome.isX,
+      target_distance: clear ? null : distance,
+      target_distance_unit: clear ? null : unit,
+      target_face_cm: clear ? null : faceCm,
+      outcome_recorded_at: clear ? null : new Date().toISOString(),
+      impact_x: clear || !selectedImpact ? null : selectedImpact.x,
+      impact_y: clear || !selectedImpact ? null : selectedImpact.y,
+      impact_recorded_at: clear || !selectedImpact ? null : new Date().toISOString(),
+    };
+
+    await put("shots", updatedShot);
+    if (!shot.sample) {
+      await put("sync_queue", {
+        table: "shots",
+        action: "UPDATE",
+        targetId: updatedShot.id,
+        payload: updatedShot,
+        status: "pending",
+      });
+    }
+
+    if (!clear) {
+      localStorage.setItem(OUTCOME_CONTEXT_KEY, JSON.stringify({ distance, unit, faceCm }));
+    }
+    store.set({ reviewInfo: buildReviewInfo(updatedShot) });
+    renderOutcomeEditor(updatedShot);
+    await Promise.all([loadRecentShotsList(), loadShotHistoryList()]);
+    if (!shot.sample && syncAdapter) syncAdapter.triggerSync();
+    bus.emit(
+      "log",
+      clear
+        ? `Cleared target result for shot ${updatedShot.id.slice(0, 8)}.`
+        : `Saved arrow ${formatShotOutcome(updatedShot, { includeContext: true })} for shot ${updatedShot.id.slice(0, 8)}.`,
+    );
   }
 
   async function loadShotHistoryList() {
@@ -117,6 +285,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
             </div>
           </div>
           ${buildSessionReview(group.shots)}
+          ${buildSessionOutcomeReview(group.shots)}
+          ${buildSessionImpactReview(group.shots)}
           ${buildSessionFloatPlot(group.shots)}
           <div class="session-shots-container"></div>
         `;
@@ -435,18 +605,15 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       }
 
       if (!trace || !trace.payload) {
-        alert(
-          "No saved trace for this shot yet.\n\n" +
-            "Live shots capture their trace shortly after the follow-through " +
-            "window — try again in a moment. If a trace never appears, check that " +
-            "“Trace Buffer Rate” in Settings isn’t set to Off.",
+        trace = { payload: [], sample_rate_hz: 52 };
+        bus.emit(
+          "log",
+          "No motion trace is saved for this shot; opening metadata and target-result review.",
         );
-        return;
       }
 
-      const timeStr = new Date(shot.timestamp).toLocaleTimeString();
       const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
-      const info = `Float Score: ${score} | Peak Force: ${shot.peak_g.toFixed(1)}g | Stability: ${shot.stability_score}% | Captured: ${timeStr}`;
+      const info = buildReviewInfo(shot);
 
       const holdStability = shot.hold_stability != null ? Math.round(shot.hold_stability) : (shot.stability_score != null ? Math.round(shot.stability_score) : null);
       const releaseQuality = shot.release_quality != null ? Math.round(shot.release_quality) : null;
@@ -509,6 +676,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
       await refreshReviewCompareOptions(shot.id, false);
       if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
+      renderOutcomeEditor(shot);
 
       bus.emit("log", `Entering review mode for shot ${shot.id.slice(0, 8)}...`);
       selectViewTab("tabDashboard");
@@ -553,6 +721,11 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       el.reviewCompareSelect.innerHTML = '<option value="">None</option>';
       el.reviewCompareSelect.value = "";
     }
+    currentOutcomeShotId = null;
+    selectedOutcome = null;
+    selectedImpact = null;
+    impactTarget?.setImpact(null);
+    el.reviewOutcomePanel?.classList.add("hidden");
     bus.emit("log", "Exited review mode. Returned to live telemetry stream.");
   });
 
@@ -609,6 +782,61 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     });
   }
 
+  el.outcomeScoreButtons?.querySelectorAll("[data-outcome-score]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedOutcome = {
+        score: Number(button.dataset.outcomeScore),
+        isX: button.dataset.outcomeX === "true",
+      };
+      updateOutcomeButtons();
+      if (el.reviewOutcomeStatus) {
+        el.reviewOutcomeStatus.textContent = `Selected ${selectedOutcome.isX ? "X" : selectedOutcome.score === 0 ? "M" : selectedOutcome.score} - save to record`;
+      }
+    });
+  });
+
+  el.saveOutcomeBtn?.addEventListener("click", async () => {
+    el.saveOutcomeBtn.disabled = true;
+    try {
+      await persistArrowOutcome();
+    } catch (error) {
+      console.error("Failed to save arrow outcome:", error);
+      bus.emit("log", `Target result save failed: ${error.message}`);
+      alert(error.message);
+    } finally {
+      updateOutcomeButtons();
+    }
+  });
+
+  el.clearImpactBtn?.addEventListener("click", () => {
+    selectedImpact = null;
+    impactTarget?.setImpact(null);
+    updateImpactHint();
+    if (el.reviewOutcomeStatus) {
+      el.reviewOutcomeStatus.textContent = "Impact cleared - save to record";
+    }
+  });
+
+  el.clearOutcomeBtn?.addEventListener("click", async () => {
+    el.clearOutcomeBtn.disabled = true;
+    try {
+      await persistArrowOutcome({ clear: true });
+    } catch (error) {
+      console.error("Failed to clear arrow outcome:", error);
+      bus.emit("log", `Target result clear failed: ${error.message}`);
+      alert(error.message);
+    }
+  });
+
+  store.subscribe((currentState) => {
+    if (currentState.reviewMode) return;
+    currentOutcomeShotId = null;
+    selectedOutcome = null;
+    selectedImpact = null;
+    impactTarget?.setImpact(null);
+    el.reviewOutcomePanel?.classList.add("hidden");
+  });
+
   const RECENT_SHOTS_LIMIT = 5;
 
   function recentShotCardMetrics(shot) {
@@ -620,7 +848,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
     const stability = shot.stability_score != null ? Math.round(shot.stability_score) : "--";
     const peakG = Number.isFinite(Number(shot.peak_g)) ? Number(shot.peak_g).toFixed(1) : "--";
-    return { timeStr, score, stability, peakG };
+    const arrow = canRecordArrowOutcome(shot) ? formatShotOutcome(shot) : null;
+    return { timeStr, score, stability, peakG, arrow };
   }
 
   function buildHistoryItemElement(shot) {
@@ -637,6 +866,15 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const stability =
       shot.stability_score != null ? Math.round(shot.stability_score) : "--";
     const peakG = Number.isFinite(Number(shot.peak_g)) ? Number(shot.peak_g).toFixed(1) : "--";
+    const arrow = canRecordArrowOutcome(shot) ? formatShotOutcome(shot) : null;
+    const arrowMetric = arrow == null
+      ? ""
+      : `
+          <div class="history-stat">
+            <span class="history-stat-label">Arrow</span>
+            <span class="history-stat-val arrow">${escapeHtml(arrow)}</span>
+          </div>
+        `;
 
     item.innerHTML = `
       <input type="checkbox" class="${chkClass}" data-shot-id="${shot.id}" type="checkbox">
@@ -649,6 +887,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
           <div class="history-subtitle">${escapeHtml(timestampStr)}</div>
         </div>
         <div class="history-metrics">
+          ${arrowMetric}
           <div class="history-stat">
             <span class="history-stat-label">Float</span>
             <span class="history-stat-val score">${score}</span>
@@ -872,8 +1111,16 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     item.className = "recent-shot-card";
     item.dataset.shotId = shot.id;
 
-    const { timeStr, score, stability, peakG } = recentShotCardMetrics(shot);
+    const { timeStr, score, stability, peakG, arrow } = recentShotCardMetrics(shot);
     const title = shot.label || `Shot #${Math.max(1, totalShots - titleIndex)}`;
+    const arrowMetric = arrow == null
+      ? ""
+      : `
+          <div class="recent-shot-metric">
+            <span class="metric-label">Arrow</span>
+            <strong class="metric-val arrow">${escapeHtml(arrow)}</strong>
+          </div>
+        `;
 
     item.innerHTML = `
       <div class="recent-shot-preview-wrap is-empty" aria-hidden="true">
@@ -884,17 +1131,18 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         <span class="recent-shot-time">${escapeHtml(timeStr)}</span>
       </div>
       <div class="recent-shot-metrics">
+        ${arrowMetric}
         <div class="recent-shot-metric">
           <span class="metric-label">Float</span>
           <strong class="metric-val score">${score}</strong>
         </div>
         <div class="recent-shot-metric">
           <span class="metric-label">Stability</span>
-          <strong class="metric-val">${stability}%</strong>
+          <strong class="metric-val stability">${stability}%</strong>
         </div>
         <div class="recent-shot-metric">
           <span class="metric-label">Peak G</span>
-          <strong class="metric-val">${peakG}g</strong>
+          <strong class="metric-val peak">${peakG}g</strong>
         </div>
       </div>
     `;
@@ -910,17 +1158,20 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
 
   function updateRecentShotCardMetrics(card, shot, titleIndex, totalShots) {
-    const { timeStr, score, stability, peakG } = recentShotCardMetrics(shot);
+    const { timeStr, score, stability, peakG, arrow } = recentShotCardMetrics(shot);
     const title = shot.label || `Shot #${Math.max(1, totalShots - titleIndex)}`;
     const titleEl = card.querySelector(".recent-shot-title");
     const timeEl = card.querySelector(".recent-shot-time");
     const scoreEl = card.querySelector(".metric-val.score");
-    const metrics = card.querySelectorAll(".recent-shot-metric .metric-val");
+    const arrowEl = card.querySelector(".metric-val.arrow");
     if (titleEl) titleEl.textContent = title;
     if (timeEl) timeEl.textContent = timeStr;
     if (scoreEl) scoreEl.textContent = String(score);
-    if (metrics[1]) metrics[1].textContent = `${stability}%`;
-    if (metrics[2]) metrics[2].textContent = `${peakG}g`;
+    if (arrowEl && arrow != null) arrowEl.textContent = arrow;
+    const stabilityEl = card.querySelector(".recent-shot-metric .metric-val.stability");
+    const peakEl = card.querySelector(".recent-shot-metric .metric-val.peak");
+    if (stabilityEl) stabilityEl.textContent = `${stability}%`;
+    if (peakEl) peakEl.textContent = `${peakG}g`;
   }
 
   function trimRecentShotCards() {

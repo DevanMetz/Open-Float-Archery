@@ -100,6 +100,24 @@ architecture, design intent, and forward-looking targets, see
   session summarizes average Float Score, best and worst shot, consistency
   trend, shots by drill label, and the biggest recurring issue. A compact plot
   shows Float Score progression across the session.
+- **Arrow Results & Form Correlation**: Trace Review accepts a per-arrow target
+  result (`M`, `1`–`10`, or `X`) plus optional distance, yards/meters, and face
+  size. Results remain local-first, appear on recent and saved-shot cards, and
+  roll up into session total, average, 10/X/miss counts, and early-vs-late
+  scoring trend. After six arrows have both a target result and telemetry,
+  OpenFloat reports the strongest positive form-to-score correlation with its
+  coefficient and sample size, explicitly labeling it as a training lead rather
+  than proof of causation. Reviews without a saved motion trace can still record
+  an outcome.
+- **Impact Plot & Group Analysis**: Each reviewed arrow can be placed directly
+  on a normalized ten-ring target with pointer or keyboard input. Target
+  placement estimates the score but still allows a manual correction. Saved
+  sessions plot numbered impacts, the group center, maximum pairwise spread,
+  physical spread when every arrow has the same known face size, and a
+  one-standard-deviation ellipse. After six consistently configured arrows,
+  OpenFloat may surface a cant-to-horizontal or pitch-to-vertical correlation;
+  the UI labels it as an early signal and requires calibration and setup checks
+  before using it as a form cue.
 - **Battery Badge**: When the BLE device exposes the standard Battery Service,
   the dashboard reads Battery Level and displays it in the header.
 - **Stored-Shot Upload Indicator**: When a device that buffered shots while
@@ -118,10 +136,17 @@ architecture, design intent, and forward-looking targets, see
 - **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
-- **Steady Aim Training**: The Steady Aim tab runs a guided hold drill with a
-  5-second draw countdown, configurable hold duration (5–30 s), live Pin Float
-  tracing, steadiness scoring (sigma ellipse, cant/pitch deviation, max float),
-  coaching feedback, and optional save to IndexedDB as a labeled practice shot.
+- **Adaptive Training Coach**: The Training tab analyzes hold stability and
+  level consistency across the newest 30 scored captures, identifies the weaker
+  available skill, and recommends a drill with a visible baseline and a
+  five-point stretch target (capped at 95). Archers can follow that prescription
+  or choose Steady Aim, Level Lock, or Settle & Hold manually. Every drill has a
+  specific scoring rule and form cue, uses calibrated orientation data, and can
+  be saved to IndexedDB under its drill label for later session review. The
+  saved drill trace is time-preserving and bounded to 52 Hz even when live BLE
+  telemetry arrives at full rate. The original 5-second draw countdown,
+  5–30 second hold duration, live Pin Float
+  trace, sigma ellipse, cant/pitch deviation, and max-float review remain.
 - **Bow Shop 3D Customization**: The Bow Shop tab loads `Blender/BowModel.glb`
   and creates color pickers from the named compound-bow materials in the GLB.
   Current bow materials are `string`, `cam`, `riser`, `grip`, and `text`; color

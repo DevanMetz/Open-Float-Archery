@@ -78,9 +78,13 @@ firmware Madgwick quaternion directly for live orientation, derives Euler
 readouts for compatibility with scoring and saved traces, and renders a
 calibrated bubble level and 3D bow visualizer, phase-colored Pin Float shot
 review with replay scrubber and shot comparison, an independent open-source
-0–100 Float Score, Steady Aim hold training, automatic practice-session
-grouping, a Bow Shop 3D customizer, full local backup/restore, and an optional
-self-hosted Supabase sync that never gates local use.
+0–100 Float Score, adaptive hold training that prescribes the next drill from
+recent telemetry, per-arrow target scoring with cautious form-to-score
+correlations, normalized impact plotting with group spread and guarded
+cant/pitch-to-direction signals, automatic practice-session grouping, a Bow
+Shop 3D customizer,
+full local backup/restore, and an optional self-hosted Supabase sync that never
+gates local use.
 
 <!-- Current capture uses the built-in demo stream; reshoot connected to real
      hardware to show the ~1110 Hz live rate in the header. -->
