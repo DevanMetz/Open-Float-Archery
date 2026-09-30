@@ -14,15 +14,15 @@ import {
   mountOrientationState,
   rotateMountAxes,
 } from "./ui/bow-3d.js?v=shot-store-142";
-import { initDb, getAll, get, put, remove, generateUUID } from "./core/db.js?v=shot-store-135";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-134";
+import { initDb, getAll, get, put, remove, removeSavedShots, generateUUID } from "./core/db.js?v=shot-store-146";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-146";
 import { mountTraining } from "./ui/training.js?v=shot-store-137";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
-import { initHistory } from "./ui/history.js?v=shot-store-145";
+import { initHistory } from "./ui/history.js?v=shot-store-146";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-145";
+const APP_BUILD = "shot-store-146";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -384,23 +384,25 @@ async function clearSampleData({ refresh = true } = {}) {
     const samples = shots.filter(
       (s) => s && (s.sample === true || s.device_id === SAMPLE_DEVICE_ID),
     );
-    // Remember the choice so samples don't reappear, even if real data is later
-    // deleted and the shots store ends up empty again.
-    localStorage.setItem(SAMPLE_CLEARED_KEY, "1");
-    for (const s of samples) {
-      await remove("shots", s.id);
-      await remove("shot_traces", s.id);
+    await removeSavedShots(samples.map((shot) => shot.id));
+    // Remember the choice only after deletion commits. Optional preferences
+    // must not report an already committed removal as a storage failure.
+    try {
+      localStorage.setItem(SAMPLE_CLEARED_KEY, "1");
+    } catch (_) {
+      bus.emit("log", "Demo captures removed, but this browser could not remember the preference.");
     }
     bus.emit("log", `Removed ${samples.length} demo shot(s).`);
-    if (refresh) {
-      await historyUi?.loadShotHistoryList();
-      await historyUi?.loadRecentShotsList();
+    try {
+      if (refresh) await historyUi?.refreshAfterDeletion(samples.map((shot) => shot.id));
+      await updateSampleControls();
+    } catch (error) {
+      bus.emit("log", `Demo captures were removed, but refreshing the view failed: ${error.message}`);
     }
-    await updateSampleControls();
     return samples.length;
   } catch (error) {
     console.error("Clearing sample data failed:", error);
-    return 0;
+    throw error;
   }
 }
 
@@ -1429,9 +1431,14 @@ initDataBackup({
 if (el.clearSamplesBtn) {
   el.clearSamplesBtn.addEventListener("click", async () => {
     el.clearSamplesBtn.disabled = true;
-    const n = await clearSampleData();
-    bus.emit("log", n > 0 ? `Removed ${n} demo shot(s).` : "No demo shots to remove.");
-    el.clearSamplesBtn.disabled = false;
+    try {
+      const n = await clearSampleData();
+      el.sampleDataStatus.textContent = n > 0 ? `Removed ${n} demo capture${n === 1 ? "" : "s"}.` : "No demo captures to remove.";
+    } catch (error) {
+      el.sampleDataStatus.textContent = `Could not remove demo captures: ${error.message}`;
+    } finally {
+      el.clearSamplesBtn.disabled = false;
+    }
   });
 }
 

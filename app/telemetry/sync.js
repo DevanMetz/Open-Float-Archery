@@ -6,7 +6,7 @@ import {
   getPendingSyncTasks,
   updateSyncTaskStatus,
   remove,
-} from "../core/db.js?v=shot-store-134";
+} from "../core/db.js?v=shot-store-146";
 
 let supabaseClient = null;
 let initializationPromise = null;
@@ -230,9 +230,12 @@ export class CloudSyncAdapter {
         if (!pending.length) break;
         this.bus.emit("log", `Uploading ${pending.length} pending records to cloud...`);
         for (const task of pending) {
-          await updateSyncTaskStatus(task.id, "syncing");
+          // A local deletion may have removed work while an earlier upload
+          // was in flight. Use the committed queue row, not the stale snapshot.
+          const currentTask = await updateSyncTaskStatus(task.id, "syncing");
+          if (!currentTask) continue;
           try {
-            await this.syncTask(sb, task);
+            await this.syncTask(sb, currentTask);
             await remove("sync_queue", task.id);
             uploaded += 1;
           } catch (err) {

@@ -34,6 +34,7 @@ runButton.addEventListener("click", async () => {
       item.textContent = `PASS: ${name}`;
     } catch (error) {
       failed += 1;
+      console.error(`Browser check failed: ${name}`, error.stack || error.message);
       item.className = "fail";
       item.textContent = `FAIL: ${name} - ${error.message}`;
     }
@@ -357,6 +358,68 @@ runButton.addEventListener("click", async () => {
       assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === "outcome-demo"), "Demo outcome entered the queue");
     });
 
+    await check("capture deletion commits linked records together and preserves unrelated queue rows", async () => {
+      await api.put("shots", { id: "delete-local", timestamp: "2001-01-01T12:00:00Z" });
+      await api.put("shot_traces", { shot_id: "delete-local", payload: [] });
+      await api.put("session_overrides", { id: "delete-local", name: "Gone" });
+      const queueIds = [];
+      for (const task of [
+        { table: "shots", targetId: "delete-local", status: "pending" },
+        { table: "shot_traces", payload: { shot_id: "delete-local" }, status: "syncing" },
+        { table: "shots", payload: { id: "delete-local" }, status: "pending" },
+      ]) queueIds.push(await api.put("sync_queue", task));
+      const unrelated = await api.put("sync_queue", { table: "bow_profiles", targetId: "delete-local", payload: { id: "delete-local" }, status: "pending" });
+      const count = await api.removeSavedShots(["delete-local", "delete-local"]);
+      assert(count === 1 && completed.has(latestWrite), "Deletion resolved before commit or counted duplicates");
+      assert(!await api.get("shots", "delete-local") && !await api.get("shot_traces", "delete-local"), "Capture was only partially deleted");
+      assert(!await api.get("session_overrides", "delete-local"), "Empty session kept its override");
+      for (const id of queueIds) assert(!await api.get("sync_queue", id), "Deleted capture kept an upload task");
+      assert(!!await api.get("sync_queue", unrelated), "Deletion removed unrelated bow work");
+    });
+
+    await check("bulk deletion rolls back captures, traces, queue and moved session settings on failure", async () => {
+      for (const failingStore of ["shot_traces", "sync_queue", "session_overrides"]) {
+        const ids = ["a", "b", "c"].map((suffix) => `rollback-${failingStore}-${suffix}`);
+        for (const [index, id] of ids.entries()) {
+          await api.put("shots", { id, timestamp: `2002-01-01T12:0${index}:00Z` });
+          await api.put("shot_traces", { shot_id: id, payload: [] });
+        }
+        await api.put("session_overrides", { id: ids[0], name: "Keep practice", arrows_per_end: 6 });
+        const task = await api.put("sync_queue", { table: "shots", targetId: ids[0], status: "pending" });
+        abortNextWrite = failingStore;
+        await rejects(() => api.removeSavedShots(ids.slice(0, 2)));
+        for (const id of ids) {
+          assert(!!await api.get("shots", id) && !!await api.get("shot_traces", id), `${failingStore} failure lost a capture`);
+        }
+        assert((await api.get("session_overrides", ids[0])).name === "Keep practice", "Original session settings were lost");
+        assert(!await api.get("session_overrides", ids[2]), "Rolled-back anchor migration remained");
+        assert(!!await api.get("sync_queue", task), "Rolled-back deletion lost its upload task");
+      }
+    });
+
+    await check("deleting anchors and bridging shots preserves surviving session names, bows and end sizes", async () => {
+      const ids = ["split-a", "split-b", "split-c", "split-d"];
+      for (const [index, id] of ids.entries()) {
+        await api.put("shots", { id, timestamp: new Date(Date.parse("2003-01-01T12:00:00Z") + index * 20 * 60000).toISOString() });
+      }
+      await api.put("session_overrides", { id: ids[0], name: "Range practice", bow_profile_id: "my-bow", arrows_per_end: 6 });
+      await api.put("session_overrides", { id: ids[2], name: "Specific session name" });
+      await api.removeSavedShots([ids[1]]);
+      const split = await api.get("session_overrides", ids[2]);
+      assert(split.name === "Specific session name" && split.arrows_per_end === 6 && split.bow_profile_id === "my-bow", "Split session lost context or overwrote its own name");
+      await api.removeSavedShots([ids[0], ids[2]]);
+      const remaining = await api.get("session_overrides", ids[3]);
+      assert(remaining.name === split.name && remaining.arrows_per_end === 6 && remaining.bow_profile_id === "my-bow", "Anchor deletion lost session settings");
+      assert(!await api.get("session_overrides", ids[0]) && !await api.get("session_overrides", ids[2]), "Deleted anchors were retained");
+    });
+
+    await check("capture deletion rejects invalid ids and safely handles empty or stale selections", async () => {
+      await rejects(() => api.removeSavedShots(["committed", ""]));
+      assert(!!await api.get("shots", "committed"), "Invalid selection partially deleted data");
+      assert(await api.removeSavedShots([]) === 0, "Empty deletion changed records");
+      assert(await api.removeSavedShots(["already-deleted"]) === 0, "Stale selection reported a deletion");
+    });
+
     const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-145");
     const { EventBus, createStore } = await import("../app/core/store.js");
     const captureDb = await (await import("../app/core/db.js?v=shot-store-135")).initDb();
@@ -432,7 +495,7 @@ runButton.addEventListener("click", async () => {
       assert((await api.getAll("shots")).length === before + 1, "Pending capture saved more than once");
     });
 
-    const { CloudSyncAdapter } = await import("../app/telemetry/sync.js?v=shot-store-134");
+    const { CloudSyncAdapter } = await import("../app/telemetry/sync.js?v=shot-store-146");
     const adapter = Object.create(CloudSyncAdapter.prototype);
     adapter.user = { id: "browser-test-user" };
     adapter.reportedSchemaSkips = new Set();
@@ -471,6 +534,20 @@ runButton.addEventListener("click", async () => {
       assert(!await api.get("sync_queue", id), "Successful retry did not clear the task");
     });
 
+    await check("the uploader skips captures deleted while an earlier upload is in flight", async () => {
+      await api.put("sync_queue", taskFor("upload-blocker"));
+      await api.put("shots", { id: "delete-before-upload" });
+      await api.put("sync_queue", taskFor("delete-before-upload"));
+      const uploaded = [];
+      await adapter.processQueue({ from() { return { async upsert(payload) {
+        uploaded.push(payload.id);
+        if (payload.id === "upload-blocker") await api.removeSavedShots(["delete-before-upload"]);
+        return { error: null };
+      } }; } });
+      assert(uploaded.includes("upload-blocker") && !uploaded.includes("delete-before-upload"), "A stale queue snapshot uploaded the deleted capture");
+      assert(!await api.get("shots", "delete-before-upload"), "Queue processing recreated the deleted capture");
+    });
+
     await check("two queue consumers share one browser lock", async () => {
       assert(!!navigator.locks?.request, "This check requires Web Locks (Chrome or Edge)");
       await api.put("sync_queue", taskFor("one-upload"));
@@ -480,6 +557,68 @@ runButton.addEventListener("click", async () => {
       Object.assign(second, { user: adapter.user, reportedSchemaSkips: new Set(), bus: adapter.bus });
       await Promise.all([adapter.processQueue(fakeCloud), second.processQueue(fakeCloud)]);
       assert(uploads === 1, `The same task uploaded ${uploads} times`);
+    });
+
+    await check("single and bulk deletion refresh scorecards, review state and recent captures", async () => {
+      const ids = ["ui-delete-a", "ui-delete-b", "ui-delete-c"];
+      for (const [index, id] of ids.entries()) {
+        await api.put("shots", {
+          id, timestamp: new Date(Date.parse("2099-01-01T12:00:00Z") + index * 10000).toISOString(),
+          capture_kind: "arrow", shot_score: [90, 50, 70][index], arrow_score: [10, 8, 6][index],
+        });
+      }
+      await api.put("session_overrides", { id: ids[0], name: "UI deletion practice", arrows_per_end: 6 });
+      // Use the real markup and handlers, with fixtures in this page's isolated
+      // database. Dialog stubs exist only during this check, never in the app.
+      const markup = new DOMParser().parseFromString(await (await fetch("../index.html", { cache: "no-store" })).text(), "text/html");
+      const fixture = document.createElement("div");
+      fixture.hidden = true;
+      fixture.append(markup.querySelector("main"));
+      document.body.append(fixture);
+      const el = Object.fromEntries([...fixture.querySelectorAll("[id]")].map((node) => [node.id, node]));
+      const originalConfirm = window.confirm;
+      const originalAlert = window.alert;
+      window.confirm = () => true;
+      window.alert = (message) => { throw new Error(message); };
+      try {
+        const { initHistory } = await import("../app/ui/history.js?v=shot-store-146");
+        const store = createStore({ reviewMode: true, reviewShotId: ids[0], compareShotId: ids[1], replayActive: true });
+        const ui = initHistory({ bus: new EventBus(), store, el, selectViewTab() {} });
+        await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);
+        await ui.deleteSavedShot(ids[0]);
+        const session = el.historyList.querySelector('[data-session-id="ui-delete-b"]');
+        assert(session?.querySelector(".session-location").textContent === "UI deletion practice", "Session name disappeared after anchor deletion");
+        assert(!session.classList.contains("collapsed"), "Deleting an anchor collapsed the open session");
+        assert(session.querySelectorAll(".badge-val")[1].textContent === "60", "Average float score did not refresh");
+        assert(session.querySelector(".scorecard-head p").textContent.includes("14 points"), "Arrow total did not refresh");
+        assert(session.querySelector(".session-end-size").value === "6", "End size was lost");
+        assert(!el.recentShotsList.querySelector('[data-shot-id="ui-delete-a"]'), "Deleted capture remained in recent cards");
+        assert(!store.get().reviewMode && !store.get().replayActive && !store.get().compareShotId, "Deleted capture stayed in review or comparison");
+        el.historySelectModeBtn.click();
+        for (const id of ids.slice(1)) el.historyList.querySelector(`input[data-shot-id="${id}"]`).click();
+        const completed = new Promise((resolve, reject) => {
+          const observer = new MutationObserver(() => {
+            if (el.historyBulkActions.classList.contains("hidden") && !el.historyList.querySelector('[data-shot-id="ui-delete-b"]')) {
+              clearTimeout(timeout);
+              observer.disconnect();
+              resolve();
+            }
+          });
+          const timeout = setTimeout(() => { observer.disconnect(); reject(new Error("Bulk deletion did not finish refreshing")); }, 5000);
+          observer.observe(fixture, { subtree: true, childList: true, attributes: true });
+        });
+        el.bulkDeleteBtn.click();
+        await completed;
+        for (const id of ids) {
+          assert(!el.historyList.querySelector(`[data-shot-id="${id}"]`), "Bulk-deleted capture stayed in history");
+          assert(!el.recentShotsList.querySelector(`[data-shot-id="${id}"]`), "Bulk-deleted capture stayed in recent cards");
+        }
+        assert(el.historyExportStatus.textContent.includes("Deleted 2 captures"), "Bulk deletion was not announced");
+      } finally {
+        window.confirm = originalConfirm;
+        window.alert = originalAlert;
+        fixture.remove();
+      }
     });
   } catch (error) {
     failed += 1;

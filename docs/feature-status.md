@@ -151,6 +151,10 @@ architecture, design intent, and forward-looking targets, see
   Review and session editing place focus on their controls and return it when
   dismissed. Shot selection has descriptive checkbox labels and announces the
   selected count; bulk deletion stays disabled until a shot is selected.
+  Single, selected, and demo deletion commit captures, traces, and pending
+  uploads together. Session names, bow assignments and end sizes follow the
+  surviving captures; scorecards and recent captures refresh after deletion.
+  Deletion affects this browser's saved data; cloud copies are unchanged.
 - **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
   Replay preserves measured sample times and microphone alignment while
   downsampling to about 52 Hz. Slow streams and delayed callbacks keep their

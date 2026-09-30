@@ -80,3 +80,17 @@ test("groupShotsByTime sorts unsorted input and splits multiple sessions", () =>
     ["early-2", "early-1"],
   ]);
 });
+
+test("missing or invalid capture times cannot join unrelated sessions", () => {
+  const groups = groupShotsByTime([
+    shot("a", 0), { id: "missing" }, shot("b", SESSION_GAP_MS + 1), { id: "invalid", timestamp: "unknown" },
+  ]);
+  assert.equal(groups.length, 4);
+  assert.ok(groups.every((group) => group.shots.length === 1));
+});
+
+test("captures with equal timestamps keep a stable session anchor regardless of read order", () => {
+  const shots = [shot("a", 0), shot("Z", 0)];
+  assert.equal(groupShotsByTime(shots)[0].anchorId, "Z", "Ties follow IndexedDB string key order");
+  assert.deepEqual(groupShotsByTime(shots), groupShotsByTime([...shots].reverse()));
+});

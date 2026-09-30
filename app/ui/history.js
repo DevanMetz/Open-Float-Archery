@@ -1,6 +1,6 @@
 // Shot history, review, recent shots, and deletion UI module.
 
-import { getAll, get, put, remove, saveShotOutcome, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-141";
+import { getAll, get, put, removeSavedShots, saveShotOutcome, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-146";
 import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-145";
 import {
   buildScorecard,
@@ -57,7 +57,9 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   let reviewRequest = 0;
   let reviewReturnFocus = null;
   let historyRequest = 0;
+  let recentRequest = 0;
   let exportInProgress = false;
+  let deletionInProgress = false;
   const selectedShotIds = new Set();
 
   function focusOutcomeScore() {
@@ -163,7 +165,14 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     }
     savedOutcomeExists = !!outcome || !!selectedImpact;
     reviewArrows = reviewArrows.map((arrow) => arrow.id === shot.id ? shot : arrow);
-    const arrowIndex = reviewArrows.findIndex((arrow) => arrow.id === shot.id);
+    updateReviewProgress();
+    impactTarget?.setImpact(selectedImpact);
+    updateImpactHint();
+    updateOutcomeButtons();
+  }
+
+  function updateReviewProgress() {
+    const arrowIndex = reviewArrows.findIndex((arrow) => arrow.id === currentOutcomeShotId);
     const remaining = reviewArrows.filter((arrow) => !normalizeArrowOutcome(arrow)).length;
     if (el.reviewArrowProgress) {
       el.reviewArrowProgress.textContent = arrowIndex < 0 ? "" :
@@ -173,9 +182,6 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       el.saveNextOutcomeBtn.textContent = arrowIndex >= 0 && arrowIndex < reviewArrows.length - 1
         ? "Save & Next" : "Save & Finish";
     }
-    impactTarget?.setImpact(selectedImpact);
-    updateImpactHint();
-    updateOutcomeButtons();
   }
 
   function optionalPositiveNumber(input, label, max) {
@@ -244,6 +250,10 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       [...el.historyList.querySelectorAll(".session-group:not(.collapsed)")]
         .map((group) => group.dataset.sessionId),
     );
+    const expandedShotIds = new Set(
+      [...el.historyList.querySelectorAll(".session-group:not(.collapsed) .history-item")]
+        .map((item) => item.dataset.shotId),
+    );
     const hadSessions = !!el.historyList.querySelector(".session-group");
     if (!hadSessions) el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">Loading saved history...</p>`;
     try {
@@ -276,7 +286,9 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         const contentId = `session-content-${++sessionIndex}`;
         const override = overrideMap.get(group.anchorId) || null;
         const groupEl = document.createElement("div");
-        const expanded = hadSessions ? expandedSessions.has(group.anchorId) : isFirst;
+        const expanded = hadSessions
+          ? expandedSessions.has(group.anchorId) || group.shots.some((shot) => expandedShotIds.has(shot.id))
+          : isFirst;
         groupEl.className = "session-group" + (expanded ? "" : " collapsed");
         groupEl.dataset.sessionId = group.anchorId;
         isFirst = false;
@@ -449,6 +461,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
             reviewShotTrace(shot);
           });
           const deleteBtn = item.querySelector(".history-item-delete-btn");
+          if (deleteBtn) deleteBtn.disabled = deletionInProgress;
           item.querySelector(".history-review-btn").addEventListener("click", (event) => {
             event.stopPropagation();
             reviewShotTrace(shot);
@@ -798,7 +811,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     }
   }
 
-  el.exitReviewBtn.addEventListener("click", () => {
+  function exitReview({ restoreFocus = true } = {}) {
     reviewRequest += 1;
     reviewArrows = [];
     store.set({
@@ -840,7 +853,9 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     selectedImpact = null;
     impactTarget?.setImpact(null);
     el.reviewOutcomePanel?.classList.add("hidden");
-    if (reviewReturnFocus?.isConnected && reviewReturnFocus.getClientRects().length) {
+    if (!restoreFocus) {
+      reviewReturnFocus = null;
+    } else if (reviewReturnFocus?.isConnected && reviewReturnFocus.getClientRects().length) {
       reviewReturnFocus.focus();
     } else {
       // Switching views refreshes recent cards, so the original DOM button
@@ -852,7 +867,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     }
     reviewReturnFocus = null;
     bus.emit("log", "Exited review mode. Returned to live telemetry stream.");
-  });
+  }
+  el.exitReviewBtn.addEventListener("click", () => exitReview());
 
   async function exportSingleShot(shotId) {
     try {
@@ -1072,122 +1088,79 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     return item;
   }
 
-  function syncQueueTaskMatchesShot(task, shotId) {
-    if (!task || !shotId) return false;
-    if (task.targetId === shotId) return true;
-    const payload = task.payload;
-    if (!payload) return false;
-    if (payload.shot_id === shotId) return true;
-    if (payload.id === shotId) return true;
-    return false;
+  function setDeletionInProgress(value) {
+    deletionInProgress = value;
+    updateBulkSelectCount();
+    el.historyList?.querySelectorAll(".history-item-delete-btn").forEach((button) => { button.disabled = value; });
   }
 
-  async function purgeSyncQueueForShot(shotId) {
-    const tasks = await getAll("sync_queue");
-    const matches = tasks.filter((task) => syncQueueTaskMatchesShot(task, shotId));
-    await Promise.all(matches.map((task) => remove("sync_queue", task.id)));
+  async function refreshAfterDeletion(ids) {
+    const deleted = new Set(ids);
+    reviewRequest += 1;
+    for (const id of deleted) selectedShotIds.delete(id);
+    updateBulkSelectCount();
+    const current = store.get();
+    if (deleted.has(current.reviewShotId)) {
+      exitReview({ restoreFocus: false });
+    } else if (deleted.has(current.compareShotId)) {
+      store.set({ compareShotId: null, compareTrace: null, compareShotLabel: "", compareThresholdG: 12 });
+      if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
+    }
+    await withPreservedScroll(() => Promise.all([loadShotHistoryList(), loadRecentShotsList()]));
+    const reviewedId = store.get().reviewShotId;
+    if (store.get().reviewMode && reviewedId) {
+      await refreshReviewCompareOptions(reviewedId);
+      const groups = groupShotsByTime(await getAll("shots"));
+      const session = groups.find((group) => group.shots.some((shot) => shot.id === reviewedId));
+      reviewArrows = buildScorecard(session?.shots || []).arrows;
+      updateReviewProgress();
+    }
+    if (syncAdapter) syncAdapter.updateStatus();
+  }
+
+  async function deleteLocalCaptures(ids) {
+    const count = await removeSavedShots(ids);
+    const message = `Deleted ${count} capture${count === 1 ? "" : "s"} from this browser. Cloud copies are unchanged.`;
+    bus.emit("log", message);
+    if (el.historyExportStatus) el.historyExportStatus.textContent = message;
+    try {
+      await refreshAfterDeletion(ids);
+    } catch (error) {
+      bus.emit("log", `Captures were deleted, but refreshing the view failed: ${error.message}`);
+      if (el.historyExportStatus) el.historyExportStatus.textContent = `${message} Reload to refresh the view.`;
+    }
+    return count;
   }
 
   async function deleteSavedShot(shotId) {
-    if (!shotId) return;
-
-    let shot;
+    if (!shotId || deletionInProgress) return;
+    const returnFocus = document.activeElement;
+    setDeletionInProgress(true);
     try {
-      shot = await get("shots", shotId);
-    } catch (_) {
-      shot = null;
-    }
-    if (!shot) return;
-
-    const title = shotHistoryLabel(shot);
-    const timeStr = new Date(shot.timestamp).toLocaleString();
-    const confirmed = confirm(
-      `Delete this saved shot?\n\n${title}\n${timeStr}\n\nThis cannot be undone.`,
-    );
-    if (!confirmed) return;
-
-    try {
-      await purgeSyncQueueForShot(shotId);
-      try {
-        await remove("shot_traces", shotId);
-      } catch (_) {}
-      await remove("shots", shotId);
-      selectedShotIds.delete(shotId);
-      updateBulkSelectCount();
-
-      try {
-        const override = await get("session_overrides", shotId);
-        if (override) await remove("session_overrides", shotId);
-      } catch (_) {}
-
-      const state = store.get();
-      const updates = {};
-      if (state.reviewMode && state.reviewShotId === shotId) {
-        Object.assign(updates, {
-          reviewMode: false,
-          reviewShotId: null,
-          reviewTrace: null,
-          reviewMicSeries: null,
-          reviewInfo: "",
-          reviewRangeEst: "",
-          reviewReleaseIdx: null,
-          reviewReleaseTimeMs: null,
-          reviewHitIdx: null,
-          reviewHitTimeMs: null,
-          replayActive: false,
-          replayPaused: false,
-          replayProgress: 1,
-        });
-      }
-      if (state.compareShotId === shotId) {
-        Object.assign(updates, {
-          compareShotId: null,
-          compareTrace: null,
-          compareShotLabel: "",
-          compareThresholdG: 12,
-        });
-        if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
-      }
-      if (Object.keys(updates).length > 0) store.set(updates);
-
-      el.recentShotsList
-        ?.querySelector(`.recent-shot-card[data-shot-id="${shotId}"]`)
-        ?.remove();
-
-      const historyItem = el.historyList?.querySelector(
-        `.history-item[data-shot-id="${shotId}"]`,
+      const shot = await get("shots", shotId);
+      if (!shot) { await refreshAfterDeletion([shotId]); return; }
+      const title = shotHistoryLabel(shot);
+      const timeStr = new Date(shot.timestamp).toLocaleString();
+      const confirmed = confirm(
+        `Delete this saved capture from this browser?\n\n${title}\n${timeStr}\n\nCloud copies are unchanged. This cannot be undone.`,
       );
-      if (historyItem) {
-        const sessionGroup = historyItem.closest(".session-group");
-        historyItem.remove();
-        const remaining = sessionGroup?.querySelectorAll(".history-item").length ?? 0;
-        if (remaining === 0 && sessionGroup) {
-          sessionGroup.remove();
-        } else if (sessionGroup) {
-          const shotsLeft = sessionGroup.querySelectorAll(".history-item").length;
-          const shotsBadge = sessionGroup.querySelector(
-            ".session-stat-badge:first-child .badge-val",
-          );
-          if (shotsBadge) shotsBadge.textContent = String(shotsLeft);
-        }
-        const anyShots = el.historyList?.querySelector(".history-item");
-        if (!anyShots) {
-          el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">No saved shots yet. Shots taken within ${Math.round(SESSION_GAP_MS / 60000)} minutes of each other are grouped into a session automatically.</p>`;
-        }
-      } else {
-        await loadShotHistoryList();
-      }
-
-      if (state.reviewMode && state.reviewShotId && state.reviewShotId !== shotId) {
-        await refreshReviewCompareOptions(state.reviewShotId);
-      }
-
-      if (syncAdapter) syncAdapter.triggerSync();
-      bus.emit("log", `Deleted shot "${title}".`);
+      if (!confirmed) return;
+      const rows = [...el.historyList.querySelectorAll(".history-item")];
+      const index = rows.findIndex((row) => row.dataset.shotId === shotId);
+      const neighborId = (rows[index + 1] || rows[index - 1])?.dataset.shotId;
+      await deleteLocalCaptures([shotId]);
+      const neighbor = [...el.historyList.querySelectorAll(".history-item")]
+        .find((row) => row.dataset.shotId === neighborId)?.querySelector(".history-review-btn");
+      (neighbor?.getClientRects().length ? neighbor : el.historySelectModeBtn)?.focus();
     } catch (error) {
-      console.error("Failed to delete shot:", error);
+      console.error("Failed to delete capture:", error);
       bus.emit("log", `Delete failed: ${error.message}`);
-      alert(`Could not delete shot: ${error.message}`);
+      alert(`Could not delete capture: ${error.message}`);
+    } finally {
+      setDeletionInProgress(false);
+      if (document.activeElement === document.body && returnFocus?.isConnected && returnFocus.getClientRects().length) {
+        returnFocus.focus();
+      }
     }
   }
 
@@ -1415,8 +1388,10 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   // Load recent shots for dashboard (full rebuild — only on init / tab switch)
   async function loadRecentShotsList() {
     if (!el.recentShotsList) return;
+    const request = ++recentRequest;
     try {
       const shots = await getAll("shots");
+      if (request !== recentRequest) return;
       if (!shots || shots.length === 0) {
         el.recentShotsList.innerHTML = `<p class="note" style="padding: 12px; text-align: center; width: 100%;">No shots captured in this session yet.</p>`;
         return;
@@ -1424,8 +1399,6 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
       shots.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
       const recent = shots.slice(0, RECENT_SHOTS_LIMIT);
-
-      el.recentShotsList.replaceChildren();
 
       const traceEntries = await Promise.all(
         recent.map(async (shot) => {
@@ -1437,13 +1410,15 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
           }
         }),
       );
+      if (request !== recentRequest) return;
 
       const fragment = document.createDocumentFragment();
       traceEntries.forEach(({ shot, trace }, index) => {
         fragment.appendChild(buildRecentShotCardElement(shot, trace, index, shots.length));
       });
-      el.recentShotsList.appendChild(fragment);
+      el.recentShotsList.replaceChildren(fragment);
     } catch (error) {
+      if (request !== recentRequest) return;
       console.error("Error loading recent shots:", error);
       el.recentShotsList.innerHTML = `<p class="note" style="padding: 12px; text-align: center; width: 100%;">Failed to load recent shots.</p>`;
     }
@@ -1484,8 +1459,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     if (el.bulkSelectCount) {
       el.bulkSelectCount.textContent = `${selectedCount} selected`;
     }
-    if (el.bulkDeleteBtn) el.bulkDeleteBtn.disabled = selectedCount === 0;
-    if (el.bulkExportBtn) el.bulkExportBtn.disabled = selectedCount === 0 || exportInProgress;
+    if (el.bulkDeleteBtn) el.bulkDeleteBtn.disabled = selectedCount === 0 || deletionInProgress;
+    if (el.bulkExportBtn) el.bulkExportBtn.disabled = selectedCount === 0 || exportInProgress || deletionInProgress;
   }
 
   if (el.historySelectModeBtn) {
@@ -1542,7 +1517,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
 
   el.bulkExportBtn?.addEventListener("click", async () => {
-    if (exportInProgress || !selectedShotIds.size) return;
+    if (exportInProgress || deletionInProgress || !selectedShotIds.size) return;
     const ids = [...selectedShotIds];
     exportInProgress = true;
     updateBulkSelectCount();
@@ -1577,94 +1552,24 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
   if (el.bulkDeleteBtn) {
     el.bulkDeleteBtn.addEventListener("click", async () => {
-      if (!el.historyList) return;
-      const checkboxes = el.historyList.querySelectorAll(".history-item-checkbox");
-      const selectedIds = Array.from(checkboxes)
-        .filter((chk) => chk.checked)
-        .map((chk) => chk.dataset.shotId);
-
-      if (selectedIds.length === 0) {
-        alert("No shots selected for deletion.");
-        return;
-      }
-
+      if (deletionInProgress || !selectedShotIds.size) return;
+      const ids = [...selectedShotIds];
       const confirmed = confirm(
-        `Delete ${selectedIds.length} selected shot${selectedIds.length > 1 ? "s" : ""}?\n\nThis cannot be undone.`,
+        `Delete ${ids.length} selected capture${ids.length === 1 ? "" : "s"} from this browser?\n\nCloud copies are unchanged. This cannot be undone.`,
       );
       if (!confirmed) return;
-
+      setDeletionInProgress(true);
       try {
-        bus.emit("log", `Bulk deleting ${selectedIds.length} shots...`);
-        
-        const state = store.get();
-        let reviewClosed = false;
-        let compareClosed = false;
-        
-        for (const shotId of selectedIds) {
-          await purgeSyncQueueForShot(shotId);
-          try {
-            await remove("shot_traces", shotId);
-          } catch (_) {}
-          await remove("shots", shotId);
-
-          try {
-            const override = await get("session_overrides", shotId);
-            if (override) await remove("session_overrides", shotId);
-          } catch (_) {}
-
-          if (state.reviewMode && state.reviewShotId === shotId) {
-            reviewClosed = true;
-          }
-          if (state.compareShotId === shotId) {
-            compareClosed = true;
-          }
-        }
-
-        const updates = {};
-        if (reviewClosed) {
-          Object.assign(updates, {
-            reviewMode: false,
-            reviewShotId: null,
-            reviewTrace: null,
-            reviewMicSeries: null,
-            reviewInfo: "",
-            reviewRangeEst: "",
-            reviewReleaseIdx: null,
-            reviewReleaseTimeMs: null,
-            reviewHitIdx: null,
-            reviewHitTimeMs: null,
-            replayActive: false,
-            replayPaused: false,
-            replayProgress: 1,
-          });
-        }
-        if (compareClosed) {
-          Object.assign(updates, {
-            compareShotId: null,
-            compareTrace: null,
-            compareShotLabel: "",
-            compareThresholdG: 12,
-          });
-          if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
-        }
-        if (Object.keys(updates).length > 0) store.set(updates);
-
-        if (el.historyBulkActions) el.historyBulkActions.classList.add("hidden");
-        if (el.historyDefaultActions) el.historyDefaultActions.classList.remove("hidden");
-        selectedShotIds.clear();
-        
-        await loadShotHistoryList();
-        
-        if (state.reviewMode && state.reviewShotId && !selectedIds.includes(state.reviewShotId)) {
-          await refreshReviewCompareOptions(state.reviewShotId);
-        }
-
-        if (syncAdapter) syncAdapter.triggerSync();
-        
-        bus.emit("log", `Successfully deleted ${selectedIds.length} shots.`);
+        await deleteLocalCaptures(ids);
+        el.historyBulkActions?.classList.add("hidden");
+        el.historyDefaultActions?.classList.remove("hidden");
+        el.historyList.querySelectorAll(".history-item-checkbox").forEach((checkbox) => checkbox.classList.add("hidden"));
+        el.historySelectModeBtn?.focus();
       } catch (error) {
         console.error("Bulk deletion failed:", error);
-        alert(`Failed to delete shots: ${error.message}`);
+        alert(`Could not delete captures: ${error.message}`);
+      } finally {
+        setDeletionInProgress(false);
       }
     });
   }
@@ -1689,5 +1594,6 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     reviewShotTrace,
     exportSingleShot,
     deleteSavedShot,
+    refreshAfterDeletion,
   };
 }

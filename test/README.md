@@ -29,8 +29,13 @@ concurrent capture save.
 Outcome-edit checks cover committed upload payloads, score/impact rollback,
 preserving telemetry, missing captures, and local-only demo results.
 Capture checks cover matching metadata/trace ids, atomic replay and upload
-saves, and demo exclusion from the queue. Simulated cloud
+saves, demo exclusion from the queue, disconnect recovery, retry after a failed
+manual save, and duplicate submission. Deletion checks cover full rollback,
+unrelated queue rows, session anchor changes and split groups. A hidden copy of
+the real history markup verifies single and bulk deletion refresh scorecards,
+review state and recent captures, using only this page's temporary database.
+Simulated cloud
 responses exercise interrupted uploads, new work arriving during an upload,
-failed-upload retries, and shared Web Locks. No real cloud client is created and
+failed-upload retries, canceled queue entries, and shared Web Locks. No real cloud client is created and
 no data is uploaded. These checks complement the dependency-free Node suite;
 Node does not provide a native IndexedDB implementation.

@@ -830,6 +830,17 @@ score and impact; an edit cannot recreate a capture deleted from another view.
 Remembering target-form defaults is optional and cannot turn a committed result
 into an apparent save failure.
 
+**Local capture deletion:** single, bulk, and demo cleanup remove shot metadata,
+traces, matching shot/trace upload tasks, and deleted session anchors in one
+transaction. A failure rolls back the complete selection. When deleting an
+anchor or splitting a group, each surviving session inherits the original
+name, bow and end-size settings; an existing override at a new anchor takes
+precedence. Missing capture times form separate groups, and timestamp ties use
+shot ids to keep anchors stable. History, scorecards and recent captures refresh
+after commit. The uploader rechecks each queued record before sending it, so a
+deleted pending task is skipped even if it appeared in an earlier snapshot.
+Deletion is local only: cloud copies and uploads already in flight are unchanged.
+
 **Selected capture exports:** subset files use `openfloat-export` version 1 and
 the existing Settings import path. One read transaction collects selected
 `shots`, matching `shot_traces`, referenced legacy `sessions`, original

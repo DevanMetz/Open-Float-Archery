@@ -127,15 +127,74 @@ export function getPendingSyncTasks() {
     tx.objectStore("sync_queue").index("status").getAll("pending"));
 }
 
-export function updateSyncTaskStatus(taskId, status) {
-  return runTransaction("sync_queue", "readwrite", (tx) => {
+export async function updateSyncTaskStatus(taskId, status) {
+  let updatedTask;
+  await runTransaction("sync_queue", "readwrite", (tx) => {
     const store = tx.objectStore("sync_queue");
     const getReq = store.get(taskId);
     getReq.onsuccess = () => {
       const task = getReq.result;
-      if (task) store.put({ ...task, status });
+      if (task) {
+        updatedTask = { ...task, status };
+        store.put(updatedTask);
+      }
     };
   });
+  return updatedTask;
+}
+
+// Delete local captures as one operation, including queued uploads. Cloud
+// copies and uploads already in flight are outside this transaction's scope.
+export async function removeSavedShots(shotIds) {
+  if (!Array.isArray(shotIds) || shotIds.some((id) => typeof id !== "string" || !id.trim())) {
+    throw new Error("Capture deletion requires a list of shot ids.");
+  }
+  const ids = new Set(shotIds);
+  if (!ids.size) return 0;
+  let removedCount = 0;
+  await runTransaction(["shots", "shot_traces", "sync_queue", "session_overrides"], "readwrite", (tx) => {
+    const shots = tx.objectStore("shots");
+    const overrides = tx.objectStore("session_overrides");
+    const shotRequest = shots.getAll();
+    shotRequest.onsuccess = () => {
+      removedCount = shotRequest.result.filter((shot) => ids.has(shot.id)).length;
+      const overrideRequest = overrides.getAll();
+      overrideRequest.onsuccess = () => {
+        const overrideMap = new Map(overrideRequest.result.map((record) => [record.id, record]));
+        // Deleting an anchor (or a bridging shot) can create new session
+        // anchors. Carry the old group's settings to each surviving fragment,
+        // preserving any more specific settings already attached there.
+        for (const group of groupShotsByTime(shotRequest.result)) {
+          if (!group.shots.some((shot) => ids.has(shot.id))) continue;
+          const settings = overrideMap.get(group.anchorId);
+          if (!settings) continue;
+          const remaining = group.shots.filter((shot) => !ids.has(shot.id));
+          for (const survivor of groupShotsByTime(remaining)) {
+            if (survivor.anchorId === group.anchorId) continue;
+            overrides.put({ ...settings, ...overrideMap.get(survivor.anchorId), id: survivor.anchorId });
+          }
+        }
+        for (const id of ids) {
+          shots.delete(id);
+          tx.objectStore("shot_traces").delete(id);
+          overrides.delete(id);
+        }
+      };
+    };
+    const queue = tx.objectStore("sync_queue");
+    const cursorRequest = queue.openCursor();
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (!cursor) return;
+      const task = cursor.value;
+      if (task.table === "shots" || task.table === "shot_traces") {
+        const key = task.table === "shot_traces" ? "shot_id" : "id";
+        if (ids.has(task.targetId) || ids.has(task.payload?.[key])) queue.delete(cursor.primaryKey);
+      }
+      cursor.continue();
+    };
+  });
+  return removedCount;
 }
 
 // --- Data portability (local backup / restore) ---------------------------
@@ -336,15 +395,21 @@ export async function importAllData(payload, { merge = true, queueForSync = fals
 // user edits (name/bow) stored in `session_overrides` stay attached.
 // Returns groups sorted newest-first; each group's shots are also newest-first.
 export function groupShotsByTime(shots, gapMs = SESSION_GAP_MS) {
-  const sorted = [...shots].sort(
-    (a, b) => new Date(a.timestamp) - new Date(b.timestamp),
-  );
+  const sortTime = (shot) => {
+    const time = Date.parse(shot.timestamp);
+    return Number.isFinite(time) ? time : -Infinity;
+  };
+  const sorted = [...shots].sort((a, b) => {
+    const leftId = String(a.id);
+    const rightId = String(b.id);
+    return sortTime(a) - sortTime(b) || (leftId < rightId ? -1 : leftId > rightId ? 1 : 0);
+  });
 
   const groups = [];
   let current = null;
   for (const shot of sorted) {
-    const t = new Date(shot.timestamp).getTime();
-    if (!current || t - current.lastTime > gapMs) {
+    const t = Date.parse(shot.timestamp);
+    if (!current || !Number.isFinite(t) || !Number.isFinite(current.lastTime) || t - current.lastTime > gapMs) {
       current = {
         anchorId: shot.id,
         startTime: t,
