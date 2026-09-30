@@ -51,6 +51,7 @@ function playTone(frequency, durationMs) {
 
     oscillator.start();
     oscillator.stop(audioCtx.currentTime + durationMs / 1000);
+    oscillator.onended = () => audioCtx.close();
   } catch (err) {
     console.warn("Failed to play audio tone:", err);
   }
@@ -61,7 +62,7 @@ export function mountTraining({ store, el, bus }) {
 
   const ctx = el.trainingTargetCanvas.getContext("2d");
   
-  // Game states: 'idle', 'countdown', 'holding', 'finished'
+  // Game states: 'idle', 'countdown', 'holding', 'finished', 'saving'
   let gameState = "idle";
   let countdownVal = 5;
   let remainingHoldTime = 10;
@@ -72,6 +73,8 @@ export function mountTraining({ store, el, bus }) {
   let trainingSamples = [];
   let currentHoldDuration = 10;
   let sessionIsDemo = false;
+  let sessionConnectionMode = "";
+  let interrupted = false;
   let recommendation = analyzeTrainingHistory([]);
   let activeDrill = TRAINING_DRILLS[recommendation.drillId];
   let currentTarget = recommendation.target;
@@ -86,6 +89,7 @@ export function mountTraining({ store, el, bus }) {
   }
 
   function updateDrillUi({ applyDuration = false } = {}) {
+    if (gameState !== "idle") return;
     activeDrill = TRAINING_DRILLS[selectedDrillId()] || TRAINING_DRILLS.steady;
     const isAdaptive = (el.trainingDrillSelect?.value || "adaptive") === "adaptive";
     currentTarget = isAdaptive ? recommendation.target : activeDrill.defaultTarget;
@@ -127,6 +131,12 @@ export function mountTraining({ store, el, bus }) {
   // React to connection states in the reactive store
   store.subscribe((state) => {
     const connected = state.connected;
+    if ((gameState === "countdown" || gameState === "holding") &&
+        (!connected || state.statusMode !== sessionConnectionMode)) {
+      interrupted = true;
+      resetToIdle();
+      bus.emit("log", "Training stopped because the telemetry connection changed. Start a new hold to retry.");
+    }
     
     if (el.startTrainingBtn) {
       el.startTrainingBtn.disabled = !connected || gameState !== "idle";
@@ -136,13 +146,17 @@ export function mountTraining({ store, el, bus }) {
       if (connected) {
         el.trainingStatusText.textContent = state.statusMode === "demo" ? "Demo Mode" : "Connected";
         el.trainingStatusText.style.color = "var(--green)";
-        el.trainingStatusDesc.textContent = state.statusMode === "demo"
+        el.trainingStatusDesc.textContent = interrupted
+          ? "The previous hold stopped when the connection changed. Press start to retry."
+          : state.statusMode === "demo"
           ? "Synthetic movement. Saved demo holds stay local and do not affect your baseline."
           : "Bow sensor is streaming. Press start to train.";
       } else {
         el.trainingStatusText.textContent = "Disconnected";
         el.trainingStatusText.style.color = "var(--red)";
-        el.trainingStatusDesc.textContent = "Connect a sensor or start demo mode to train.";
+        el.trainingStatusDesc.textContent = interrupted
+          ? "Hold stopped: connection lost. Reconnect your sensor or start demo mode to retry."
+          : "Connect a sensor or start demo mode to train.";
       }
     }
 
@@ -423,13 +437,15 @@ export function mountTraining({ store, el, bus }) {
   }
 
   function startSession() {
-    if (gameState !== "idle") return;
+    if (gameState !== "idle" || !store.get().connected) return;
 
     updateDrillUi();
+    interrupted = false;
     gameState = "countdown";
     countdownVal = 5;
     currentHoldDuration = Number(el.trainingDurationSelect.value);
     sessionIsDemo = store.get().statusMode === "demo";
+    sessionConnectionMode = store.get().statusMode;
     
     trainingSamples = [];
     
@@ -442,6 +458,7 @@ export function mountTraining({ store, el, bus }) {
     el.startTrainingBtn.classList.add("hidden");
     el.cancelTrainingBtn.classList.remove("hidden");
     el.trainingDurationSelect.disabled = true;
+    if (el.trainingDrillSelect) el.trainingDrillSelect.disabled = true;
     
     el.trainingCountdownVal.textContent = countdownVal;
     el.trainingPhaseLabel.textContent = activeDrill.cue;
@@ -520,8 +537,7 @@ export function mountTraining({ store, el, bus }) {
     // Switch cancel button back to start button
     el.cancelTrainingBtn.classList.add("hidden");
     el.startTrainingBtn.classList.remove("hidden");
-    el.startTrainingBtn.disabled = false;
-    el.trainingDurationSelect.disabled = false;
+    el.startTrainingBtn.disabled = true;
     
     if (trainingSamples.length < 5) {
       alert("Hold sequence ended prematurely or no telemetry frames were received.");
@@ -549,9 +565,11 @@ export function mountTraining({ store, el, bus }) {
   }
 
   async function saveSession() {
-    if (trainingSamples.length === 0) return;
+    if (gameState !== "finished" || trainingSamples.length === 0) return;
+    gameState = "saving";
     
     el.saveTrainingShotBtn.disabled = true;
+    el.discardTrainingShotBtn.disabled = true;
     el.saveTrainingShotBtn.textContent = "Saving...";
     
     try {
@@ -640,12 +658,14 @@ export function mountTraining({ store, el, bus }) {
       resetToIdle();
       alert("Training session shot saved successfully!");
     } catch (err) {
+      gameState = "finished";
       console.error("Failed to save training shot:", err);
       bus.emit("log", `Failed to save training shot: ${err.message}`);
       alert(`Error saving training shot: ${err.message}`);
     } finally {
       el.saveTrainingShotBtn.disabled = false;
-      el.saveTrainingShotBtn.textContent = "Save Session Shot";
+      el.saveTrainingShotBtn.textContent = sessionIsDemo ? "Save Demo Hold" : "Save Session Shot";
+      el.discardTrainingShotBtn.disabled = false;
     }
   }
 
@@ -658,6 +678,7 @@ export function mountTraining({ store, el, bus }) {
   }
 
   function discardSession() {
+    if (gameState === "saving") return;
     resetToIdle();
   }
 
@@ -670,6 +691,7 @@ export function mountTraining({ store, el, bus }) {
     el.startTrainingBtn.classList.remove("hidden");
     el.startTrainingBtn.disabled = !store.get().connected;
     el.trainingDurationSelect.disabled = false;
+    if (el.trainingDrillSelect) el.trainingDrillSelect.disabled = false;
     
     // Hide panels
     el.trainingDisplayActive.classList.add("hidden");

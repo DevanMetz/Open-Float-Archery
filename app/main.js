@@ -16,13 +16,13 @@ import {
 } from "./ui/bow-3d.js?v=shot-store-126";
 import { initDb, getAll, get, put, remove, generateUUID } from "./core/db.js?v=shot-store-135";
 import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-134";
-import { mountTraining } from "./ui/training.js?v=shot-store-135";
+import { mountTraining } from "./ui/training.js?v=shot-store-136";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
 import { initHistory } from "./ui/history.js?v=shot-store-135";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-131";
 
-const APP_BUILD = "shot-store-135";
+const APP_BUILD = "shot-store-136";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [

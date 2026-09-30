@@ -158,6 +158,10 @@ architecture, design intent, and forward-looking targets, see
   samples, stay local, and never alter that personal baseline. Each manual or
   training capture commits its metadata, replay trace, and any real-data upload
   tasks together, preventing a failed save from leaving a partial capture. The
+  selected drill and duration stay fixed until that result is saved or dismissed.
+  A disconnected or changed telemetry connection cancels an unfinished hold;
+  reconnecting allows a fresh attempt. Duplicate saves and dismissal during a
+  save are blocked while the capture commits. The
   saved drill trace is time-preserving and bounded to 52 Hz even when live BLE
   telemetry arrives at full rate. The original 5-second draw countdown,
   5–30 second hold duration, live Pin Float
