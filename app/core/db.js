@@ -271,6 +271,8 @@ export async function saveCapture(shot, trace = null) {
 
 // Late telemetry patches only the latest record. Deletion wins if the capture
 // has gone, and user-entered arrow outcomes survive delayed scoring updates.
+// Firmware recovery must not replace an existing full browser recording.
+// Returns null when the capture is gone or its richer trace was preserved.
 export async function saveShotTrace(trace, metrics = null) {
   if (!trace?.shot_id) throw new Error("A saved trace must identify its capture.");
   let updatedShot = null;
@@ -279,14 +281,26 @@ export async function saveShotTrace(trace, metrics = null) {
     const request = shots.get(trace.shot_id);
     request.onsuccess = () => {
       if (!request.result) return;
-      updatedShot = { ...request.result, ...metrics, id: trace.shot_id };
-      const sample = updatedShot.sample === true || updatedShot.device_id === "OpenFloat-Demo";
-      const savedTrace = sample ? { ...trace, sample: true, source: "sample" } : trace;
-      if (metrics) shots.put(updatedShot);
-      tx.objectStore("shot_traces").put(savedTrace);
-      for (const task of buildImportSyncTasks({ shots: [updatedShot], shot_traces: [savedTrace] })) {
-        if (task.table === "shots" && !metrics) continue;
-        tx.objectStore("sync_queue").add({ ...task, action: task.table === "shots" ? "UPDATE" : "CREATE" });
+      const traces = tx.objectStore("shot_traces");
+      const save = () => {
+        updatedShot = { ...request.result, ...metrics, id: trace.shot_id };
+        const sample = updatedShot.sample === true || updatedShot.device_id === "OpenFloat-Demo";
+        const savedTrace = sample ? { ...trace, sample: true, source: "sample" } : trace;
+        if (metrics) shots.put(updatedShot);
+        traces.put(savedTrace);
+        for (const task of buildImportSyncTasks({ shots: [updatedShot], shot_traces: [savedTrace] })) {
+          if (task.table === "shots" && !metrics) continue;
+          tx.objectStore("sync_queue").add({ ...task, action: task.table === "shots" ? "UPDATE" : "CREATE" });
+        }
+      };
+      if (trace.source === "firmware") {
+        const existing = traces.get(trace.shot_id);
+        existing.onsuccess = () => {
+          if (existing.result?.source === "browser" && existing.result.payload?.length) return;
+          save();
+        };
+      } else {
+        save();
       }
     };
   });

@@ -3,7 +3,7 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-import { getAll, saveCapture, saveShotTrace, generateUUID } from "../core/db.js?v=shot-store-147";
+import { getAll, saveCapture, saveShotTrace, generateUUID } from "../core/db.js?v=shot-store-152";
 import {
   buildShotTraceRecord,
   decodeFirmwareTraceBytes,
@@ -1262,7 +1262,7 @@ export class TelemetryStore {
 
           const shotRecord = await saveShotTrace(tracePayload);
           if (!shotRecord) {
-            this.bus.emit("log", `Capture ${localShotId.slice(0, 8)} was deleted; skipped its firmware trace.`);
+            this.bus.emit("log", `Skipped firmware trace for ${localShotId.slice(0, 8)}: capture was deleted or already has a browser recording.`);
             return;
           }
 

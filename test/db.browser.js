@@ -373,6 +373,37 @@ runButton.addEventListener("click", async () => {
       }
     });
 
+    await check("full browser traces survive firmware recovery in either transaction order", async () => {
+      for (const browserFirst of [true, false]) {
+        const id = `trace-priority-${browserFirst}`;
+        await api.put("shots", { id, arrow_score: 9 });
+        const browser = { shot_id: id, source: "browser", sample_rate_hz: 208, payload: [{ tUs: 0, az: 1 }, { tUs: 4808, az: 16 }] };
+        const firmware = { shot_id: id, source: "firmware", sample_rate_hz: 52, payload: [{ roll: 8 }] };
+        const full = () => api.saveShotTrace(browser, { shot_score: 87 });
+        const recovery = () => api.saveShotTrace(firmware, { shot_score: 12 });
+        await Promise.all(browserFirst ? [full(), recovery()] : [recovery(), full()]);
+        assert(JSON.stringify(await api.get("shot_traces", id)) === JSON.stringify(browser), "Firmware replaced the full browser trace");
+        const shot = await api.get("shots", id);
+        assert(shot.shot_score === 87 && shot.arrow_score === 9, "Trace recovery changed the full score or target result");
+        const before = (await api.getAll("sync_queue")).length;
+        assert(await recovery() === null, "Skipped firmware recovery reported a write");
+        assert((await api.getAll("sync_queue")).length === before, "Skipped firmware recovery queued an overwrite");
+        const traceTasks = (await api.getAll("sync_queue")).filter((task) => task.table === "shot_traces" && task.targetId === id);
+        assert(traceTasks.at(-1).payload.source === "browser", "Cloud queue would replace the retained browser recording");
+      }
+    });
+
+    await check("firmware recovery fills missing or empty browser recordings", async () => {
+      for (const empty of [true, false]) {
+        const id = `trace-recover-empty-${empty}`;
+        await api.put("shots", { id, shot_score: null });
+        if (empty) await api.put("shot_traces", { shot_id: id, source: "browser", payload: [] });
+        const firmware = { shot_id: id, source: "firmware", payload: [{ roll: 8 }] };
+        assert((await api.saveShotTrace(firmware)).id === id, "Available firmware trace was discarded");
+        assert((await api.get("shot_traces", id)).source === "firmware", "Missing trace was not recovered");
+      }
+    });
+
     await check("failed late trace writes roll back the trace, metrics and upload tasks", async () => {
       for (const failingStore of ["shot_traces", "sync_queue"]) {
         const id = `trace-rollback-${failingStore}`;
@@ -467,9 +498,9 @@ runButton.addEventListener("click", async () => {
       assert(await api.removeSavedShots(["already-deleted"]) === 0, "Stale selection reported a deletion");
     });
 
-    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-151");
+    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-152");
     const { EventBus, createStore } = await import("../app/core/store.js");
-    const captureDb = await (await import("../app/core/db.js?v=shot-store-147")).initDb();
+    const captureDb = await (await import("../app/core/db.js?v=shot-store-152")).initDb();
     observeTransactions(captureDb);
 
     function deviceRecorder() {
@@ -534,6 +565,22 @@ runButton.addEventListener("click", async () => {
       const shots = (await api.getAll("shots")).filter((shot) => shot.device_shot_id === 41002);
       assert(shots.length === 1, "Concurrent frames created duplicate captures");
       assert((await api.get("shot_traces", shots[0].id)).payload[0].micAmp === 12, "Trace did not wait for its metadata");
+    });
+
+    await check("re-uploaded firmware traces preserve a saved browser recording and its active review", async () => {
+      const recorder = deviceRecorder();
+      const shotId = 41008;
+      const id = "existing-browser-recording";
+      const browser = { shot_id: id, source: "browser", sample_rate_hz: 208, payload: [{ tUs: 0, az: 1 }, { tUs: 4808, az: 16 }] };
+      await api.saveCapture({ id, device_id: "OpenFloat-Sensor", device_shot_id: shotId, timestamp: new Date().toISOString(), shot_score: 87 }, browser);
+      recorder.store.set({ reviewMode: true, reviewShotId: id, reviewTrace: browser.payload });
+      let traceEvents = 0;
+      recorder.bus.on("shot-trace-saved", () => traceEvents++);
+      await recorder.onShot(deviceShot(shotId));
+      await recorder.onTraceChunk(traceChunk(shotId));
+      assert((await api.get("shot_traces", id)).source === "browser", "Reconnect replaced the saved browser recording");
+      assert(recorder.store.get().reviewTrace === browser.payload, "Ignored firmware upload replaced the active replay");
+      assert(traceEvents === 0, "Ignored firmware upload emitted a misleading save event");
     });
 
     await check("deleted current captures never redirect firmware traces to an older reused device id", async () => {
@@ -742,7 +789,7 @@ runButton.addEventListener("click", async () => {
       window.confirm = () => true;
       window.alert = (message) => { throw new Error(message); };
       try {
-        const { initHistory } = await import("../app/ui/history.js?v=shot-store-151");
+        const { initHistory } = await import("../app/ui/history.js?v=shot-store-152");
         const store = createStore({ reviewMode: true, reviewShotId: ids[0], compareShotId: ids[1], replayActive: true });
         const ui = initHistory({ bus: new EventBus(), store, el, selectViewTab() {} });
         await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);
@@ -782,7 +829,7 @@ runButton.addEventListener("click", async () => {
       }
     });
     const historyMarkup = new DOMParser().parseFromString(await (await fetch("../index.html", { cache: "no-store" })).text(), "text/html");
-    const { initHistory } = await import("../app/ui/history.js?v=shot-store-151");
+    const { initHistory } = await import("../app/ui/history.js?v=shot-store-152");
     async function withHistoryUI(run) {
       const fixture = document.createElement("div");
       fixture.style.cssText = "position:absolute;left:-10000px;width:1000px";

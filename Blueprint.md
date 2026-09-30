@@ -685,6 +685,12 @@ full v1 score. Stored events without a recorded yaw also leave yaw unavailable
 instead of borrowing the orientation at upload time. Existing saved records
 are preserved.
 
+Firmware recovery never overwrites a nonempty `source: "browser"` recording
+for the same capture. This check runs inside the trace write transaction, so
+browser recordings win regardless of arrival order. Skipped recovery writes
+leave scores, replay, and queued uploads unchanged. If the browser recording
+is missing or empty, the available firmware trace is retained normally.
+
 ## 11. Browser Data Parsing
 
 The browser should parse packed binary with `DataView`.

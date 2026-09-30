@@ -39,8 +39,11 @@ Capture checks cover matching metadata/trace ids, atomic replay and upload
 saves, demo exclusion from the queue, disconnect recovery, retry after a failed
 manual save, and duplicate submission.
 Late-trace checks cover score/outcome races, deleted records, atomic rollback,
-and demo provenance. Simulated device events exercise acknowledgement after
-commit, concurrent repeats, metadata arriving before trace, reused device ids,
+and demo provenance.
+Firmware recovery checks preserve fuller browser traces and their active
+replays, even when writes race, while recovering absent or empty recordings.
+Simulated device events exercise acknowledgement after commit, concurrent
+repeats, metadata arriving before trace, reused device ids,
 and delayed saves across reconnection.
 Device-score checks keep unrelated live metrics out of metadata, queued
 uploads, and angle-only firmware recovery; the capture's own browser trace
