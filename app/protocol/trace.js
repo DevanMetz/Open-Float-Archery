@@ -3,6 +3,30 @@
 export const FIRMWARE_TRACE_STRIDE_LEGACY = 6;
 export const FIRMWARE_TRACE_STRIDE_WITH_MIC = 7;
 
+// Keep measured elapsed time when bounding a manual replay's point count.
+// Missing timestamps support older in-memory callers; new captures always
+// supply tUs. Preserve endpoints and gaps rather than inventing uniform timing.
+export function prepareTimedTrace(points, targetHz = 52, fallbackHz = targetHz) {
+  const rate = Number.isFinite(targetHz) && targetHz > 0 ? targetHz : 52;
+  const fallback = Number.isFinite(fallbackHz) && fallbackHz > 0 ? fallbackHz : rate;
+  const origin = Number.isFinite(points[0]?.tUs) ? points[0].tUs : 0;
+  const intervalUs = 1000000 / rate;
+  const payload = [];
+  let nextTimeUs = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    const tUs = Number.isFinite(point.tUs)
+      ? point.tUs - origin
+      : Math.round(index * 1000000 / fallback);
+    if (index !== points.length - 1 && tUs < nextTimeUs) continue;
+    payload.push({ ...point, tUs });
+    nextTimeUs = (Math.floor(tUs / intervalUs) + 1) * intervalUs;
+  }
+  const spanUs = payload.at(-1)?.tUs || 0;
+  const measuredRate = spanUs > 0 ? Math.round((payload.length - 1) * 1000000 / spanUs) : rate;
+  return { payload, sampleRateHz: Math.max(1, Math.min(rate, measuredRate)) };
+}
+
 export function decodeFirmwareTraceBytes(rawBytes, bytesPerPoint = 0) {
   const view = new DataView(
     rawBytes.buffer,

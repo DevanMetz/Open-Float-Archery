@@ -355,17 +355,18 @@ runButton.addEventListener("click", async () => {
     });
 
     await check("manual recordings and rolling captures retain demo origin after disconnect", async () => {
-      const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-137");
+      const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-144");
       for (const method of ["saveManualRecording", "saveManual30sCapture"]) {
         let savedId;
         const recorder = Object.create(TelemetryStore.prototype);
-        const points = Array.from({ length: 12 }, () => ({
+        const points = Array.from({ length: 12 }, (_, index) => ({
           sample: true, ax: 0, ay: 0, az: 1, roll: 0, pitch: 0, lost: 0,
+          tUs: 4000000 + index * 33000, micAmp: index,
         }));
         Object.assign(recorder, {
           bus: { emit(type, event) { if (type === "shot-saved") savedId = event.localShotId; } },
           store: { get() { return { connected: false, statusMode: "" }; }, set() {} },
-          manualRecordingBuffer: points, manualRecordingDurationUs: 230769,
+          manualRecordingBuffer: points, manualRecordingDurationUs: 396000,
           manualRecordingLabel: "Demo provenance check", history30s: points,
           lost: 0, shotTraceRateHz: 52,
         });
@@ -376,6 +377,8 @@ runButton.addEventListener("click", async () => {
         assert(shot.sample === true && shot.device_id === "OpenFloat-Demo", `${method} mislabeled synthetic data`);
         assert(shot.capture_kind === "hold", `${method} did not preserve the capture type`);
         assert(trace.sample === true && trace.source === "sample", `${method} lost trace provenance`);
+        assert(trace.payload[0].tUs === 0 && trace.payload.at(-1).tUs === 363000, `${method} changed the capture duration`);
+        assert(trace.mic_series.at(-1).tUs === 363000, `${method} shifted the microphone timing`);
         assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === savedId), `${method} queued a demo upload`);
       }
     });

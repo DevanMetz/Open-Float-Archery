@@ -858,6 +858,15 @@ their traces also carry `sample: true` and `source: "sample"`. The source is
 captured while recording, so disconnecting before Save cannot turn a demo into
 personal data. The metadata, trace, and optional upload tasks commit together.
 These fields reuse existing sample conventions; no database migration is needed.
+
+**Manual capture timing:** live samples carry cumulative telemetry `tUs` into
+manual and rolling buffers. Saved manual traces normalize the first timestamp
+to zero, retain measured gaps and the final endpoint, and select points against
+a 52 Hz time grid rather than rewriting time from array indices. Motion and
+microphone samples keep the same timestamps. The trace's sample rate describes
+the retained data; explicit timestamps control replay duration. Rolling captures
+prune at 30 seconds of elapsed telemetry time. Demo `dtUs` is measured from
+successive timer callbacks, so synthetic recording time follows wall-clock time.
 New shot records also store `capture_kind: "arrow"` for device release events or
 `"hold"` for manual recordings and training. Arrow scoring uses this explicit
 type before legacy label/impulse heuristics, so a custom title cannot turn a hold

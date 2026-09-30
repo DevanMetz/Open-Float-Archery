@@ -8,7 +8,8 @@ import {
   buildShotTraceRecord,
   decodeFirmwareTraceBytes,
   extractMicWindow,
-} from "../protocol/trace.js?v=shot-store-118";
+  prepareTimedTrace,
+} from "../protocol/trace.js?v=shot-store-144";
 import {
   computeFloatScoreFromTrace,
   computeLiveFloatScore,
@@ -423,8 +424,8 @@ export class TelemetryStore {
         sample: sample.source === "demo",
         lost: this.lost
       });
-      const historyCapacity = Math.max(1500, this.shotTraceRateHz * 30);
-      if (this.history30s.length > historyCapacity) {
+      const historyCutoffUs = this.elapsedUs - 30000000;
+      while (this.history30s[0]?.tUs < historyCutoffUs) {
         this.history30s.shift();
       }
     }
@@ -439,21 +440,10 @@ export class TelemetryStore {
 
     if (this.isRecordingManual) {
       this.manualRecordingBuffer.push({
+        ...tracePoint,
         sample: sample.source === "demo",
-        ax,
-        ay,
-        az,
-        gx: sample.gxDps,
-        gy: sample.gyDps,
-        gz: sample.gzDps,
-        rotDps: gyroMag,
-        roll,
-        pitch,
-        yaw,
-        ...(quat || {}),
-        micAmp: sample.micAmp || 0,
       });
-      this.manualRecordingDurationUs += (sample.dtUs || 19230);
+      this.manualRecordingDurationUs += sampleDtUs;
       this.store.set({
         manualRecordSamples: this.manualRecordingBuffer.length,
         manualRecordElapsedSec: Number((this.manualRecordingDurationUs / 1000000).toFixed(1))
@@ -867,17 +857,19 @@ export class TelemetryStore {
       return;
     }
 
-    const hz = this.shotTraceRateHz > 0 ? this.shotTraceRateHz : 52;
+    const { payload: timedBuffer, sampleRateHz: hz } = prepareTimedTrace(
+      this.history30s, this.shotTraceRateHz > 0 ? this.shotTraceRateHz : 52,
+    );
     const isDemo = this.history30s.some((point) => point.sample);
-    const durationSec = Math.round(this.history30s.length / hz);
-    this.bus.emit("log", `Saving last ${durationSec}s of live telemetry (${this.history30s.length} samples at ${hz} Hz)...`);
+    const durationSec = (timedBuffer.at(-1)?.tUs || 0) / 1000000;
+    this.bus.emit("log", `Saving last ${durationSec.toFixed(1)}s of live telemetry (${timedBuffer.length} samples at about ${hz} Hz)...`);
 
     try {
       // 1. Compute metrics from the 30s buffer
       let maxG = 0;
       let sumStability = 0;
       
-      const parsedTrace = this.history30s.map((pt, index) => {
+      const parsedTrace = timedBuffer.map((pt) => {
         const g = Math.hypot(pt.ax, pt.ay, pt.az);
         if (g > maxG) maxG = g;
         
@@ -898,11 +890,11 @@ export class TelemetryStore {
           yaw: pt.yaw || 0,
           ...(sampleQuaternion(pt) || {}),
           micAmp: pt.micAmp || 0,
-          tUs: Math.round((index * 1000000) / hz),
+          tUs: pt.tUs,
         };
       });
 
-      const avgStability = Number((sumStability / this.history30s.length).toFixed(1));
+      const avgStability = Number((sumStability / timedBuffer.length).toFixed(1));
       const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz: hz, isManual: true });
 
       // 3. Save shot metadata (representing the manual capture)
@@ -1011,17 +1003,16 @@ export class TelemetryStore {
     const isDemo = this.manualRecordingBuffer.some((point) => point.sample);
     const durationSec = this.manualRecordingDurationUs / 1000000;
     const rawSampleRateHz = durationSec > 0 ? this.manualRecordingBuffer.length / durationSec : 52;
-    const step = Math.max(1, Math.round(rawSampleRateHz / 52));
-    const decimatedBuffer = this.manualRecordingBuffer.filter((_, idx) => idx % step === 0);
+    const { payload: decimatedBuffer, sampleRateHz } = prepareTimedTrace(this.manualRecordingBuffer, 52, rawSampleRateHz);
     const label = this.manualRecordingLabel.trim() || "Manual Recording";
 
-    this.bus.emit("log", `Saving manual recording: "${label}" (${durationSec.toFixed(1)}s, raw ${this.manualRecordingBuffer.length} samples at ~${Math.round(rawSampleRateHz)}Hz, decimated to ${decimatedBuffer.length} samples at 52Hz)...`);
+    this.bus.emit("log", `Saving manual recording: "${label}" (${durationSec.toFixed(1)}s, ${decimatedBuffer.length} replay points at about ${sampleRateHz} Hz)...`);
 
     try {
       // 1. Compute metrics
       let maxG = 0;
       let sumStability = 0;
-      const parsedTrace = decimatedBuffer.map((pt, index) => {
+      const parsedTrace = decimatedBuffer.map((pt) => {
         const g = Math.hypot(pt.ax, pt.ay, pt.az);
         if (g > maxG) maxG = g;
         
@@ -1042,14 +1033,14 @@ export class TelemetryStore {
           yaw: pt.yaw || 0,
           ...(sampleQuaternion(pt) || {}),
           micAmp: pt.micAmp || 0,
-          tUs: Math.round((index * 1000000) / 52),
+          tUs: pt.tUs,
         };
       });
 
       const avgStability = decimatedBuffer.length > 0
         ? Number((sumStability / decimatedBuffer.length).toFixed(1))
         : 100;
-      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz: 52, isManual: true });
+      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz, isManual: true });
 
       // 2. Save shot record
       const startLost = this.manualRecordingStartLost ?? this.lost;
@@ -1081,7 +1072,7 @@ export class TelemetryStore {
       // 4. Save trace record
       const tracePayload = buildShotTraceRecord({
         localShotId: manualShotId,
-        sampleRateHz: 52,
+        sampleRateHz,
         payload: parsedTrace,
         micSeries: parsedTrace.map((point) => ({
           tUs: point.tUs,

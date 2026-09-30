@@ -81,8 +81,12 @@ export class DemoAdapter extends BaseAdapter {
     this.status("demo", "Demo stream");
     this.log("Demo stream started.");
 
+    let previousMs = performance.now();
     this.timer = setInterval(() => {
-      const t = performance.now() / 1000;
+      const nowMs = performance.now();
+      const dtUs = Math.max(1, Math.round((nowMs - previousMs) * 1000));
+      previousMs = nowMs;
+      const t = nowMs / 1000;
       const rollDeg = Math.cos(t * 3) * 7;
       const pitchDeg = Math.sin(t * 2.4) * 5;
       const yawDeg = Math.sin(t * 0.8) * 24;
@@ -92,7 +96,7 @@ export class DemoAdapter extends BaseAdapter {
         protocol: 1,
         type: 1,
         sequence: seq++,
-        dtUs: 2400,
+        dtUs,
         axMg: Math.round(Math.sin(t * 4) * 180),
         ayMg: Math.round(Math.cos(t * 3) * 120),
         azMg: Math.round(980 + Math.sin(t * 2) * 35),

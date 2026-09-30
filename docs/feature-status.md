@@ -152,6 +152,10 @@ architecture, design intent, and forward-looking targets, see
   dismissed. Shot selection has descriptive checkbox labels and announces the
   selected count; bulk deletion stays disabled until a shot is selected.
 - **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
+  Replay preserves measured sample times and microphone alignment while
+  downsampling to about 52 Hz. Slow streams and delayed callbacks keep their
+  true duration; the rolling capture uses a 30-second time window. Demo timing
+  follows the browser's actual callback intervals.
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
 - **Adaptive Training Coach**: The Training tab analyzes hold stability and
