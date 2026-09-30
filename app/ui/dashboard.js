@@ -1,7 +1,7 @@
 // UI layer: renders the dashboard from store state and paints the live trace.
 // Pure view code — it reads from the store and telemetry, never the device.
 
-import { get } from "../core/db.js";
+import { get } from "../core/db.js?v=shot-store-134";
 import { drawTraceChart, reviewTimeRangeUs } from "./trace-chart.js?v=shot-store-127";
 import {
   calibratedAngle,

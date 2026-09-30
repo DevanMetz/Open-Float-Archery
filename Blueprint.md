@@ -820,6 +820,17 @@ malformed record lists, and a single-shot trace whose `shot_id` does not match.
 Failed database opens can retry, and connections close on version changes so
 another tab can upgrade without being blocked by an idle OpenFloat tab.
 
+**Import and upload ordering:** queue rows in a backup are diagnostic snapshots,
+not portable work. Import ignores their numeric ids and actions, preserves this
+browser's existing queue, and appends fresh upserts from imported bow profiles,
+sessions, shots, and traces in that dependency order. Those tasks commit in the
+same transaction as the restored records. An imported correction therefore
+follows any older queued version of that record. Sample shots and traces remain
+local. Queue processing drains newly added work, retries unfinished `syncing`
+tasks after a reload, and uses Web Locks where available to serialize consumers
+across tabs. Failed uploads remain pending until another sync trigger; browsers
+without Web Locks retain the adapter's per-tab guard.
+
 If using Firestore, avoid placing large raw traces inside user profile
 documents. Store shot metadata and raw traces separately. If using
 Supabase/PostgreSQL, normalize sessions, shots, and trace payload references.

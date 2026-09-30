@@ -15,10 +15,11 @@
 <body>
   <h1>Browser storage checks</h1>
   <p>Uses the browser's real IndexedDB with a new, temporary database for each run.
-    Existing OpenFloat data is never opened or changed. No device or account is needed.</p>
+    Existing OpenFloat data is never opened or changed. Cloud responses are simulated;
+    nothing is uploaded. No device or account is needed.</p>
   <button id="run" type="button">Run storage checks</button>
   <p id="summary" role="status">Ready</p>
   <ol id="results"></ol>
-  <script type="module" src="db.browser.js"></script>
+  <script type="module" src="db.browser.js?v=shot-store-134"></script>
 </body>
 </html>

@@ -2,9 +2,9 @@
 // own the transport lifecycle (connect / disconnect).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-123";
+import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-134";
 import { createAdapter } from "./device/adapters.js?v=shot-store-123";
-import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-127";
+import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-134";
 import {
   MOUNT_ORIENTATIONS,
   cloneMountAxes,
@@ -14,15 +14,15 @@ import {
   mountOrientationState,
   rotateMountAxes,
 } from "./ui/bow-3d.js?v=shot-store-126";
-import { initDb, getAll, get, put, remove, generateUUID } from "./core/db.js?v=shot-store-133";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-130";
-import { mountTraining } from "./ui/training.js?v=shot-store-129";
+import { initDb, getAll, get, put, remove, generateUUID } from "./core/db.js?v=shot-store-134";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-134";
+import { mountTraining } from "./ui/training.js?v=shot-store-134";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
-import { initDataBackup } from "./ui/data-backup.js?v=shot-store-133";
-import { initHistory } from "./ui/history.js?v=shot-store-132";
+import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
+import { initHistory } from "./ui/history.js?v=shot-store-134";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-131";
 
-const APP_BUILD = "shot-store-133";
+const APP_BUILD = "shot-store-134";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [

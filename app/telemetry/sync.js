@@ -2,12 +2,11 @@
 // and replication of local IndexedDB mutations to Supabase.
 
 import {
+  getAll,
   getPendingSyncTasks,
   updateSyncTaskStatus,
   remove,
-  get,
-  put
-} from "../core/db.js";
+} from "../core/db.js?v=shot-store-134";
 
 let supabaseClient = null;
 let initializationPromise = null;
@@ -74,6 +73,7 @@ export class CloudSyncAdapter {
     this.bus = bus;
     this.store = store;
     this.syncing = false;
+    this.syncRequested = false;
     this.user = null;
     this.reportedSchemaSkips = new Set();
 
@@ -189,61 +189,66 @@ export class CloudSyncAdapter {
   }
 
   async triggerSync() {
-    if (this.syncing) return;
-    if (!navigator.onLine) {
-      this.updateStatus();
+    if (this.syncing) {
+      this.syncRequested = true;
       return;
     }
-
-    const sb = await getSupabase();
-    if (!sb) {
-      this.updateStatus();
-      return; // No config, quiet exit
-    }
-
-    if (!this.user) {
-      // Retry auth
-      await this.authenticate();
-      if (!this.user) return;
-    }
-
     this.syncing = true;
-    this.updateStatus();
-
+    this.syncRequested = false;
+    let completed = false;
     try {
+      if (!navigator.onLine) return;
+      const sb = await getSupabase();
+      if (!sb) return; // No config, quiet exit.
+      if (!this.user) {
+        await this.authenticate();
+        if (!this.user) return;
+      }
+      this.updateStatus();
       await this.processQueue(sb);
+      completed = true;
     } catch (error) {
       console.error("Error during queue processing:", error);
       this.bus.emit("log", `Sync interrupted: ${error.message}`);
     } finally {
       this.syncing = false;
       this.updateStatus();
+      // Catch a trigger arriving just as the last empty-queue read finishes.
+      // Failed uploads wait for the next trigger instead of retrying in a loop.
+      if (completed && this.syncRequested) this.triggerSync();
     }
   }
 
   async processQueue(sb) {
-    const pending = await getPendingSyncTasks();
-    if (pending.length === 0) return;
-
-    this.bus.emit("log", `Uploading ${pending.length} pending records to cloud...`);
-
-    for (const task of pending) {
-      // 1. Mark task as syncing locally to avoid double processing
-      await updateSyncTaskStatus(task.id, "syncing");
-
-      try {
-        await this.syncTask(sb, task);
-        // 2. Success - delete task from queue
-        await remove("sync_queue", task.id);
-      } catch (err) {
-        // 3. Transient error (network drop) - mark back to pending and halt execution
-        await updateSyncTaskStatus(task.id, "pending");
-        this.bus.emit("log", `Upload failed for task #${task.id}: ${err.message}`);
-        throw err; 
+    const drain = async () => {
+      let uploaded = 0;
+      for (;;) {
+        // A tab may have closed after marking a task as syncing. The shared
+        // lock makes it safe to replay that unfinished work with an upsert.
+        const pending = (await getAll("sync_queue"))
+          .filter((task) => task.status === "pending" || task.status === "syncing");
+        if (!pending.length) break;
+        this.bus.emit("log", `Uploading ${pending.length} pending records to cloud...`);
+        for (const task of pending) {
+          await updateSyncTaskStatus(task.id, "syncing");
+          try {
+            await this.syncTask(sb, task);
+            await remove("sync_queue", task.id);
+            uploaded += 1;
+          } catch (err) {
+            await updateSyncTaskStatus(task.id, "pending");
+            this.bus.emit("log", `Upload failed for task #${task.id}: ${err.message}`);
+            throw err;
+          }
+        }
       }
-    }
-
-    this.bus.emit("log", "All pending cloud sync tasks completed successfully.");
+      if (uploaded) this.bus.emit("log", "All pending cloud sync tasks completed successfully.");
+    };
+    // Chrome/Edge coordinate uploads across tabs. Older browsers retain the
+    // adapter's existing per-tab guard without requiring another dependency.
+    return navigator.locks?.request
+      ? navigator.locks.request("openfloat-cloud-sync", drain)
+      : drain();
   }
 
   async syncTask(sb, task) {

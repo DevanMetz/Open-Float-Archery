@@ -58,11 +58,13 @@ runButton.addEventListener("click", async () => {
         latestWrite = tx;
         tx.addEventListener("complete", () => completed.add(tx));
         if (abortNextWrite) {
+          const abortStore = abortNextWrite;
           abortNextWrite = false;
           const objectStore = tx.objectStore.bind(tx);
           tx.objectStore = (name) => {
             const store = objectStore(name);
-            for (const method of ["put", "delete"]) {
+            if (abortStore !== true && name !== abortStore) return store;
+            for (const method of ["put", "delete", "add"]) {
               const original = store[method].bind(store);
               store[method] = (...values) => {
                 const request = original(...values);
@@ -171,6 +173,87 @@ runButton.addEventListener("click", async () => {
         window.indexedDB.open = open;
         reopened?.close();
       }
+    });
+
+    await check("import cannot overwrite this browser's queue or replay foreign deletes", async () => {
+      const localTask = { table: "shots", action: "CREATE", targetId: "local-only", payload: { id: "local-only" }, status: "pending" };
+      const id = await api.put("sync_queue", localTask);
+      const counts = await api.importAllData(envelope({
+        shots: [{ id: "imported", arrow_score: 8 }],
+        sync_queue: [{ id, table: "shots", action: "DELETE", targetId: "foreign", status: "pending" }],
+      }), { queueForSync: true });
+      assert(counts.sync_queue === 1, "Import did not create one fresh upload");
+      assert((await api.get("sync_queue", id)).targetId === "local-only", "Local queue task was overwritten");
+      const tasks = await api.getAll("sync_queue");
+      assert(!tasks.some((task) => task.targetId === "foreign"), "Foreign delete was replayed");
+      assert(tasks.some((task) => task.targetId === "imported" && task.id > id), "Fresh upload did not follow existing work");
+    });
+
+    await check("an imported correction follows older queued data for the same shot", async () => {
+      const olderId = await api.put("sync_queue", {
+        table: "shots", action: "CREATE", targetId: "corrected", payload: { id: "corrected", arrow_score: 3 }, status: "pending",
+      });
+      await api.importAllData(envelope({ shots: [{ id: "corrected", arrow_score: 10 }] }), { queueForSync: true });
+      const tasks = (await api.getAll("sync_queue")).filter((task) => task.targetId === "corrected");
+      assert(tasks.length === 2 && tasks[1].id > olderId, "New correction was hidden by an older task");
+      assert(tasks[1].payload.arrow_score === 10, "The queued correction has stale data");
+    });
+
+    await check("upload-queue failure rolls back imported records too", async () => {
+      abortNextWrite = "sync_queue";
+      await rejects(() => api.importAllData(envelope({ shots: [{ id: "queue-abort" }] }), { queueForSync: true }));
+      assert(!await api.get("shots", "queue-abort"), "Imported shot committed without its upload task");
+      assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === "queue-abort"), "Aborted upload task survived");
+    });
+
+    const { CloudSyncAdapter } = await import("../app/telemetry/sync.js?v=shot-store-134");
+    const adapter = Object.create(CloudSyncAdapter.prototype);
+    adapter.user = { id: "browser-test-user" };
+    adapter.reportedSchemaSkips = new Set();
+    adapter.bus = { emit() {} };
+    const taskFor = (id, status = "pending") => ({
+      table: "shots", action: "CREATE", targetId: id, payload: { id }, status,
+    });
+
+    await check("sync recovers interrupted work and drains tasks added during upload", async () => {
+      await api.put("sync_queue", taskFor("interrupted", "syncing"));
+      const uploaded = [];
+      let appended = false;
+      const fakeCloud = {
+        from() { return { async upsert(payload) {
+          uploaded.push(payload.id);
+          if (!appended) {
+            appended = true;
+            await api.put("sync_queue", taskFor("arrived-during-upload"));
+          }
+          return { error: null };
+        } }; },
+      };
+      await adapter.processQueue(fakeCloud);
+      assert(uploaded.includes("interrupted"), "Interrupted upload was stranded");
+      assert(uploaded.includes("arrived-during-upload"), "New work was left waiting for another trigger");
+      assert((await api.getPendingSyncTasks()).length === 0, "Pending work remains");
+    });
+
+    await check("failed cloud work remains pending and can be retried", async () => {
+      const id = await api.put("sync_queue", taskFor("retry-upload"));
+      await rejects(() => adapter.processQueue({ from() { return { async upsert() {
+        return { error: { message: "Simulated offline failure" } };
+      } }; } }));
+      assert((await api.get("sync_queue", id)).status === "pending", "Failed task cannot be retried");
+      await adapter.processQueue({ from() { return { async upsert() { return { error: null }; } }; } });
+      assert(!await api.get("sync_queue", id), "Successful retry did not clear the task");
+    });
+
+    await check("two queue consumers share one browser lock", async () => {
+      assert(!!navigator.locks?.request, "This check requires Web Locks (Chrome or Edge)");
+      await api.put("sync_queue", taskFor("one-upload"));
+      let uploads = 0;
+      const fakeCloud = { from() { return { async upsert() { uploads += 1; return { error: null }; } }; } };
+      const second = Object.create(CloudSyncAdapter.prototype);
+      Object.assign(second, { user: adapter.user, reportedSchemaSkips: new Set(), bus: adapter.bus });
+      await Promise.all([adapter.processQueue(fakeCloud), second.processQueue(fakeCloud)]);
+      assert(uploads === 1, `The same task uploaded ${uploads} times`);
     });
   } catch (error) {
     failed += 1;

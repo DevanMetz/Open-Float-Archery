@@ -169,8 +169,13 @@ architecture, design intent, and forward-looking targets, see
   later record rolls back the entire import. Unsupported export versions and
   mismatched single-shot traces are rejected before writing. Save operations
   report success only after IndexedDB commits, including before sensor shot
-  acknowledgements.
+  acknowledgements. Imports preserve this browser's pending uploads and create
+  fresh upload tasks from the restored records in the same transaction. Saved
+  queue actions are never replayed, and imported sample captures stay local.
 - **Single Shot Export**: You can export individual shots along with their telemetry trace to a standalone JSON file. This is accessible via the "Export Shot" button in the Trace Review banner on the Dashboard, or via the export icon (📤) next to any shot in the Saved Shots history list. This makes it easy to share specific shots for analysis.
 - **Optional Supabase Sync**: The Cloud modal accepts a Supabase URL and anon key
   for self-hosted sync. Local IndexedDB writes remain the source of truth and are
   queued before upload; leaving cloud settings blank keeps the app local-only.
+  Uploads recover work interrupted by a reload and pick up records added during
+  an upload. Chrome and Edge coordinate queue processing across tabs with Web
+  Locks; a failed upload stays pending for the next sync trigger.

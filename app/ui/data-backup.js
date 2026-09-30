@@ -1,8 +1,7 @@
 // Local data backup / restore UI module.
 // Handles JSON export/import and queues imported user-owned records for cloud sync.
 
-import { exportAllData, getAll, importAllData, normalizeImportPayload, put } from "../core/db.js?v=shot-store-133";
-import { SAMPLE_DEVICE_ID } from "../data/sample-data.js?v=shot-store-125";
+import { exportAllData, importAllData } from "../core/db.js?v=shot-store-134";
 
 function setDataBackupStatus(el, message, isError = false) {
   if (!el.dataBackupStatus) return;
@@ -16,44 +15,6 @@ function summarizeCounts(counts) {
   const traces = counts.shot_traces || 0;
   const profiles = counts.bow_profiles || 0;
   return `${shots} shot${shots === 1 ? "" : "s"}, ${traces} trace${traces === 1 ? "" : "s"}, ${profiles} bow profile${profiles === 1 ? "" : "s"}`;
-}
-
-// User-owned stores that should replicate to the cloud. Imported records are
-// written straight to IndexedDB and carry no fresh sync task, so importing
-// re-queues a CREATE per record (deduped against any task already pending,
-// including ones restored from a backup's own sync_queue) so the data syncs.
-const CLOUD_SYNC_TABLES = ["bow_profiles", "sessions", "shots", "shot_traces"];
-
-async function enqueueImportedForSync(stores) {
-  const existing = await getAll("sync_queue");
-  const seen = new Set(
-    existing
-      .filter((t) => t && t.status !== "done" && t.targetId != null)
-      .map((t) => `${t.table}|${t.targetId}`),
-  );
-  let queued = 0;
-  for (const table of CLOUD_SYNC_TABLES) {
-    const records = Array.isArray(stores[table]) ? stores[table] : [];
-    for (const rec of records) {
-      if (!rec) continue;
-      // Never push demo/sample records to the cloud.
-      if (rec.sample === true || rec.device_id === SAMPLE_DEVICE_ID) continue;
-      const targetId = table === "shot_traces" ? rec.shot_id : rec.id;
-      if (targetId == null) continue;
-      const key = `${table}|${targetId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      await put("sync_queue", {
-        table,
-        action: "CREATE",
-        targetId,
-        payload: rec,
-        status: "pending",
-      });
-      queued += 1;
-    }
-  }
-  return queued;
 }
 
 export function initDataBackup({ bus, syncAdapter, el, onImportComplete }) {
@@ -95,15 +56,12 @@ export function initDataBackup({ bus, syncAdapter, el, onImportComplete }) {
         throw new Error("file is not valid JSON.");
       }
 
-      payload = normalizeImportPayload(payload);
-      const counts = await importAllData(payload, { merge: true });
+      const counts = await importAllData(payload, { merge: true, queueForSync: true });
       const summary = summarizeCounts(counts);
-      const stores = payload.stores;
 
-      // Queue the imported user data for cloud replication, then kick a sync.
-      // If cloud isn't configured, triggerSync is a quiet no-op and the tasks
-      // wait in the queue until it is.
-      const queued = await enqueueImportedForSync(stores);
+      // The import and its fresh upload tasks have already committed together.
+      // Without cloud configuration, tasks stay local until sync is enabled.
+      const queued = counts.sync_queue;
       if (queued > 0 && syncAdapter) syncAdapter.triggerSync();
 
       const cloudNote = queued > 0 ? ` (${queued} queued for cloud sync)` : "";

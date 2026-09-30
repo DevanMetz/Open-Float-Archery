@@ -178,6 +178,24 @@ export function normalizeImportPayload(payload) {
   return { ...payload, format: EXPORT_FORMAT, version: EXPORT_VERSION, stores };
 }
 
+// Queue rows are browser-local work, not portable data. Rebuild uploads from
+// the imported records in dependency order, keeping the last value per key.
+export function buildImportSyncTasks(stores) {
+  const isSample = (record) => record.sample === true || record.device_id === "OpenFloat-Demo";
+  const sampleShots = new Set((stores.shots || []).filter(isSample).map((shot) => shot.id));
+  const tasks = [];
+  for (const table of ["bow_profiles", "sessions", "shots", "shot_traces"]) {
+    const key = table === "shot_traces" ? "shot_id" : "id";
+    const latest = new Map((stores[table] || []).map((record) => [record[key], record]));
+    for (const [targetId, record] of latest) {
+      if (isSample(record)) continue;
+      if (table === "shot_traces" && (record.source === "sample" || sampleShots.has(targetId))) continue;
+      tasks.push({ table, action: "CREATE", targetId, payload: record, status: "pending" });
+    }
+  }
+  return tasks;
+}
+
 // Read every object store into a single JSON-serializable envelope.
 export async function exportAllData() {
   const db = await initDb();
@@ -205,34 +223,32 @@ export async function exportAllData() {
 // Restore an exported envelope. By default records are merged into the existing
 // database (put by key, so a re-import overwrites matching records but keeps
 // everything else). Pass { merge: false } to clear each store before restoring.
+// Saved queue rows are never replayed. The UI requests fresh upload tasks in
+// this same transaction so imported corrections cannot lose their sync work.
 // Returns a per-store count of restored records.
-export async function importAllData(payload, { merge = true } = {}) {
+export async function importAllData(payload, { merge = true, queueForSync = false } = {}) {
   const { stores } = normalizeImportPayload(payload);
 
   const db = await initDb();
   const validStores = new Set(Array.from(db.objectStoreNames));
-  const incoming = Object.keys(stores).filter((name) => validStores.has(name));
+  const incoming = Object.keys(stores).filter((name) => name !== "sync_queue" && validStores.has(name));
   if (!incoming.length) {
     throw new Error("Export file contains no known data stores.");
   }
 
-  const counts = {};
-  await runTransaction(incoming, "readwrite", (tx) => {
+  const tasks = queueForSync ? buildImportSyncTasks(stores) : [];
+  const counts = { sync_queue: tasks.length };
+  await runTransaction(tasks.length ? [...incoming, "sync_queue"] : incoming, "readwrite", (tx) => {
     for (const name of incoming) {
       const store = tx.objectStore(name);
       if (!merge) store.clear();
       const records = stores[name];
       counts[name] = records.length;
-      for (const record of records) {
-        // sync_queue uses an auto-incrementing key; let it assign a fresh id
-        // when the record lacks one, otherwise preserve the exported key.
-        if (store.autoIncrement && (record.id === undefined || record.id === null)) {
-          store.add(record);
-        } else {
-          store.put(record);
-        }
-      }
+      for (const record of records) store.put(record);
     }
+    // Append after existing work: an older queued payload must not hide the
+    // newly imported version, and numeric ids from another browser can collide.
+    for (const task of tasks) tx.objectStore("sync_queue").add(task);
   });
 
   return counts;

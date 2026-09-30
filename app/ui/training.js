@@ -1,7 +1,7 @@
 // Steady Aim Training Game UI Module
 // Manages the prep countdown, audio tones, live target tracing, scoring, and DB persistence.
 
-import { getAll, put, generateUUID } from "../core/db.js?v=shot-store-98";
+import { getAll, put, generateUUID } from "../core/db.js?v=shot-store-134";
 import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=shot-store-99";
 import {
   TRAINING_DRILLS,
