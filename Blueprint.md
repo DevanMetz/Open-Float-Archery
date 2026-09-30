@@ -830,6 +830,19 @@ score and impact; an edit cannot recreate a capture deleted from another view.
 Remembering target-form defaults is optional and cannot turn a committed result
 into an apparent save failure.
 
+Device metadata and its upload task also commit together before acknowledgement.
+Concurrent repeats of a device shot share the pending save. The connection keeps
+the exact local capture id for each acknowledged device id; firmware traces wait
+for pending metadata and never fall back to an unrelated older capture with the
+same device counter. Reconnection starts a new association map and live buffers.
+Delayed browser captures retain their original motion, microphone, and loss
+samples, and cannot update a different connection's live metrics.
+Late trace saves read the current capture and commit replay, metric patches, and
+upload tasks together. Newer arrow outcomes survive; a deleted capture is skipped
+without recreating metadata, an orphan trace, or upload work. These are browser
+storage guarantees verified with simulated device events; physical reconnect and
+trace-transfer behavior still needs sensor testing.
+
 **Local capture deletion:** single, bulk, and demo cleanup remove shot metadata,
 traces, matching shot/trace upload tasks, and deleted session anchors in one
 transaction. A failure rolls back the complete selection. When deleting an

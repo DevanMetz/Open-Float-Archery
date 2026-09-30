@@ -117,3 +117,79 @@ test("pending recording saves reject discard, reset, replacement and duplicate s
   assert.equal(await telemetry.saveManualRecording(), null);
   assert.equal(telemetry.manualRecordingBuffer.length, 1);
 });
+
+test("delayed browser captures retain their original connection buffers", async (t) => {
+  const telemetry = recorder(t);
+  let freeze;
+  let context;
+  t.mock.method(globalThis, "setTimeout", (callback) => { freeze = callback; return 1; });
+  telemetry.saveBrowserShotTrace = async (...args) => { context = args.at(-1); };
+  telemetry.ingest(sample(0, 20000));
+  telemetry.scheduleBrowserShotTraceCapture("saved", 1, 20000, {}, 1500, 52, 0);
+  telemetry.ingest(sample(1, 20000));
+  const originalMotion = telemetry.shotTraceBuffer;
+  const originalMic = telemetry.micRingBuffer;
+  telemetry.reset();
+  telemetry.ingest(sample(0, 90000));
+  await freeze();
+  assert.equal(context.motion, originalMotion);
+  assert.equal(context.mic, originalMic);
+  assert.notEqual(context.epoch, telemetry.connectionEpoch);
+  assert.deepEqual(context.motion.map((point) => point.tUs), [20000, 40000]);
+  assert.deepEqual(telemetry.shotTraceBuffer.map((point) => point.tUs), [90000]);
+});
+
+test("concurrent device frames share one save and a failed attempt can retry", async (t) => {
+  const telemetry = recorder(t);
+  let release;
+  let calls = 0;
+  telemetry.saveDeviceShot = async () => {
+    calls += 1;
+    await new Promise((resolve) => { release = resolve; });
+    throw new Error("Storage unavailable");
+  };
+  const first = telemetry.onShot({ shotId: 42 });
+  const second = telemetry.onShot({ shotId: 42 });
+  assert.equal(calls, 1);
+  release();
+  await Promise.all([assert.rejects(first), assert.rejects(second)]);
+  assert.equal(telemetry.pendingShotSaves.size, 0);
+  telemetry.saveDeviceShot = async () => "retry-saved";
+  assert.equal(await telemetry.onShot({ shotId: 42 }), "retry-saved");
+});
+
+test("an old connection's save cannot clear the new connection's pending shot", async (t) => {
+  const telemetry = recorder(t);
+  const releases = [];
+  telemetry.saveDeviceShot = () => new Promise((resolve) => releases.push(resolve));
+  const first = telemetry.onShot({ shotId: 42 });
+  telemetry.bus.emit("status", { mode: "off", text: "Disconnected" });
+  const second = telemetry.onShot({ shotId: 42 });
+  releases[0]("old-capture");
+  await first;
+  assert.equal(telemetry.pendingShotSaves.size, 1);
+  releases[1]("new-capture");
+  assert.equal(await second, "new-capture");
+  assert.equal(telemetry.pendingShotSaves.size, 0);
+});
+
+test("invalid firmware chunks do not allocate pending trace buffers", async (t) => {
+  const telemetry = recorder(t);
+  for (const [chunkIndex, totalChunks] of [[-1, 3], [3, 3], [0, 0], [0, 1.5], [NaN, 2]]) {
+    await telemetry.onTraceChunk({ shotId: 42, chunkIndex, totalChunks });
+  }
+  assert.equal(telemetry.pendingTraces.size, 0);
+});
+
+test("automatic reconnect starts fresh trace buffers and sequence tracking", (t) => {
+  const telemetry = recorder(t);
+  telemetry.ingest(sample(100, 20000));
+  const beforeDrop = telemetry.shotTraceBuffer;
+  telemetry.bus.emit("status", { mode: "off", text: "Disconnected" });
+  telemetry.bus.emit("status", { mode: "live", text: "Connected" });
+  telemetry.ingest(sample(0, 20000));
+  assert.equal(beforeDrop.length, 1);
+  assert.notEqual(telemetry.shotTraceBuffer, beforeDrop);
+  assert.equal(telemetry.shotTraceBuffer.length, 1);
+  assert.equal(telemetry.lost, 0, "Sequence restart must not report billions of lost frames");
+});

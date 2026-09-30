@@ -1,7 +1,7 @@
 // Shot history, review, recent shots, and deletion UI module.
 
 import { getAll, get, put, removeSavedShots, saveShotOutcome, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-146";
-import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-145";
+import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-147";
 import {
   buildScorecard,
   canRecordArrowOutcome,

@@ -358,6 +358,53 @@ runButton.addEventListener("click", async () => {
       assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === "outcome-demo"), "Demo outcome entered the queue");
     });
 
+    await check("late trace scores and arrow outcomes merge in either transaction order", async () => {
+      for (const traceFirst of [true, false]) {
+        const id = `trace-outcome-${traceFirst}`;
+        await api.put("shots", { id, label: "Keep my label", shot_score: 40 });
+        const trace = { shot_id: id, payload: [{ roll: 1 }], source: "browser" };
+        const score = () => api.saveShotTrace(trace, { shot_score: 87, follow_through: 93 });
+        const outcome = () => api.saveShotOutcome(id, { arrow_score: 10, arrow_is_x: true, impact_x: 0.02 });
+        await Promise.all(traceFirst ? [score(), outcome()] : [outcome(), score()]);
+        const saved = await api.get("shots", id);
+        assert(saved.shot_score === 87 && saved.follow_through === 93, "Outcome overwrote delayed metrics");
+        assert(saved.arrow_score === 10 && saved.arrow_is_x && saved.impact_x === 0.02, "Trace overwrote the entered arrow result");
+        assert(saved.label === "Keep my label", "Trace replaced the capture metadata");
+      }
+    });
+
+    await check("failed late trace writes roll back the trace, metrics and upload tasks", async () => {
+      for (const failingStore of ["shot_traces", "sync_queue"]) {
+        const id = `trace-rollback-${failingStore}`;
+        await api.put("shots", { id, shot_score: 61, arrow_score: 9 });
+        await api.put("shot_traces", { shot_id: id, source: "original", payload: [] });
+        abortNextWrite = failingStore;
+        await rejects(() => api.saveShotTrace({ shot_id: id, source: "replacement", payload: [] }, { shot_score: 99 }));
+        const saved = await api.get("shots", id);
+        assert(saved.shot_score === 61 && saved.arrow_score === 9, "A failed trace changed saved metrics");
+        assert((await api.get("shot_traces", id)).source === "original", "Failed trace replaced the original replay");
+        assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === id), "Failed trace left upload work behind");
+      }
+    });
+
+    await check("late traces cannot recreate deleted captures or queue orphan uploads", async () => {
+      const id = "deleted-before-trace";
+      await api.put("shots", { id });
+      await api.removeSavedShots([id]);
+      assert(await api.saveShotTrace({ shot_id: id, payload: [] }, { shot_score: 80 }) === null, "Deleted capture accepted a trace");
+      assert(!await api.get("shots", id) && !await api.get("shot_traces", id), "Late trace recreated deleted data");
+      assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === id), "Late trace queued an orphan upload");
+    });
+
+    await check("late traces preserve demo provenance and remain local", async () => {
+      const id = "demo-late-trace";
+      await api.put("shots", { id, device_id: "OpenFloat-Demo", shot_score: 20 });
+      await api.saveShotTrace({ shot_id: id, payload: [], source: "browser" }, { shot_score: 40 });
+      const trace = await api.get("shot_traces", id);
+      assert(trace.sample && trace.source === "sample", "Late trace lost its demo marker");
+      assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === id), "Demo trace entered the upload queue");
+    });
+
     await check("capture deletion commits linked records together and preserves unrelated queue rows", async () => {
       await api.put("shots", { id: "delete-local", timestamp: "2001-01-01T12:00:00Z" });
       await api.put("shot_traces", { shot_id: "delete-local", payload: [] });
@@ -420,10 +467,96 @@ runButton.addEventListener("click", async () => {
       assert(await api.removeSavedShots(["already-deleted"]) === 0, "Stale selection reported a deletion");
     });
 
-    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-145");
+    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-147");
     const { EventBus, createStore } = await import("../app/core/store.js");
-    const captureDb = await (await import("../app/core/db.js?v=shot-store-135")).initDb();
+    const captureDb = await (await import("../app/core/db.js?v=shot-store-147")).initDb();
     observeTransactions(captureDb);
+
+    function deviceRecorder() {
+      const recorder = Object.assign(Object.create(TelemetryStore.prototype), {
+        bus: new EventBus(), store: createStore({}),
+        trace: [], history30s: [], pendingTraces: new Map(),
+      });
+      recorder.reset();
+      recorder.store.set({ connected: true, statusMode: "live", formScore: 50, yaw: 12 });
+      return recorder;
+    }
+    const deviceShot = (shotId) => ({ shotId, shotCount: shotId, stored: true, axMg: 0, ayMg: 0, azMg: 16000 });
+    const traceChunk = (shotId) => ({ shotId, chunkIndex: 0, totalChunks: 1, pointStride: 7, payload: new Uint8Array([0, 0, 0, 0, 0, 0, 12]) });
+
+    await check("device metadata and upload commit before acknowledgement, with retry after failure", async () => {
+      const recorder = deviceRecorder();
+      const saved = [];
+      recorder.bus.on("shot-saved", (event) => {
+        assert(completed.has(latestWrite), "Device acknowledged before the write committed");
+        saved.push(event);
+      });
+      abortNextWrite = "sync_queue";
+      await recorder.onShot(deviceShot(41001));
+      assert(saved.length === 0 && !recorder.connectionShotIds.has(41001), "Failed save was acknowledged or marked handled");
+      assert(!(await api.getAll("shots")).some((shot) => shot.device_shot_id === 41001), "Queue failure left partial device metadata");
+      await recorder.onShot(deviceShot(41001));
+      assert(saved.length === 1 && saved[0].shotId === 41001, "Successful retry was not acknowledged");
+      assert(recorder.connectionShotIds.get(41001) === saved[0].localShotId, "Device id did not map to its saved capture");
+    });
+
+    await check("concurrent device metadata frames save one capture and trace waits for that commit", async () => {
+      const recorder = deviceRecorder();
+      await Promise.all([recorder.onShot(deviceShot(41002)), recorder.onShot(deviceShot(41002)), recorder.onTraceChunk(traceChunk(41002))]);
+      const shots = (await api.getAll("shots")).filter((shot) => shot.device_shot_id === 41002);
+      assert(shots.length === 1, "Concurrent frames created duplicate captures");
+      assert((await api.get("shot_traces", shots[0].id)).payload[0].micAmp === 12, "Trace did not wait for its metadata");
+    });
+
+    await check("deleted current captures never redirect firmware traces to an older reused device id", async () => {
+      const recorder = deviceRecorder();
+      await api.put("shots", { id: "older-device-id", device_id: "OpenFloat-Sensor", device_shot_id: 41003, timestamp: "2000-01-01T12:00:00Z" });
+      await api.put("shot_traces", { shot_id: "older-device-id", payload: [{ roll: 7 }], source: "original" });
+      const id = await recorder.onShot(deviceShot(41003));
+      await api.removeSavedShots([id]);
+      await recorder.onTraceChunk(traceChunk(41003));
+      assert(!await api.get("shot_traces", id), "Deleted capture regained its trace");
+      assert((await api.get("shot_traces", "older-device-id")).source === "original", "Trace overwrote an older capture with the same device id");
+    });
+
+    await check("reconnect during metadata save cannot acknowledge or attach a trace to the new connection", async () => {
+      const recorder = deviceRecorder();
+      const saved = [];
+      recorder.bus.on("shot-saved", (event) => saved.push(event));
+      const writing = recorder.onShot(deviceShot(41004));
+      const tracing = recorder.onTraceChunk(traceChunk(41004));
+      recorder.reset();
+      recorder.store.set({ formScore: 99, yaw: 88 });
+      const newerPending = { chunks: new Map(), totalChunks: 2 };
+      recorder.pendingTraces.set(41004, newerPending);
+      const [id] = await Promise.all([writing, tracing]);
+      assert(saved.length === 1 && saved[0].shotId === null, "An old save acknowledged the new connection");
+      assert(recorder.connectionShotIds.size === 0 && recorder.store.get().formScore === 99, "An old save changed the new connection state");
+      assert((await api.get("shots", id)).yaw_angle_deg === 12, "Metadata used orientation from the new connection");
+      assert(!await api.get("shot_traces", id), "Old firmware chunks crossed the connection boundary");
+      assert(recorder.pendingTraces.get(41004) === newerPending, "Old completion removed a newer pending trace");
+    });
+
+    await check("a delayed browser trace keeps its original samples and loss count across reconnect", async () => {
+      const recorder = deviceRecorder();
+      const id = "original-browser-trace";
+      await api.put("shots", { id, arrow_score: 9 });
+      recorder.shotTraceBuffer = [
+        { tUs: 100000, ax: 0, ay: 0, az: 1, roll: 1, pitch: 0, micAmp: 10, lost: 3 },
+        { tUs: 200000, ax: 0, ay: 0, az: 1, roll: 2, pitch: 0, micAmp: 20, lost: 4 },
+      ];
+      const context = { epoch: recorder.connectionEpoch, motion: recorder.shotTraceBuffer, mic: recorder.micRingBuffer };
+      recorder.reset();
+      recorder.lost = 100;
+      recorder.store.set({ formScore: 99 });
+      await recorder.saveBrowserShotTrace(id, 41005, 150000, {}, 52, 100, 2, context);
+      const trace = await api.get("shot_traces", id);
+      const shot = await api.get("shots", id);
+      assert(trace.payload.map((point) => point.roll).join() === "1,2", "Reconnect changed the captured motion");
+      assert(trace.mic_series.map((point) => point.micAmp).join() === "10,20", "Reconnect changed the captured microphone data");
+      assert(shot.packet_loss_count === 2 && shot.arrow_score === 9, "Delayed save mixed loss from another connection or lost the arrow result");
+      assert(recorder.store.get().formScore === 99, "Old trace replaced live metrics from the new connection");
+    });
 
     await check("manual recordings and rolling captures retain demo origin after disconnect", async () => {
       for (const method of ["saveManualRecording", "saveManual30sCapture"]) {
@@ -581,7 +714,7 @@ runButton.addEventListener("click", async () => {
       window.confirm = () => true;
       window.alert = (message) => { throw new Error(message); };
       try {
-        const { initHistory } = await import("../app/ui/history.js?v=shot-store-146");
+        const { initHistory } = await import("../app/ui/history.js?v=shot-store-147");
         const store = createStore({ reviewMode: true, reviewShotId: ids[0], compareShotId: ids[1], replayActive: true });
         const ui = initHistory({ bus: new EventBus(), store, el, selectViewTab() {} });
         await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);

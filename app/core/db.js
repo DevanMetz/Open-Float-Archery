@@ -255,18 +255,42 @@ export function buildImportSyncTasks(stores) {
   return tasks;
 }
 
-// A manual capture is useful only when its metadata and replay trace agree.
-// Commit both and their upload tasks together; demo captures stay local.
-export async function saveCapture(shot, trace) {
-  if (!shot?.id || trace?.shot_id !== shot.id) {
+// Commit capture metadata, any available trace, and their uploads together.
+// Device metadata can arrive before its trace; demo captures stay local.
+export async function saveCapture(shot, trace = null) {
+  if (!shot?.id || (trace != null && trace.shot_id !== shot.id)) {
     throw new Error("Capture metadata and trace must have matching shot ids.");
   }
-  const tasks = buildImportSyncTasks({ shots: [shot], shot_traces: [trace] });
+  const tasks = buildImportSyncTasks({ shots: [shot], shot_traces: trace ? [trace] : [] });
   await runTransaction(["shots", "shot_traces", "sync_queue"], "readwrite", (tx) => {
     tx.objectStore("shots").put(shot);
-    tx.objectStore("shot_traces").put(trace);
+    if (trace) tx.objectStore("shot_traces").put(trace);
     for (const task of tasks) tx.objectStore("sync_queue").add(task);
   });
+}
+
+// Late telemetry patches only the latest record. Deletion wins if the capture
+// has gone, and user-entered arrow outcomes survive delayed scoring updates.
+export async function saveShotTrace(trace, metrics = null) {
+  if (!trace?.shot_id) throw new Error("A saved trace must identify its capture.");
+  let updatedShot = null;
+  await runTransaction(["shots", "shot_traces", "sync_queue"], "readwrite", (tx) => {
+    const shots = tx.objectStore("shots");
+    const request = shots.get(trace.shot_id);
+    request.onsuccess = () => {
+      if (!request.result) return;
+      updatedShot = { ...request.result, ...metrics, id: trace.shot_id };
+      const sample = updatedShot.sample === true || updatedShot.device_id === "OpenFloat-Demo";
+      const savedTrace = sample ? { ...trace, sample: true, source: "sample" } : trace;
+      if (metrics) shots.put(updatedShot);
+      tx.objectStore("shot_traces").put(savedTrace);
+      for (const task of buildImportSyncTasks({ shots: [updatedShot], shot_traces: [savedTrace] })) {
+        if (task.table === "shots" && !metrics) continue;
+        tx.objectStore("sync_queue").add({ ...task, action: task.table === "shots" ? "UPDATE" : "CREATE" });
+      }
+    };
+  });
+  return updatedShot;
 }
 
 // Patch the latest saved shot and queue that exact version in one transaction.

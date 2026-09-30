@@ -30,7 +30,11 @@ Outcome-edit checks cover committed upload payloads, score/impact rollback,
 preserving telemetry, missing captures, and local-only demo results.
 Capture checks cover matching metadata/trace ids, atomic replay and upload
 saves, demo exclusion from the queue, disconnect recovery, retry after a failed
-manual save, and duplicate submission. Deletion checks cover full rollback,
+manual save, and duplicate submission.
+Late-trace checks cover score/outcome races, deleted records, atomic rollback,
+and demo provenance. Simulated device events exercise acknowledgement after
+commit, concurrent repeats, metadata arriving before trace, reused device ids,
+and delayed saves across reconnection. Deletion checks cover full rollback,
 unrelated queue rows, session anchor changes and split groups. A hidden copy of
 the real history markup verifies single and bulk deletion refresh scorecards,
 review state and recent captures, using only this page's temporary database.

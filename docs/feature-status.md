@@ -203,6 +203,12 @@ architecture, design intent, and forward-looking targets, see
   acknowledgements. Imports preserve this browser's pending uploads and create
   fresh upload tasks from the restored records in the same transaction. Saved
   queue actions are never replayed, and imported sample captures stay local.
+  Late trace saves preserve newer arrow results and skip deleted captures.
+  Device metadata and its upload task commit before acknowledgement; duplicate
+  frames share that save. Firmware traces attach to the exact capture from the
+  current connection, while delayed browser traces retain their original sample
+  buffers across reconnect. These paths have browser regression coverage with
+  simulated device events; real-sensor reconnect testing remains pending.
 - **Single Shot Export**: You can export individual shots along with their telemetry trace to a standalone JSON file. This is accessible via the "Export Shot" button in the Trace Review banner on the Dashboard, or via the export icon (📤) next to any shot in the Saved Shots history list. This makes it easy to share specific shots for analysis.
 - **Selected Shot Export**: In Saved Shots, choose **Select Shots**, check the
   captures to include, then **Export Selected**. The JSON file contains those
