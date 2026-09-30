@@ -820,6 +820,16 @@ malformed record lists, and a single-shot trace whose `shot_id` does not match.
 Failed database opens can retry, and connections close on version changes so
 another tab can upgrade without being blocked by an idle OpenFloat tab.
 
+**Selected capture exports:** subset files use `openfloat-export` version 1 and
+the existing Settings import path. One read transaction collects selected
+`shots`, matching `shot_traces`, referenced legacy `sessions`, original
+`session_overrides` whose anchor is selected, and their referenced bow profiles.
+Missing traces are allowed; missing selected shots fail the export. Other
+captures and upload queue rows are excluded. Overrides retain their original
+ids: a partial session without its first shot does not carry its display name,
+bow assignment, or end-size override, avoiding conflicting anchors on re-import.
+Restored practice groups are derived from the timestamps present in that browser.
+
 **Import and upload ordering:** queue rows in a backup are diagnostic snapshots,
 not portable work. Import ignores their numeric ids and actions, preserves this
 browser's existing queue, and appends fresh upserts from imported bow profiles,

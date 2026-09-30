@@ -20,6 +20,9 @@ opens the app's database or changes practice records.
 These browser checks exercise commit timing, aborted writes and deletes,
 sync-status rollback, atomic full and single-shot imports, backup round trips,
 retry after a failed database open, and import queue isolation.
+Selected-export checks cover linked-record filtering, partial session anchors,
+missing selections, restore compatibility, and snapshot consistency during a
+concurrent capture save.
 Capture checks cover matching metadata/trace ids, atomic replay and upload
 saves, and demo exclusion from the queue. Simulated cloud
 responses exercise interrupted uploads, new work arriving during an upload,

@@ -186,6 +186,11 @@ architecture, design intent, and forward-looking targets, see
   fresh upload tasks from the restored records in the same transaction. Saved
   queue actions are never replayed, and imported sample captures stay local.
 - **Single Shot Export**: You can export individual shots along with their telemetry trace to a standalone JSON file. This is accessible via the "Export Shot" button in the Trace Review banner on the Dashboard, or via the export icon (📤) next to any shot in the Saved Shots history list. This makes it easy to share specific shots for analysis.
+- **Selected Shot Export**: In Saved Shots, choose **Select Shots**, check the
+  captures to include, then **Export Selected**. The JSON file contains those
+  captures, their traces, and linked session/bow records; it restores through
+  Settings like a normal backup. Selections survive history refreshes. A missing
+  capture stops the export with a visible error instead of silently omitting it.
 - **Optional Supabase Sync**: The Cloud modal accepts a Supabase URL and anon key
   for self-hosted sync. Local IndexedDB writes remain the source of truth and are
   queued before upload; leaving cloud settings blank keeps the app local-only.

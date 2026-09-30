@@ -158,6 +158,88 @@ runButton.addEventListener("click", async () => {
       assert((await api.get("session_overrides", "committed")).arrows_per_end === 6, "End size was lost");
     });
 
+    await check("selected exports include only linked captures and session context, and restore normally", async () => {
+      await api.importAllData(envelope({
+        shots: [
+          { id: "selected-anchor", session_id: "selected-session", sample: true, arrow_score: 9 },
+          { id: "selected-later", session_id: "selected-session", sample: true },
+          { id: "unrelated-shot", session_id: "unrelated-session" },
+        ],
+        shot_traces: [
+          { shot_id: "selected-anchor", payload: [{ tUs: 0 }] },
+          { shot_id: "unrelated-shot", payload: [] },
+        ],
+        sessions: [
+          { id: "selected-session", bow_profile_id: "selected-bow" },
+          { id: "unrelated-session", bow_profile_id: "unrelated-bow" },
+        ],
+        session_overrides: [
+          { id: "selected-anchor", name: "Selected practice", bow_profile_id: "selected-bow", arrows_per_end: 6 },
+          { id: "unrelated-shot", name: "Private practice" },
+        ],
+        bow_profiles: [{ id: "selected-bow" }, { id: "unrelated-bow" }],
+      }));
+      const exported = await api.exportSelectedShots(["selected-anchor", "selected-later", "selected-anchor"]);
+      const { stores } = exported;
+      assert(stores.shots.length === 2 && stores.shots.every((shot) => shot.sample), "Export included an unselected shot");
+      assert(stores.shot_traces.length === 1 && stores.shot_traces[0].shot_id === "selected-anchor", "Export included an unrelated trace");
+      assert(stores.sessions.length === 1 && stores.sessions[0].id === "selected-session", "Export leaked unrelated session metadata");
+      assert(stores.bow_profiles.length === 1 && stores.bow_profiles[0].id === "selected-bow", "Export included an unrelated bow");
+      assert(stores.session_overrides.length === 1 && stores.session_overrides[0].arrows_per_end === 6, "Session settings were lost");
+      assert(!("sync_queue" in stores), "Browser-local upload tasks were exported");
+      const partial = await api.exportSelectedShots(["selected-later"]);
+      assert(partial.stores.session_overrides.length === 0, "Partial export invented a new session anchor");
+      await api.remove("shots", "selected-anchor");
+      const counts = await api.importAllData(exported);
+      assert(counts.shots === 2 && (await api.get("shots", "selected-anchor")).arrow_score === 9, "Selected export could not restore a capture");
+    });
+
+    await check("selected exports reject empty or stale selections instead of silently dropping shots", async () => {
+      await rejects(() => api.exportSelectedShots([]));
+      await api.put("shot_traces", { shot_id: "orphan-selection", payload: [] });
+      await rejects(() => api.exportSelectedShots(["selected-anchor", "orphan-selection"]));
+    });
+
+    await check("selected exports keep shot metadata and trace in one snapshot during a concurrent save", async () => {
+      await api.saveCapture({ id: "snapshot-shot", label: "Before", sample: true }, {
+        shot_id: "snapshot-shot", payload: [{ ax: 1 }],
+      });
+      const previousTransaction = db.transaction;
+      let concurrentSave;
+      db.transaction = (...args) => {
+        const tx = previousTransaction(...args);
+        if (tx.mode === "readonly") {
+          const objectStore = tx.objectStore.bind(tx);
+          tx.objectStore = (name) => {
+            const store = objectStore(name);
+            if (name === "shots") {
+              const get = store.get.bind(store);
+              store.get = (...keys) => {
+                const request = get(...keys);
+                request.addEventListener("success", () => {
+                  if (!concurrentSave) concurrentSave = api.saveCapture({ id: "snapshot-shot", label: "After", sample: true }, {
+                    shot_id: "snapshot-shot", payload: [{ ax: 2 }],
+                  });
+                }, { once: true });
+                return request;
+              };
+            }
+            return store;
+          };
+        }
+        return tx;
+      };
+      try {
+        const exported = await api.exportSelectedShots(["snapshot-shot"]);
+        await concurrentSave;
+        assert(exported.stores.shots[0].label === "Before", "Metadata changed mid-export");
+        assert(exported.stores.shot_traces[0].payload[0].ax === 1, "Trace came from a later save");
+      } finally {
+        db.transaction = previousTransaction;
+      }
+      assert((await api.get("shots", "snapshot-shot")).label === "After", "Concurrent save did not complete");
+    });
+
     await check("database open can recover after an initial failure", async () => {
       const open = window.indexedDB.open;
       const retryApi = await import(`../app/core/db.js?retry-test=${testName}`);

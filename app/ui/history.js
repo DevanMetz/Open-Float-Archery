@@ -1,6 +1,6 @@
 // Shot history, review, recent shots, and deletion UI module.
 
-import { getAll, get, put, remove, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-134";
+import { getAll, get, put, remove, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-140";
 import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-137";
 import {
   buildScorecard,
@@ -56,6 +56,9 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   let savedOutcomeExists = false;
   let reviewRequest = 0;
   let reviewReturnFocus = null;
+  let historyRequest = 0;
+  let exportInProgress = false;
+  const selectedShotIds = new Set();
 
   function focusOutcomeScore() {
     const buttons = el.outcomeScoreButtons;
@@ -242,16 +245,23 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
 
   async function loadShotHistoryList() {
+    const request = ++historyRequest;
     const expandedSessions = new Set(
       [...el.historyList.querySelectorAll(".session-group:not(.collapsed)")]
         .map((group) => group.dataset.sessionId),
     );
     const hadSessions = !!el.historyList.querySelector(".session-group");
-    el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">Loading saved history...</p>`;
+    if (!hadSessions) el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">Loading saved history...</p>`;
     try {
-      const shots = await getAll("shots");
-      const bows = await getAll("bow_profiles");
-      const overrides = await getAll("session_overrides");
+      const [shots, bows, overrides] = await Promise.all([
+        getAll("shots"), getAll("bow_profiles"), getAll("session_overrides"),
+      ]);
+      if (request !== historyRequest) return;
+      const availableIds = new Set(shots.map((shot) => shot.id));
+      for (const id of selectedShotIds) {
+        if (!availableIds.has(id)) selectedShotIds.delete(id);
+      }
+      updateBulkSelectCount();
 
       if (shots.length === 0) {
         el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">No saved shots yet. Shots taken within ${Math.round(SESSION_GAP_MS / 60000)} minutes of each other are grouped into a session automatically.</p>`;
@@ -436,7 +446,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
               const chk = item.querySelector(".history-item-checkbox");
               if (chk && e.target !== chk) {
                 chk.checked = !chk.checked;
-                updateBulkSelectCount();
+                updateShotSelection(chk);
               }
               return;
             }
@@ -470,6 +480,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       await paintHistoryShotPreviews(historyPreviewJobs);
       updateBulkSelectCount();
     } catch (error) {
+      if (request !== historyRequest) return;
       console.error("Error loading shot history:", error);
       el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center; color: var(--red);">Failed to load history: ${error.message}</p>`;
     }
@@ -1049,9 +1060,10 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       </div>
     `;
     const chk = item.querySelector(".history-item-checkbox");
+    chk.checked = selectedShotIds.has(shot.id);
     chk?.addEventListener("click", (e) => {
       e.stopPropagation();
-      updateBulkSelectCount();
+      updateShotSelection(chk);
     });
     return item;
   }
@@ -1453,22 +1465,27 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     }
   });
 
-  // History list bulk select & delete feature
+  // Keep selection independent of DOM rows, which refresh after saved captures.
+  function updateShotSelection(checkbox) {
+    if (checkbox.checked) selectedShotIds.add(checkbox.dataset.shotId);
+    else selectedShotIds.delete(checkbox.dataset.shotId);
+    if (el.historyExportStatus) el.historyExportStatus.textContent = "";
+    updateBulkSelectCount();
+  }
+
   function updateBulkSelectCount() {
-    if (!el.historyList) return;
-    const checkboxes = el.historyList.querySelectorAll(".history-item-checkbox");
-    let selectedCount = 0;
-    checkboxes.forEach((chk) => {
-      if (chk.checked) selectedCount++;
-    });
+    const selectedCount = selectedShotIds.size;
     if (el.bulkSelectCount) {
       el.bulkSelectCount.textContent = `${selectedCount} selected`;
     }
     if (el.bulkDeleteBtn) el.bulkDeleteBtn.disabled = selectedCount === 0;
+    if (el.bulkExportBtn) el.bulkExportBtn.disabled = selectedCount === 0 || exportInProgress;
   }
 
   if (el.historySelectModeBtn) {
     el.historySelectModeBtn.addEventListener("click", () => {
+      selectedShotIds.clear();
+      if (el.historyExportStatus) el.historyExportStatus.textContent = "";
       if (el.historyDefaultActions) el.historyDefaultActions.classList.add("hidden");
       if (el.historyBulkActions) el.historyBulkActions.classList.remove("hidden");
       
@@ -1486,6 +1503,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
   if (el.bulkCancelBtn) {
     el.bulkCancelBtn.addEventListener("click", () => {
+      selectedShotIds.clear();
+      if (el.historyExportStatus) el.historyExportStatus.textContent = "";
       if (el.historyBulkActions) el.historyBulkActions.classList.add("hidden");
       if (el.historyDefaultActions) el.historyDefaultActions.classList.remove("hidden");
       
@@ -1508,10 +1527,47 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       const allChecked = Array.from(checkboxes).every((chk) => chk.checked);
       checkboxes.forEach((chk) => {
         chk.checked = !allChecked;
+        if (chk.checked) selectedShotIds.add(chk.dataset.shotId);
+        else selectedShotIds.delete(chk.dataset.shotId);
       });
+      if (el.historyExportStatus) el.historyExportStatus.textContent = "";
       updateBulkSelectCount();
     });
   }
+
+  el.bulkExportBtn?.addEventListener("click", async () => {
+    if (exportInProgress || !selectedShotIds.size) return;
+    const ids = [...selectedShotIds];
+    exportInProgress = true;
+    updateBulkSelectCount();
+    el.historyExportStatus.textContent = "Preparing selected shots...";
+    try {
+      const payload = await exportSelectedShots(ids);
+      const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `openfloat-selected-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      const shotCount = payload.stores.shots.length;
+      const traceCount = payload.stores.shot_traces.length;
+      const message = `Exported ${shotCount} shot${shotCount === 1 ? "" : "s"} and ${traceCount} trace${traceCount === 1 ? "" : "s"}. Restore this file from Settings.`;
+      el.historyExportStatus.textContent = message;
+      bus.emit("log", message);
+    } catch (error) {
+      el.historyExportStatus.textContent = `Export failed: ${error.message}`;
+      bus.emit("log", `Selected shot export failed: ${error.message}`);
+    } finally {
+      exportInProgress = false;
+      updateBulkSelectCount();
+      if (document.activeElement === document.body && el.bulkExportBtn.getClientRects().length) {
+        el.bulkExportBtn.focus();
+      }
+    }
+  });
 
   if (el.bulkDeleteBtn) {
     el.bulkDeleteBtn.addEventListener("click", async () => {
@@ -1589,6 +1645,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
         if (el.historyBulkActions) el.historyBulkActions.classList.add("hidden");
         if (el.historyDefaultActions) el.historyDefaultActions.classList.remove("hidden");
+        selectedShotIds.clear();
         
         await loadShotHistoryList();
         

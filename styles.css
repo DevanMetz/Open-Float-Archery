@@ -1575,6 +1575,20 @@ td:last-child {
   min-width: 0;
 }
 
+.bulk-actions-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.history-export-status {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.history-export-status:empty { display: none; }
+
 .history-review-btn {
   min-height: 0;
   border: 0;

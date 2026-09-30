@@ -225,6 +225,10 @@ export async function exportAllData() {
     }
   });
 
+  return exportEnvelope(stores);
+}
+
+function exportEnvelope(stores) {
   return {
     format: EXPORT_FORMAT,
     version: EXPORT_VERSION,
@@ -232,6 +236,43 @@ export async function exportAllData() {
     exportedAt: new Date().toISOString(),
     stores,
   };
+}
+
+// Read only the selected captures and their dependencies in one snapshot.
+// Overrides keep their original anchor ids; exporting a partial session never
+// invents a second override that could conflict when merged back later.
+export async function exportSelectedShots(shotIds) {
+  const ids = [...new Set(shotIds)];
+  if (!ids.length) throw new Error("Select at least one shot to export.");
+  const stores = { shots: [], shot_traces: [], sessions: [], session_overrides: [], bow_profiles: [] };
+  const requested = Object.fromEntries(Object.keys(stores).map((name) => [name, new Set()]));
+
+  await runTransaction(Object.keys(stores), "readonly", (tx) => {
+    function collect(name, key) {
+      if (!key || requested[name].has(key)) return;
+      requested[name].add(key);
+      const request = tx.objectStore(name).get(key);
+      request.onsuccess = () => {
+        const record = request.result;
+        if (!record) return;
+        stores[name].push(record);
+        if (name === "shots") {
+          collect("shot_traces", record.id);
+          collect("session_overrides", record.id);
+          collect("sessions", record.session_id);
+        }
+        if (name === "sessions" || name === "session_overrides") {
+          collect("bow_profiles", record.bow_profile_id);
+        }
+      };
+    }
+    for (const id of ids) collect("shots", id);
+  });
+
+  if (stores.shots.length !== ids.length) {
+    throw new Error("Some selected shots are no longer saved. Refresh Saved Shots and select again.");
+  }
+  return exportEnvelope(stores);
 }
 
 // Restore an exported envelope. By default records are merged into the existing
