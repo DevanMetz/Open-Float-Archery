@@ -512,7 +512,8 @@ The control characteristic accepts the ASCII commands:
 * `followms:<ms>`: Set the post-release follow-through delay before freezing a shot trace, clamped to 0-3000 ms. Saves to RRAM (`"openfloat/followms"`).
 * `streamrate:<n>`: Set the BLE live stream divider. Values: `1`, `2`, `5`, `10`, or `20` (about 1110, 555, 222, 111, or 55 Hz).
 * `autosleep:<0|1>`: Enable or disable inactivity-triggered deep sleep. Saves to RRAM (`"openfloat/autosleep"`).
-* `tracereq:<shot_id>`: Request a chunked upload of the trace of the shot with ID `shot_id` as Type 6 notifications.
+* `tracereq2:<shot_id>`: Request the full buffered trace as protocol-2 Type 6 notifications, with 32-bit shot IDs and 16-bit chunk indexes/counts.
+* `tracereq:<shot_id>`: Legacy protocol-1 Type 6 transfer. Limited to 255 chunks (692 current 7-byte points); updated firmware returns status 2 for larger traces instead of wrapping the count.
 * `shotack:<shot_id>`: Acknowledge a saved type-2/type-4 shot so firmware can free the queued copy from RRAM.
 * `shotreset`: Clear the persisted shot count and shot queue.
 * `shotset:<n>`: Set the persisted shot count.
@@ -525,18 +526,45 @@ The standard Battery Service (BAS) periodically reads the battery voltage from p
 
 ### Shot Data Chunking
 
-Buffered shot transfer should be chunked and checksummed.
+The implemented extended transfer uses 29-byte little-endian Type 6 frames:
 
 ```text
-shot_id: uint32
-chunk_index: uint16
-total_chunks: uint16
-payload_length: uint16
-payload: bytes
-crc16: uint16
+offset  size  field
+0       2     "OF"
+2       1     protocol = 2
+3       1     type = 6
+4       4     shot_id (uint32)
+8       2     chunk_index (uint16, zero-based)
+10      2     total_chunks (uint16)
+12      1     payload_length (1-15 bytes; 15 except the final chunk)
+13      1     point_stride (7 for current roll/pitch/yaw/mic records)
+14      15    payload, unused final bytes zero-filled
 ```
 
-The browser should reassemble chunks, validate sequence and checksum, then store the shot in IndexedDB.
+Concatenate payloads in chunk-index order before decoding points; point boundaries
+can cross chunks. A full 1,000-point buffer is 7,000 bytes in 467 chunks. The browser
+validates envelope bounds, consistent counts/stride, duplicate contents, and whole
+points before committing. Identical duplicates and out-of-order delivery are
+accepted. Only the actively requested shot/protocol enters reassembly, and stale
+status messages cannot finish a newer request. No application checksum is included
+yet; BLE provides link integrity, but an end-to-end checksum remains future work.
+
+The browser requests `tracereq2` first. After 1.5 seconds without a response it
+tries `tracereq` and uses legacy requests for the rest of that connection. Both
+timers start after the queued control write completes; a running transfer has an
+8-second inactivity timeout. On reconnect it probes extended support again.
+Legacy Type 6 has a 16-bit shot ID, 8-bit index/count, length at byte 8, up to 19
+payload bytes at 9-27, and chunk-zero stride at byte 28. The active request maps
+its truncated ID to the full saved ID. Existing firmware needs this update for
+reliable recovery above 692 points. Type 7 status carries the full shot ID at
+bytes 4-7 and status at byte 8: 0 means unavailable, 2 means a legacy transfer
+cannot represent the trace.
+
+This transfer change preserves the stored point format and RRAM records. It does
+not supply sample timing or release metadata: recovered traces still use the
+legacy 52 Hz replay assumption and do not show an inferred release marker. The
+extended path is covered by browser/Node regression checks and an NCS build;
+on-sensor recovery remains to be verified.
 
 ## 9. USB / Web Serial Path
 

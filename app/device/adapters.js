@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-123";
+import { decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-154";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
@@ -134,6 +134,8 @@ export class BleAdapter extends BaseAdapter {
     this.currentTraceDownloadShotId = null;
     this.currentTraceChunkIndexes = new Set();
     this.currentTraceTotalChunks = 0;
+    this.traceProtocol = 2;
+    this.traceDownloadAttempt = null;
     this.traceTimer = null;
     this.reconnectTimer = null;
     this.reconnectAttempts = 0;
@@ -296,9 +298,9 @@ export class BleAdapter extends BaseAdapter {
     }
   }
 
-  async requestTrace(shotId) {
+  async requestTrace(shotId, protocol = this.traceProtocol) {
     this.log(`Requesting trace upload for shot ID ${shotId}...`);
-    await this.sendControl(`tracereq:${shotId}`);
+    return this.sendControl(`${protocol === 2 ? "tracereq2" : "tracereq"}:${shotId}`);
   }
 
   _onValue(event) {
@@ -363,6 +365,7 @@ export class BleAdapter extends BaseAdapter {
       if (decoded && decoded.kind === "trace") {
         decodedCount += 1;
         if (
+          decoded.trace.protocol !== 2 &&
           this.currentTraceDownloadShotId != null &&
           decoded.trace.shotId !== this.currentTraceDownloadShotId &&
           sameLow16ShotId(decoded.trace.shotId, this.currentTraceDownloadShotId)
@@ -372,14 +375,17 @@ export class BleAdapter extends BaseAdapter {
             shotId: this.currentTraceDownloadShotId,
           };
         }
-        this.bus.emit("trace-chunk", decoded.trace);
-        this._onTraceChunkReceived(decoded.trace);
+        if (this._onTraceChunkReceived(decoded.trace)) {
+          this.bus.emit("trace-chunk", decoded.trace);
+        }
         continue;
       }
       if (decoded && decoded.kind === "trace-status") {
         decodedCount += 1;
-        if (decoded.traceStatus.status === 0) {
-          this.log(`No firmware trace available for shot ${decoded.traceStatus.shotId}; acking metadata.`);
+        if (decoded.traceStatus.status === 0 || decoded.traceStatus.status === 2) {
+          this.log(decoded.traceStatus.status === 2
+            ? `Firmware trace for shot ${decoded.traceStatus.shotId} needs the extended transfer format.`
+            : `No firmware trace available for shot ${decoded.traceStatus.shotId}.`);
           this._completeTraceDownload(decoded.traceStatus.shotId);
         }
         continue;
@@ -403,6 +409,8 @@ export class BleAdapter extends BaseAdapter {
     this.currentTraceDownloadShotId = null;
     this.currentTraceChunkIndexes.clear();
     this.currentTraceTotalChunks = 0;
+    this.traceDownloadAttempt = null;
+    this.traceProtocol = 2;
     this.pendingStoredShots = 0;
     this.live = null;
     this.control = null;
@@ -495,23 +503,43 @@ export class BleAdapter extends BaseAdapter {
     }
   }
 
-  _startTraceDownload(shotId) {
+  _startTraceDownload(shotId, protocol = this.traceProtocol) {
     this._stopTraceDownloadTimer();
     this.currentTraceDownloadShotId = shotId;
     this.currentTraceChunkIndexes.clear();
     this.currentTraceTotalChunks = 0;
+    const attempt = { shotId, protocol };
+    this.traceDownloadAttempt = attempt;
     this.log(`Starting serialized trace download for shot ${shotId}...`);
-    this.requestTrace(shotId);
-    
-    // Fallback if an older firmware does not send a missing-trace status frame.
-    this.traceTimer = setTimeout(() => {
-      this.log(`Trace download timeout for shot ${shotId}. Proceeding to ack.`);
-      this._completeTraceDownload(shotId);
-    }, 1500);
+    this.requestTrace(shotId, protocol).then((sent) => {
+      // A reply or disconnect can arrive before the control-write promise settles.
+      if (this.traceDownloadAttempt !== attempt || this.currentTraceChunkIndexes.size) return;
+      if (!sent) {
+        this._completeTraceDownload(shotId);
+        return;
+      }
+      this.traceTimer = setTimeout(() => {
+        if (this.traceDownloadAttempt !== attempt) return;
+        if (protocol === 2) {
+          this.log("No extended trace response; trying the legacy firmware command.");
+          this.traceProtocol = 1;
+          this._startTraceDownload(shotId, 1);
+        } else {
+          this.log(`Trace download timeout for shot ${shotId}.`);
+          this._completeTraceDownload(shotId);
+        }
+      }, 1500);
+    });
   }
 
   _onTraceChunkReceived(trace) {
-    if (trace.shotId === this.currentTraceDownloadShotId) {
+    if (trace.shotId === this.currentTraceDownloadShotId &&
+        (trace.protocol || 1) === this.traceDownloadAttempt?.protocol) {
+      if (this.currentTraceTotalChunks && this.currentTraceTotalChunks !== trace.totalChunks) {
+        this.log(`Trace chunk count changed for shot ${trace.shotId}; discarded transfer.`);
+        this._completeTraceDownload(trace.shotId);
+        return false;
+      }
       this._stopTraceDownloadTimer();
 
       if (
@@ -536,14 +564,19 @@ export class BleAdapter extends BaseAdapter {
           this._completeTraceDownload(trace.shotId);
         }, 8000);
       }
+      return true;
     }
+    return false;
   }
 
   _completeTraceDownload(shotId) {
+    // A delayed status from an earlier request must not finish the next shot.
+    if (shotId !== this.currentTraceDownloadShotId) return;
     this._stopTraceDownloadTimer();
     this.currentTraceDownloadShotId = null;
     this.currentTraceChunkIndexes.clear();
     this.currentTraceTotalChunks = 0;
+    this.traceDownloadAttempt = null;
     this.ackShot(shotId);
     this._pumpTraceDownloadQueue();
   }

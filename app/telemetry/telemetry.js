@@ -1202,24 +1202,44 @@ export class TelemetryStore {
   }
 
   async onTraceChunk(chunk) {
+    const protocol = chunk.protocol || 1;
+    const payloadSize = protocol === 2 ? 15 : 19;
     if (!Number.isInteger(chunk.totalChunks) || chunk.totalChunks <= 0 ||
-        !Number.isInteger(chunk.chunkIndex) || chunk.chunkIndex < 0 || chunk.chunkIndex >= chunk.totalChunks) {
+        chunk.totalChunks > (protocol === 2 ? 534 : 255) ||
+        !Number.isInteger(chunk.shotId) || chunk.shotId < 0 || chunk.shotId > 0xffffffff ||
+        !Number.isInteger(chunk.chunkIndex) || chunk.chunkIndex < 0 || chunk.chunkIndex >= chunk.totalChunks ||
+        ![1, 2].includes(protocol) ||
+        !(Array.isArray(chunk.payload) || chunk.payload instanceof Uint8Array) ||
+        !chunk.payload.length || chunk.payload.length > payloadSize ||
+        !chunk.payload.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255) ||
+        (protocol === 2 && (![4, 6, 7, 8].includes(chunk.pointStride) ||
+          (chunk.chunkIndex < chunk.totalChunks - 1 && chunk.payload.length !== payloadSize)))) {
       this.bus.emit("log", `Ignoring invalid trace chunk ${chunk.chunkIndex}/${chunk.totalChunks} for shot ID ${chunk.shotId}.`);
       return;
     }
     const epoch = this.connectionEpoch;
     const pendingSaves = this.pendingShotSaves;
     if (!this.pendingTraces.has(chunk.shotId)) {
-      this.pendingTraces.set(chunk.shotId, { chunks: new Map(), totalChunks: chunk.totalChunks, pointStride: 0 });
+      this.pendingTraces.set(chunk.shotId, { chunks: new Map(), totalChunks: chunk.totalChunks, pointStride: 0, protocol });
     }
     const pending = this.pendingTraces.get(chunk.shotId);
-    pending.totalChunks = chunk.totalChunks;
+    if (pending.saving) return;
+    const previous = pending.chunks.get(chunk.chunkIndex);
+    if (pending.totalChunks !== chunk.totalChunks || pending.protocol !== protocol ||
+        (pending.pointStride && chunk.pointStride && pending.pointStride !== chunk.pointStride) ||
+        (previous && (previous.length !== chunk.payload.length || previous.some((byte, i) => byte !== chunk.payload[i])))) {
+      this.pendingTraces.delete(chunk.shotId);
+      this.bus.emit("log", `Discarded inconsistent trace transfer for shot ID ${chunk.shotId}.`);
+      return;
+    }
     pending.chunks.set(chunk.chunkIndex, chunk.payload);
     if (chunk.pointStride > 0) {
       pending.pointStride = chunk.pointStride;
     }
 
-    this.bus.emit("log", `Received trace chunk ${pending.chunks.size}/${pending.totalChunks} for shot ID ${chunk.shotId}.`);
+    if (pending.chunks.size === 1 || pending.chunks.size % 50 === 0) {
+      this.bus.emit("log", `Received trace chunk ${pending.chunks.size}/${pending.totalChunks} for shot ID ${chunk.shotId}.`);
+    }
 
     let complete = pending.totalChunks > 0;
     for (let i = 0; i < pending.totalChunks; i++) {
@@ -1230,6 +1250,7 @@ export class TelemetryStore {
     }
 
     if (complete) {
+      pending.saving = true;
       this.bus.emit("log", `All trace chunks received for shot ID ${chunk.shotId}. Reassembling...`);
 
       // 1. Flatten all chunks in order
@@ -1242,10 +1263,12 @@ export class TelemetryStore {
       }
 
       const rawBytes = new Uint8Array(bytesList);
-      const { trace } = decodeFirmwareTraceBytes(rawBytes, pending.pointStride);
-
       // 3. Save to database
       try {
+        const { trace, bytesPerPoint } = decodeFirmwareTraceBytes(rawBytes, pending.pointStride);
+        if (rawBytes.length % bytesPerPoint || trace.length === 0 || trace.length > MAX_TRACE_POINTS) {
+          throw new Error("Firmware trace contains incomplete points or exceeds the 1000-point buffer.");
+        }
         // Metadata and chunks may arrive together. Wait for that exact shot's
         // pending commit, then use its connection-scoped local id. Never fall
         // back to an older capture that happened to reuse the device counter.
@@ -1288,6 +1311,7 @@ export class TelemetryStore {
         }
       } catch (error) {
         console.error("Failed to save reassembled trace:", error);
+        this.bus.emit("log", `Firmware trace save failed for shot ID ${chunk.shotId}: ${error.message}`);
       } finally {
         if (this.pendingTraces.get(chunk.shotId) === pending) this.pendingTraces.delete(chunk.shotId);
       }

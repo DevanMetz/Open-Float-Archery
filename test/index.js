@@ -1,6 +1,7 @@
 import "./db.test.js";
 import "./backup.test.js";
 import "./frame.test.js";
+import "./ble-trace.test.js";
 import "./score.test.js";
 import "./trace.test.js";
 import "./training-coach.test.js";

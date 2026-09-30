@@ -34,9 +34,6 @@ bring-up and debugging.
   slot. The ID is the 32-bit device shot ID from the stored-shot frame.
 - `shotdump` — Request upload of any stored-shot backlog plus a storage-status
   frame.
-- `tracereq:<n>` — Request chunked upload of the stored trace for 32-bit shot ID
-  `n`; if the trace slot is missing, firmware returns a trace-status frame so
-  the browser can ack the metadata without waiting for chunks.
 
 ## Power management
 
@@ -48,6 +45,12 @@ bring-up and debugging.
 
 ## Trace buffer
 
+- `tracereq2:<shot_id>` - Request the complete stored trace, using 32-bit shot
+  IDs and 16-bit chunk indexes. Supports all 1,000 buffered points.
+- `tracereq:<shot_id>` - Older transfer format, limited to 692 current points.
+  Updated firmware returns status 2 for larger traces. The browser tries the
+  extended command first and falls back automatically for older firmware. Both
+  commands return trace status 0 when the requested slot is unavailable.
 - `bufrate:<hz>` — Trace buffer rate: `0`, `52`, `104`, or `208` Hz.
 - `bufnvs:<0|1>` — Toggle RRAM persistence for buffered traces.
 - `followms:<ms>` — Post-release trace freeze delay, clamped to `0`–`3000` ms.

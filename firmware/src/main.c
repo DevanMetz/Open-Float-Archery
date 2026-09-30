@@ -270,6 +270,8 @@ static void stop_pdm(void)
  * spans frame[9..27]; using FRAME_SIZE-9 would let the chunk-0 memcpy overwrite
  * the stride byte the decoder relies on. */
 #define TRACE_CHUNK_PAYLOAD_SIZE (OPENFLOAT_BLE_FRAME_SIZE - 10)
+/* v2 keeps full shot IDs and 16-bit chunk indexes/counts; stride is in every frame. */
+#define TRACE_V2_CHUNK_PAYLOAD_SIZE (OPENFLOAT_BLE_FRAME_SIZE - 14)
 #define OPENFLOAT_CONN_INTERVAL_MIN 6  /* 7.5 ms */
 #define OPENFLOAT_CONN_INTERVAL_MAX 6  /* 7.5 ms */
 #define OPENFLOAT_CONN_LATENCY 0
@@ -536,6 +538,7 @@ static int trace_freeze_slot;
 static bool trace_upload_in_progress;
 static int trace_upload_slot;
 static int trace_upload_chunk_idx;
+static bool trace_upload_v2;
 static bool trace_status_pending;
 static uint32_t trace_status_shot_id;
 static uint8_t trace_status_code;
@@ -2354,24 +2357,32 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		k_work_submit(&follow_through_persist_work);
 		printk("# BLE control: follow-through trace window set to %u ms\n",
 		       follow_through_ms);
-	} else if (!strncmp(command, "tracereq:", strlen("tracereq:"))) {
-		const char *value_str = command + strlen("tracereq:");
+	} else if (!strncmp(command, "tracereq:", strlen("tracereq:")) ||
+		   !strncmp(command, "tracereq2:", strlen("tracereq2:"))) {
+		bool use_v2 = !strncmp(command, "tracereq2:", strlen("tracereq2:"));
+		const char *value_str = command + (use_v2 ? strlen("tracereq2:") : strlen("tracereq:"));
 		char *end;
 		errno = 0;
 		unsigned long req_id = strtoul(value_str, &end, 10);
 		if (errno == 0 && end != value_str && *end == '\0' &&
 		    req_id <= UINT32_MAX) {
 			int slot = req_id % 10;
-			if (stored_traces[slot].shot_id == (uint32_t)req_id && stored_traces[slot].count > 0) {
+			if (stored_traces[slot].shot_id == (uint32_t)req_id &&
+			    stored_traces[slot].count > 0 && stored_traces[slot].count <= TRACE_CAPACITY &&
+			    (use_v2 || stored_traces[slot].count * sizeof(struct trace_point) <=
+				       UINT8_MAX * TRACE_CHUNK_PAYLOAD_SIZE)) {
 				trace_upload_slot = slot;
 				trace_upload_chunk_idx = 0;
+				trace_upload_v2 = use_v2;
 				trace_upload_in_progress = true;
 				k_work_reschedule(&trace_upload_work, K_NO_WAIT);
 				printk("# BLE control: trace upload started for shot=%lu slot=%d len=%d\n",
 				       req_id, slot, stored_traces[slot].count);
 			} else {
 				trace_status_shot_id = (uint32_t)req_id;
-				trace_status_code = 0;
+				/* 2: present, but the legacy envelope cannot represent this trace. */
+				trace_status_code = stored_traces[slot].shot_id == (uint32_t)req_id &&
+					stored_traces[slot].count > 0 ? 2 : 0;
 				trace_status_pending = true;
 				printk("# BLE control: trace not found for shot=%lu slot=%d (stored shot_id=%u)\n",
 				       req_id, slot, stored_traces[slot].shot_id);
@@ -2433,7 +2444,8 @@ static void trace_upload_work_handler(struct k_work *work)
 
 	struct stored_trace *trace = &stored_traces[trace_upload_slot];
 	uint16_t total_bytes = trace->count * sizeof(struct trace_point);
-	int total_chunks = (total_bytes + (TRACE_CHUNK_PAYLOAD_SIZE - 1)) / TRACE_CHUNK_PAYLOAD_SIZE;
+	uint8_t payload_size = trace_upload_v2 ? TRACE_V2_CHUNK_PAYLOAD_SIZE : TRACE_CHUNK_PAYLOAD_SIZE;
+	int total_chunks = (total_bytes + payload_size - 1) / payload_size;
 
 	if (trace_upload_chunk_idx >= total_chunks) {
 		trace_upload_in_progress = false;
@@ -2445,26 +2457,31 @@ static void trace_upload_work_handler(struct k_work *work)
 	memset(frame, 0, sizeof(frame));
 	frame[0] = 'O';
 	frame[1] = 'F';
-	frame[2] = 1;
+	frame[2] = trace_upload_v2 ? 2 : 1;
 	frame[3] = 6; // Type 6: Trace chunk
 
-	put_u16_le(frame, 4, trace->shot_id);
-	frame[6] = (uint8_t)trace_upload_chunk_idx;
-	frame[7] = (uint8_t)total_chunks;
-
-	uint16_t offset = trace_upload_chunk_idx * TRACE_CHUNK_PAYLOAD_SIZE;
+	uint16_t offset = trace_upload_chunk_idx * payload_size;
 	uint16_t rem = total_bytes - offset;
-	uint8_t chunk_len = rem > TRACE_CHUNK_PAYLOAD_SIZE ? TRACE_CHUNK_PAYLOAD_SIZE : (uint8_t)rem;
-	frame[8] = chunk_len;
-	if (trace_upload_chunk_idx == 0) {
-		frame[28] = (uint8_t)sizeof(struct trace_point);
+	uint8_t chunk_len = rem > payload_size ? payload_size : (uint8_t)rem;
+	if (trace_upload_v2) {
+		put_u16_le(frame, 4, (uint16_t)trace->shot_id);
+		put_u16_le(frame, 6, (uint16_t)(trace->shot_id >> 16));
+		put_u16_le(frame, 8, (uint16_t)trace_upload_chunk_idx);
+		put_u16_le(frame, 10, (uint16_t)total_chunks);
+		frame[12] = chunk_len;
+		frame[13] = sizeof(struct trace_point);
+	} else {
+		put_u16_le(frame, 4, trace->shot_id);
+		frame[6] = (uint8_t)trace_upload_chunk_idx;
+		frame[7] = (uint8_t)total_chunks;
+		frame[8] = chunk_len;
+		if (trace_upload_chunk_idx == 0) {
+			frame[28] = sizeof(struct trace_point);
+		}
 	}
 
 	uint8_t *raw_bytes = (uint8_t *)trace->points;
-	memcpy(&frame[9], raw_bytes + offset, chunk_len);
-	if (chunk_len < TRACE_CHUNK_PAYLOAD_SIZE) {
-		memset(&frame[9] + chunk_len, 0, TRACE_CHUNK_PAYLOAD_SIZE - chunk_len);
-	}
+	memcpy(&frame[trace_upload_v2 ? 14 : 9], raw_bytes + offset, chunk_len);
 
 	int err = bt_gatt_notify(NULL, &openfloat_svc.attrs[2], frame, sizeof(frame));
 	if (err) {

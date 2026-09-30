@@ -35,6 +35,11 @@ architecture, design intent, and forward-looking targets, see
 - Fresh firmware defaults disconnected deep sleep to 300 s. Existing persisted
   settings can override it; update devices with `sleeptime:<s>` or the dashboard
   sleep slider.
+- Extended trace recovery (`tracereq2`) carries all 1,000 buffered points with
+  full shot IDs, without the legacy 255-chunk overflow. The browser falls back
+  to older firmware automatically and rejects malformed or inconsistent chunks.
+  Verified with simulated BLE frames, native IndexedDB checks, and an NCS build;
+  on-sensor validation is pending. Stored trace timing still defaults to 52 Hz.
 - The default firmware config is battery-safe and disables the USB UART console
   so the XIAO nRF54L15 can boot from Li-ion battery power. For USB bench logs,
   build with the `firmware/prj_uart.conf` overlay.

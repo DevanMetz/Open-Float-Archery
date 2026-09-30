@@ -2,8 +2,8 @@
 // own the transport lifecycle (connect / disconnect).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-153";
-import { createAdapter } from "./device/adapters.js?v=shot-store-144";
+import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-154";
+import { createAdapter } from "./device/adapters.js?v=shot-store-154";
 import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-153";
 import { createReplayController, traceTimeline } from "./ui/replay.js?v=shot-store-148";
 import { tracePhases } from "./ui/trace-phases.js?v=shot-store-153";
@@ -24,7 +24,7 @@ import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
 import { initHistory } from "./ui/history.js?v=shot-store-153";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-153";
+const APP_BUILD = "shot-store-154";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [

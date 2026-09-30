@@ -181,6 +181,17 @@ test("invalid firmware chunks do not allocate pending trace buffers", async (t) 
   assert.equal(telemetry.pendingTraces.size, 0);
 });
 
+test("firmware assembly bounds payload bytes, chunk counts and supported protocols", async (t) => {
+  const telemetry = recorder(t);
+  const chunk = { shotId: 42, chunkIndex: 0, totalChunks: 2, pointStride: 7, payload: new Uint8Array(15), protocol: 2 };
+  for (const invalid of [
+    { totalChunks: 535 }, { shotId: -1 }, { shotId: 0x100000000 },
+    { protocol: 3 }, { pointStride: 11 }, { payload: new Uint8Array(16) },
+    { payload: [] }, { payload: [256] }, { payload: [NaN] }, { payload: [1.2] },
+  ]) await telemetry.onTraceChunk({ ...chunk, ...invalid });
+  assert.equal(telemetry.pendingTraces.size, 0);
+});
+
 test("automatic reconnect starts fresh trace buffers and sequence tracking", (t) => {
   const telemetry = recorder(t);
   telemetry.ingest(sample(100, 20000));

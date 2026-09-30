@@ -498,7 +498,9 @@ runButton.addEventListener("click", async () => {
       assert(await api.removeSavedShots(["already-deleted"]) === 0, "Stale selection reported a deletion");
     });
 
-    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-153");
+    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-154");
+    const { BleAdapter } = await import("../app/device/adapters.js?v=shot-store-154");
+    const { firmwareTraceFrames } = await import("./fixtures/firmware-trace.js");
     const { EventBus, createStore } = await import("../app/core/store.js");
     const captureDb = await (await import("../app/core/db.js?v=shot-store-152")).initDb();
     observeTransactions(captureDb);
@@ -514,6 +516,56 @@ runButton.addEventListener("click", async () => {
     }
     const deviceShot = (shotId) => ({ shotId, shotCount: shotId, stored: true, axMg: 0, ayMg: 0, azMg: 16000 });
     const traceChunk = (shotId) => ({ shotId, chunkIndex: 0, totalChunks: 1, pointStride: 7, payload: new Uint8Array([0, 0, 0, 0, 0, 0, 12]) });
+
+    await check("extended BLE recovery commits all 1000 points under the full shot ID", async () => {
+      const recorder = deviceRecorder();
+      const adapter = new BleAdapter(recorder.bus);
+      const commands = [];
+      adapter.sendControl = async (command) => { commands.push(command); return true; };
+      const saves = [];
+      recorder.bus.on("trace-chunk", (chunk) => saves.push(recorder.onTraceChunk(chunk)));
+      try {
+        const shotId = 0xfedcba98;
+        const id = await recorder.onShot(deviceShot(shotId));
+        const frames = firmwareTraceFrames(shotId).frames;
+        const notify = (bytes) => adapter._onValue({ target: { value: new DataView(bytes.buffer) } });
+        // Reordering and an identical repeat must still require every unique chunk.
+        notify(frames[256]);
+        for (const frame of frames.slice(1).reverse()) notify(frame);
+        assert(!await api.get("shot_traces", id), "Incomplete recovery was committed");
+        notify(frames[0]);
+        await Promise.all(saves);
+        const saved = await api.get("shot_traces", id);
+        assert(commands.includes(`tracereq2:${shotId}`), "Adapter did not request extended recovery");
+        assert(saved.source === "firmware" && saved.payload.length === 1000, "Full trace did not survive transfer");
+        for (let i = 0; i < 1000; i++) {
+          const point = saved.payload[i];
+          assert(point.roll === (i - 500) / 100 && point.pitch === (1000 - i) / 100 &&
+            point.yaw === (i * 3 - 1500) / 100 && point.micAmp === i % 256, `Point ${i} changed in recovery`);
+        }
+        assert(recorder.pendingTraces.size === 0, "Completed recovery kept its chunk buffer");
+      } finally {
+        adapter._stopTraceDownloadTimer();
+        adapter.unsubscribeShotSaved();
+      }
+    });
+
+    await check("inconsistent and incomplete firmware points never replace a saved trace", async () => {
+      const recorder = deviceRecorder();
+      const shotId = 41009;
+      const id = await recorder.onShot(deviceShot(shotId));
+      await api.saveShotTrace({ shot_id: id, source: "firmware", payload: [{ roll: 123 }] });
+      const chunk = { ...traceChunk(shotId), totalChunks: 2 };
+      await recorder.onTraceChunk(chunk);
+      await recorder.onTraceChunk({ ...chunk, payload: new Uint8Array([1, 0, 0, 0, 0, 0, 12]) });
+      assert(recorder.pendingTraces.size === 0, "Conflicting duplicate survived");
+      await recorder.onTraceChunk(chunk);
+      await recorder.onTraceChunk({ ...chunk, chunkIndex: 1, totalChunks: 3 });
+      assert(recorder.pendingTraces.size === 0, "Changed chunk count survived");
+      await recorder.onTraceChunk({ ...traceChunk(shotId), payload: new Uint8Array(8) });
+      assert((await api.get("shot_traces", id)).payload[0].roll === 123, "Invalid bytes overwrote the saved recording");
+      assert(recorder.pendingTraces.size === 0, "Failed decode kept its pending buffer");
+    });
 
     await check("device captures wait for their own score instead of inheriting unrelated live telemetry", async () => {
       const keys = ["stability_score", "shot_score", "hold_stability", "release_quality", "follow_through", "level_consistency", "packet_loss_count"];

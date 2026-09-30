@@ -24,6 +24,12 @@ Release-phase checks cover hold and firmware provenance, recorded event timing,
 capture thresholds, gaps and edge samples, narrow impulses in thumbnails, and
 angle-only Motion rendering. Native history checks verify comparison provenance
 and refresh release markers when a late browser trace arrives.
+BLE trace checks cover all 1,000 points across 467 extended chunks, full 32-bit
+shot IDs, out-of-order and duplicate chunks, malformed envelopes, queued writes,
+legacy fallback, and stale replies/disconnects. Native storage checks run the
+same wire fixture through the adapter and telemetry assembler to verify every
+saved point and reject inconsistent or incomplete records. These are simulated
+notifications; firmware still needs an on-device recovery test.
 
 For native IndexedDB regression checks, serve the repository and open
 `http://localhost:4178/test/browser.html` in Chrome or Edge. Click **Run storage

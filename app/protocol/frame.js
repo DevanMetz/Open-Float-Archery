@@ -234,20 +234,32 @@ export function parseBinaryTraceFrame(bytes, offset = 0) {
   );
   if (view.getUint8(3) !== 6) return null;
 
-  const len = view.getUint8(8);
+  const protocol = view.getUint8(2);
+  if (protocol !== 1 && protocol !== 2) return null;
+  const extended = protocol === 2;
+  const chunkIndex = extended ? view.getUint16(8, true) : view.getUint8(6);
+  const totalChunks = extended ? view.getUint16(10, true) : view.getUint8(7);
+  const len = view.getUint8(extended ? 12 : 8);
+  const pointStride = extended ? view.getUint8(13) : (chunkIndex === 0 ? view.getUint8(28) : 0);
+  const payloadSize = extended ? 15 : 19;
+  // Validate against this envelope, even when a notification batches frames.
+  // Never read a corrupt length into the next frame or allocate an unbounded transfer.
+  if (!totalChunks || chunkIndex >= totalChunks || !len || len > payloadSize) return null;
+  if (extended && (![4, 6, 7, 8].includes(pointStride) ||
+      totalChunks > Math.ceil(1000 * pointStride / payloadSize) ||
+      (chunkIndex < totalChunks - 1 && len !== payloadSize))) return null;
   const payload = new Uint8Array(
     bytes.buffer,
-    bytes.byteOffset + offset + 9,
+    bytes.byteOffset + offset + (extended ? 14 : 9),
     len
   );
 
-  const chunkIndex = view.getUint8(6);
-
   return {
-    shotId: view.getUint16(4, true),
+    ...(extended ? { protocol } : {}),
+    shotId: extended ? view.getUint32(4, true) : view.getUint16(4, true),
     chunkIndex,
-    totalChunks: view.getUint8(7),
-    pointStride: chunkIndex === 0 ? view.getUint8(28) : 0,
+    totalChunks,
+    pointStride,
     payload: Array.from(payload),
   };
 }
