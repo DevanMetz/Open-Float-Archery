@@ -1,7 +1,7 @@
 // Steady Aim Training Game UI Module
 // Manages the prep countdown, audio tones, live target tracing, scoring, and DB persistence.
 
-import { getAll, put, generateUUID } from "../core/db.js?v=shot-store-134";
+import { getAll, saveCapture, generateUUID } from "../core/db.js?v=shot-store-135";
 import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=shot-store-99";
 import {
   TRAINING_DRILLS,
@@ -9,7 +9,7 @@ import {
   downsampleTrainingTrace,
   scoreTrainingHold,
   trainingFeedback,
-} from "./training-coach.js?v=shot-store-129";
+} from "./training-coach.js?v=shot-store-135";
 
 const TARGET_COLORS = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
 
@@ -71,6 +71,7 @@ export function mountTraining({ store, el, bus }) {
   let refPitch = 0;
   let trainingSamples = [];
   let currentHoldDuration = 10;
+  let sessionIsDemo = false;
   let recommendation = analyzeTrainingHistory([]);
   let activeDrill = TRAINING_DRILLS[recommendation.drillId];
   let currentTarget = recommendation.target;
@@ -135,7 +136,9 @@ export function mountTraining({ store, el, bus }) {
       if (connected) {
         el.trainingStatusText.textContent = state.statusMode === "demo" ? "Demo Mode" : "Connected";
         el.trainingStatusText.style.color = "var(--green)";
-        el.trainingStatusDesc.textContent = "Bow sensor is streaming. Press start to train.";
+        el.trainingStatusDesc.textContent = state.statusMode === "demo"
+          ? "Synthetic movement. Saved demo holds stay local and do not affect your baseline."
+          : "Bow sensor is streaming. Press start to train.";
       } else {
         el.trainingStatusText.textContent = "Disconnected";
         el.trainingStatusText.style.color = "var(--red)";
@@ -159,6 +162,7 @@ export function mountTraining({ store, el, bus }) {
   // Listen to raw samples from event bus to collect high-res trace data
   bus.on("sample", (sample) => {
     if (gameState !== "holding") return;
+    if (sample.source === "demo") sessionIsDemo = true;
     
     const state = store.get();
     const now = performance.now();
@@ -425,6 +429,7 @@ export function mountTraining({ store, el, bus }) {
     gameState = "countdown";
     countdownVal = 5;
     currentHoldDuration = Number(el.trainingDurationSelect.value);
+    sessionIsDemo = store.get().statusMode === "demo";
     
     trainingSamples = [];
     
@@ -536,7 +541,8 @@ export function mountTraining({ store, el, bus }) {
     el.resultAvgPitchDev.textContent = `${result.avgPitchDev.toFixed(2)} deg`;
     el.resultMaxFloat.textContent = `${result.maxFloat.toFixed(2)} deg`;
     el.resultCoachingTitle.textContent = feedback.title;
-    el.resultCoachingText.textContent = `${feedback.text} Goal: ${feedback.target}.`;
+    el.resultCoachingText.textContent = `${sessionIsDemo ? "Demo result. " : ""}${feedback.text} Goal: ${feedback.target}.`;
+    el.saveTrainingShotBtn.textContent = sessionIsDemo ? "Save Demo Hold" : "Save Session Shot";
     
     // Open results card
     el.trainingResultsCard.classList.remove("hidden");
@@ -587,7 +593,8 @@ export function mountTraining({ store, el, bus }) {
       const shotRecord = {
         id: sessionShotId,
         session_id: null,
-        device_id: "OpenFloat-Sensor",
+        device_id: sessionIsDemo ? "OpenFloat-Demo" : "OpenFloat-Sensor",
+        sample: sessionIsDemo,
         timestamp,
         peak_g: Number(maxG.toFixed(2)),
         cant_angle_deg: Number(avgRoll.toFixed(1)),
@@ -605,29 +612,15 @@ export function mountTraining({ store, el, bus }) {
         label: label
       };
       
-      await put("shots", shotRecord);
-      await put("sync_queue", {
-        table: "shots",
-        action: "CREATE",
-        targetId: sessionShotId,
-        payload: shotRecord,
-        status: "pending"
-      });
-      
       const tracePayload = {
         shot_id: sessionShotId,
+        sample: sessionIsDemo,
+        source: sessionIsDemo ? "sample" : "browser-training",
         sample_rate_hz: 52,
         payload: traceForScore
       };
       
-      await put("shot_traces", tracePayload);
-      await put("sync_queue", {
-        table: "shot_traces",
-        action: "CREATE",
-        targetId: sessionShotId,
-        payload: tracePayload,
-        status: "pending"
-      });
+      await saveCapture(shotRecord, tracePayload);
       
       bus.emit("log", `${activeDrill.name} training session saved successfully (ID: ${sessionShotId.slice(0, 8)}).`);
       

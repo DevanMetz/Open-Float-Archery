@@ -18,7 +18,8 @@ import {
   buildSessionOutcomeReview,
   buildSessionReview,
   buildSessionScorecard,
-} from "./session-review.js?v=shot-store-132";
+  shotHistoryLabel,
+} from "./session-review.js?v=shot-store-135";
 import { mountImpactTarget } from "./impact-target.js?v=shot-store-131";
 
 export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab }) {
@@ -105,7 +106,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const outcome = normalizeArrowOutcome(shot);
     const outcomePart = outcome ? ` | Arrow: ${outcome.label}` : "";
     const timeStr = new Date(shot.timestamp).toLocaleTimeString();
-    return `Float Score: ${score}${outcomePart} | Peak Force: ${peakG}g | Stability: ${stability}% | Captured: ${timeStr}`;
+    const demoPart = shot.sample === true || shot.device_id === "OpenFloat-Demo" ? "Demo capture | " : "";
+    return `${demoPart}Float Score: ${score}${outcomePart} | Peak Force: ${peakG}g | Stability: ${stability}% | Captured: ${timeStr}`;
   }
 
   function updateOutcomeButtons() {
@@ -209,7 +211,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     };
 
     await put("shots", updatedShot);
-    if (!shot.sample) {
+    const isDemo = shot.sample === true || shot.device_id === "OpenFloat-Demo";
+    if (!isDemo) {
       await put("sync_queue", {
         table: "shots",
         action: "UPDATE",
@@ -227,7 +230,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       renderOutcomeEditor(updatedShot);
     }
     await Promise.all([loadRecentShotsList(), loadShotHistoryList()]);
-    if (!shot.sample && syncAdapter) syncAdapter.triggerSync();
+    if (!isDemo && syncAdapter) syncAdapter.triggerSync();
     bus.emit(
       "log",
       clear
@@ -451,7 +454,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   function formatShotCompareLabel(shot) {
     const timeStr = new Date(shot.timestamp).toLocaleString();
     const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
-    const label = shot.label || (shot.peak_g > 15 ? "Arrow" : "Hold");
+    const label = shotHistoryLabel(shot);
     return `${label} - ${timeStr} (Float Score: ${score})`;
   }
 
@@ -511,7 +514,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         return;
       }
 
-      const label = shot.label || formatShotCompareLabel(shot);
+      const label = shot.label ? shotHistoryLabel(shot) : formatShotCompareLabel(shot);
       store.set({
         compareShotId: shotId,
         compareTrace: trace.payload,
@@ -953,7 +956,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const chkClass = isSelectMode ? "history-item-checkbox" : "history-item-checkbox hidden";
 
     const timestampStr = new Date(shot.timestamp).toLocaleTimeString();
-    const title = shot.label || (shot.peak_g > 15 ? "Arrow Release" : "Hold Capture");
+    const title = shotHistoryLabel(shot);
     const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
     const stability =
       shot.stability_score != null ? Math.round(shot.stability_score) : "--";
@@ -1042,7 +1045,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     }
     if (!shot) return;
 
-    const title = shot.label || (shot.peak_g > 15 ? "Arrow Release" : "Hold Capture");
+    const title = shotHistoryLabel(shot);
     const timeStr = new Date(shot.timestamp).toLocaleString();
     const confirmed = confirm(
       `Delete this saved shot?\n\n${title}\n${timeStr}\n\nThis cannot be undone.`,
@@ -1204,7 +1207,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     item.dataset.shotId = shot.id;
 
     const { timeStr, score, stability, peakG, arrow } = recentShotCardMetrics(shot);
-    const title = shot.label || `Shot #${Math.max(1, totalShots - titleIndex)}`;
+    const title = shotHistoryLabel(shot, Math.max(1, totalShots - titleIndex));
     const arrowMetric = arrow == null
       ? ""
       : `
@@ -1251,7 +1254,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
   function updateRecentShotCardMetrics(card, shot, titleIndex, totalShots) {
     const { timeStr, score, stability, peakG, arrow } = recentShotCardMetrics(shot);
-    const title = shot.label || `Shot #${Math.max(1, totalShots - titleIndex)}`;
+    const title = shotHistoryLabel(shot, Math.max(1, totalShots - titleIndex));
     const titleEl = card.querySelector(".recent-shot-title");
     const timeEl = card.querySelector(".recent-shot-time");
     const scoreEl = card.querySelector(".metric-val.score");

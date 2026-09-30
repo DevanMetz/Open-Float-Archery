@@ -47,8 +47,10 @@ function standardDeviation(values) {
 }
 
 function finiteMetric(shot, key) {
-  if (shot?.[key] == null || shot[key] === "") return null;
-  const value = Number(shot?.[key]);
+  const raw = shot?.[key];
+  if (typeof raw !== "number" && typeof raw !== "string") return null;
+  if (typeof raw === "string" && !raw.trim()) return null;
+  const value = Number(raw);
   return Number.isFinite(value) ? clamp(value, 0, 100) : null;
 }
 
@@ -69,7 +71,8 @@ function validTimestamp(shot) {
 
 export function analyzeTrainingHistory(shots, { limit = 30 } = {}) {
   const recent = [...(shots || [])]
-    .filter(Boolean)
+    .filter((shot) => shot && shot.sample !== true && shot.device_id !== "OpenFloat-Demo")
+    .filter((shot) => finiteMetric(shot, "hold_stability") != null || finiteMetric(shot, "level_consistency") != null)
     .sort((a, b) => validTimestamp(b) - validTimestamp(a))
     .slice(0, Math.max(1, limit));
 
@@ -84,7 +87,7 @@ export function analyzeTrainingHistory(shots, { limit = 30 } = {}) {
     return {
       drillId: "steady",
       title: "Build your training baseline",
-      reason: "Complete and save a hold so the coach can compare your stability and bow-level control.",
+      reason: "Complete and save a hold with your sensor to compare stability and bow-level control. Demo captures do not affect your baseline.",
       focusLabel: "Baseline",
       baseline: null,
       target: TRAINING_DRILLS.steady.defaultTarget,

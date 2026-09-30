@@ -19,7 +19,9 @@ opens the app's database or changes practice records.
 
 These browser checks exercise commit timing, aborted writes and deletes,
 sync-status rollback, atomic full and single-shot imports, backup round trips,
-retry after a failed database open, and import queue isolation. Simulated cloud
+retry after a failed database open, and import queue isolation.
+Capture checks cover matching metadata/trace ids, atomic replay and upload
+saves, and demo exclusion from the queue. Simulated cloud
 responses exercise interrupted uploads, new work arriving during an upload,
 failed-upload retries, and shared Web Locks. No real cloud client is created and
 no data is uploaded. These checks complement the dependency-free Node suite;

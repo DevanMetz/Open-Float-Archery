@@ -7,7 +7,15 @@ import {
   buildSessionOutcomeReview,
   buildSessionReview,
   buildSessionScorecard,
+  shotHistoryLabel,
 } from "../app/ui/session-review.js";
+
+test("saved demo captures stay visibly distinct from personal holds", () => {
+  assert.equal(shotHistoryLabel({ label: "Level Lock Hold", sample: true }), "Demo: Level Lock Hold");
+  assert.equal(shotHistoryLabel({ label: "Manual Recording", device_id: "OpenFloat-Demo" }), "Demo: Manual Recording");
+  assert.equal(shotHistoryLabel({ label: "Sample shot", sample: true }), "Sample shot");
+  assert.equal(shotHistoryLabel({ label: "My practice", sample: false }), "My practice");
+});
 
 test("target-result review stays absent until an arrow is scored", () => {
   assert.equal(buildSessionOutcomeReview([{ id: "shot", arrow_score: null }]), "");

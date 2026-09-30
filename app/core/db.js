@@ -196,6 +196,20 @@ export function buildImportSyncTasks(stores) {
   return tasks;
 }
 
+// A manual capture is useful only when its metadata and replay trace agree.
+// Commit both and their upload tasks together; demo captures stay local.
+export async function saveCapture(shot, trace) {
+  if (!shot?.id || trace?.shot_id !== shot.id) {
+    throw new Error("Capture metadata and trace must have matching shot ids.");
+  }
+  const tasks = buildImportSyncTasks({ shots: [shot], shot_traces: [trace] });
+  await runTransaction(["shots", "shot_traces", "sync_queue"], "readwrite", (tx) => {
+    tx.objectStore("shots").put(shot);
+    tx.objectStore("shot_traces").put(trace);
+    for (const task of tasks) tx.objectStore("sync_queue").add(task);
+  });
+}
+
 // Read every object store into a single JSON-serializable envelope.
 export async function exportAllData() {
   const db = await initDb();

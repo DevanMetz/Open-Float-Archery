@@ -831,6 +831,14 @@ tasks after a reload, and uses Web Locks where available to serialize consumers
 across tabs. Failed uploads remain pending until another sync trigger; browsers
 without Web Locks retain the adapter's per-tab guard.
 
+**Training provenance:** the adaptive coach selects the newest 30 captures with
+usable hold or level scores, excluding `sample: true` and the `OpenFloat-Demo`
+device id. Synthetic training holds and manual recordings carry both markers;
+their traces also carry `sample: true` and `source: "sample"`. The source is
+captured while recording, so disconnecting before Save cannot turn a demo into
+personal data. The metadata, trace, and optional upload tasks commit together.
+These fields reuse existing sample conventions; no database migration is needed.
+
 If using Firestore, avoid placing large raw traces inside user profile
 documents. Store shot metadata and raw traces separately. If using
 Supabase/PostgreSQL, normalize sessions, shots, and trace payload references.

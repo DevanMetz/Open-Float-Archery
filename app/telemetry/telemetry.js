@@ -3,7 +3,7 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-import { put, get, getAll, generateUUID } from "../core/db.js?v=shot-store-134";
+import { put, get, getAll, saveCapture, generateUUID } from "../core/db.js?v=shot-store-135";
 import {
   buildShotTraceRecord,
   decodeFirmwareTraceBytes,
@@ -420,6 +420,7 @@ export class TelemetryStore {
 
       this.history30s.push({
         ...tracePoint,
+        sample: sample.source === "demo",
         lost: this.lost
       });
       const historyCapacity = Math.max(1500, this.shotTraceRateHz * 30);
@@ -438,6 +439,7 @@ export class TelemetryStore {
 
     if (this.isRecordingManual) {
       this.manualRecordingBuffer.push({
+        sample: sample.source === "demo",
         ax,
         ay,
         az,
@@ -865,6 +867,7 @@ export class TelemetryStore {
     }
 
     const hz = this.shotTraceRateHz > 0 ? this.shotTraceRateHz : 52;
+    const isDemo = this.history30s.some((point) => point.sample);
     const durationSec = Math.round(this.history30s.length / hz);
     this.bus.emit("log", `Saving last ${durationSec}s of live telemetry (${this.history30s.length} samples at ${hz} Hz)...`);
 
@@ -908,7 +911,8 @@ export class TelemetryStore {
       const shotRecord = {
         id: manualShotId,
         session_id: null,
-        device_id: "OpenFloat-Sensor",
+        device_id: isDemo ? "OpenFloat-Demo" : "OpenFloat-Sensor",
+        sample: isDemo,
         timestamp: new Date().toISOString(),
         peak_g: Number(maxG.toFixed(2)),
         cant_angle_deg: 0,
@@ -925,15 +929,6 @@ export class TelemetryStore {
         packet_loss_count: shotLoss
       };
 
-      await put("shots", shotRecord);
-      await put("sync_queue", {
-        table: "shots",
-        action: "CREATE",
-        targetId: manualShotId,
-        payload: shotRecord,
-        status: "pending"
-      });
-
       // 4. Save trace payload (the full history buffer)
       const tracePayload = buildShotTraceRecord({
         localShotId: manualShotId,
@@ -943,17 +938,10 @@ export class TelemetryStore {
           tUs: point.tUs,
           micAmp: point.micAmp || 0,
         })),
-        source: "browser-manual-30s",
+        source: isDemo ? "sample" : "browser-manual-30s",
       });
-
-      await put("shot_traces", tracePayload);
-      await put("sync_queue", {
-        table: "shot_traces",
-        action: "CREATE",
-        targetId: manualShotId,
-        payload: tracePayload,
-        status: "pending"
-      });
+      tracePayload.sample = isDemo;
+      await saveCapture(shotRecord, tracePayload);
 
       this.bus.emit("log", `Manual 30s capture saved successfully (ID: ${manualShotId.slice(0, 8)}).`);
       this.store.set({
@@ -1018,6 +1006,7 @@ export class TelemetryStore {
     }
 
     this.isRecordingManual = false;
+    const isDemo = this.manualRecordingBuffer.some((point) => point.sample);
     const durationSec = this.manualRecordingDurationUs / 1000000;
     const rawSampleRateHz = durationSec > 0 ? this.manualRecordingBuffer.length / durationSec : 52;
     const step = Math.max(1, Math.round(rawSampleRateHz / 52));
@@ -1067,7 +1056,8 @@ export class TelemetryStore {
       const shotRecord = {
         id: manualShotId,
         session_id: null,
-        device_id: "OpenFloat-Sensor",
+        device_id: isDemo ? "OpenFloat-Demo" : "OpenFloat-Sensor",
+        sample: isDemo,
         timestamp: new Date().toISOString(),
         peak_g: Number(maxG.toFixed(2)),
         cant_angle_deg: 0,
@@ -1085,15 +1075,6 @@ export class TelemetryStore {
         label: label
       };
 
-      await put("shots", shotRecord);
-      await put("sync_queue", {
-        table: "shots",
-        action: "CREATE",
-        targetId: manualShotId,
-        payload: shotRecord,
-        status: "pending"
-      });
-
       // 4. Save trace record
       const tracePayload = buildShotTraceRecord({
         localShotId: manualShotId,
@@ -1103,17 +1084,10 @@ export class TelemetryStore {
           tUs: point.tUs,
           micAmp: point.micAmp || 0,
         })),
-        source: "browser-manual-recording",
+        source: isDemo ? "sample" : "browser-manual-recording",
       });
-
-      await put("shot_traces", tracePayload);
-      await put("sync_queue", {
-        table: "shot_traces",
-        action: "CREATE",
-        targetId: manualShotId,
-        payload: tracePayload,
-        status: "pending"
-      });
+      tracePayload.sample = isDemo;
+      await saveCapture(shotRecord, tracePayload);
 
       this.bus.emit("log", `Manual recording saved successfully: "${label}" (ID: ${manualShotId.slice(0, 8)}).`);
       

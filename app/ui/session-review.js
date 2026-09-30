@@ -21,10 +21,12 @@ function shotFloatScore(shot) {
   return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
 }
 
-function shotHistoryLabel(shot, fallbackIndex = 0) {
-  if (shot?.label) return shot.label;
-  if (Number(shot?.peak_g || 0) > 15) return "Arrow Release";
-  return fallbackIndex > 0 ? `Shot ${fallbackIndex}` : "Hold Capture";
+export function shotHistoryLabel(shot, fallbackIndex = 0) {
+  const label = shot?.label || (Number(shot?.peak_g || 0) > 15
+    ? "Arrow Release"
+    : fallbackIndex > 0 ? `Shot ${fallbackIndex}` : "Hold Capture");
+  const isDemo = shot?.sample === true || shot?.device_id === "OpenFloat-Demo";
+  return isDemo && !/^(sample|demo)\b/i.test(label) ? `Demo: ${label}` : label;
 }
 
 function sessionAverage(values) {

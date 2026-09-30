@@ -206,6 +206,61 @@ runButton.addEventListener("click", async () => {
       assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === "queue-abort"), "Aborted upload task survived");
     });
 
+    await check("capture saves metadata, trace, and ordered uploads only after commit", async () => {
+      await api.saveCapture({ id: "capture-real" }, { shot_id: "capture-real", payload: [] });
+      assert(completed.has(latestWrite), "Capture resolved before commit");
+      assert(!!await api.get("shots", "capture-real"), "Metadata is missing");
+      assert(!!await api.get("shot_traces", "capture-real"), "Replay is missing");
+      const tasks = (await api.getAll("sync_queue")).filter((task) => task.targetId === "capture-real");
+      assert(tasks.map((task) => task.table).join() === "shots,shot_traces", "Capture upload order is wrong");
+    });
+
+    await check("demo captures remain reviewable without entering the upload queue", async () => {
+      await api.saveCapture({ id: "capture-demo", sample: true }, { shot_id: "capture-demo", payload: [] });
+      assert(!!await api.get("shots", "capture-demo"), "Demo metadata is missing");
+      assert(!!await api.get("shot_traces", "capture-demo"), "Demo replay is missing");
+      assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === "capture-demo"), "Demo data was queued");
+    });
+
+    await check("capture trace or queue failures cannot leave partial metadata behind", async () => {
+      await rejects(() => api.saveCapture({ id: "capture-bad-trace" }, { shot_id: "capture-bad-trace", payload: () => {} }));
+      assert(!await api.get("shots", "capture-bad-trace"), "Capture survived a failed trace save");
+      abortNextWrite = "sync_queue";
+      await rejects(() => api.saveCapture({ id: "capture-bad-queue" }, { shot_id: "capture-bad-queue", payload: [] }));
+      assert(!await api.get("shots", "capture-bad-queue"), "Capture survived a queue rollback");
+      assert(!await api.get("shot_traces", "capture-bad-queue"), "Trace survived a queue rollback");
+    });
+
+    await check("capture rejects a trace belonging to another shot", async () => {
+      await rejects(() => api.saveCapture({ id: "capture-mismatch" }, { shot_id: "another-shot", payload: [] }));
+      assert(!await api.get("shots", "capture-mismatch"), "Mismatched capture was saved");
+    });
+
+    await check("manual recordings and rolling captures retain demo origin after disconnect", async () => {
+      const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-135");
+      for (const method of ["saveManualRecording", "saveManual30sCapture"]) {
+        let savedId;
+        const recorder = Object.create(TelemetryStore.prototype);
+        const points = Array.from({ length: 12 }, () => ({
+          sample: true, ax: 0, ay: 0, az: 1, roll: 0, pitch: 0, lost: 0,
+        }));
+        Object.assign(recorder, {
+          bus: { emit(type, event) { if (type === "shot-saved") savedId = event.localShotId; } },
+          store: { get() { return { connected: false, statusMode: "" }; }, set() {} },
+          manualRecordingBuffer: points, manualRecordingDurationUs: 230769,
+          manualRecordingLabel: "Demo provenance check", history30s: points,
+          lost: 0, shotTraceRateHz: 52,
+        });
+        await recorder[method]();
+        assert(!!savedId, `${method} did not report a saved capture`);
+        const shot = await api.get("shots", savedId);
+        const trace = await api.get("shot_traces", savedId);
+        assert(shot.sample === true && shot.device_id === "OpenFloat-Demo", `${method} mislabeled synthetic data`);
+        assert(trace.sample === true && trace.source === "sample", `${method} lost trace provenance`);
+        assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === savedId), `${method} queued a demo upload`);
+      }
+    });
+
     const { CloudSyncAdapter } = await import("../app/telemetry/sync.js?v=shot-store-134");
     const adapter = Object.create(CloudSyncAdapter.prototype);
     adapter.user = { id: "browser-test-user" };

@@ -23,7 +23,7 @@ test("adaptive coach starts with a transparent baseline recommendation", () => {
   assert.deepEqual(analyzeTrainingHistory([]), {
     drillId: "steady",
     title: "Build your training baseline",
-    reason: "Complete and save a hold so the coach can compare your stability and bow-level control.",
+    reason: "Complete and save a hold with your sensor to compare stability and bow-level control. Demo captures do not affect your baseline.",
     focusLabel: "Baseline",
     baseline: null,
     target: TRAINING_DRILLS.steady.defaultTarget,
@@ -53,6 +53,26 @@ test("adaptive coach ignores missing component scores and caps stretch targets",
   assert.equal(analysis.drillId, "steady");
   assert.equal(analysis.baseline, 98);
   assert.equal(analysis.target, 95);
+});
+
+test("sample and synthetic captures never change the personal training baseline", () => {
+  const demo = [
+    { sample: true, hold_stability: 0, level_consistency: 100 },
+    { device_id: "OpenFloat-Demo", hold_stability: 0, level_consistency: 100 },
+  ];
+  assert.deepEqual(analyzeTrainingHistory(demo), analyzeTrainingHistory([]));
+  const real = { timestamp: "2026-01-01", hold_stability: 90, level_consistency: 80 };
+  assert.deepEqual(analyzeTrainingHistory([real, ...demo]), analyzeTrainingHistory([real]));
+});
+
+test("unscored captures do not displace usable history from the recent window", () => {
+  const real = { timestamp: "2026-01-01", hold_stability: 80, level_consistency: 70 };
+  const invalid = [null, undefined, "", "  ", false, true, [], {}, "bad"];
+  const newer = invalid.map((value) => ({
+    timestamp: "2026-02-01", hold_stability: value, level_consistency: value,
+  }));
+  assert.deepEqual(analyzeTrainingHistory([...newer, real], { limit: 1 }), analyzeTrainingHistory([real]));
+  assert.equal(analyzeTrainingHistory([{ hold_stability: "0" }]).baseline, 0);
 });
 
 test("steady drill rewards a quiet hold with deterministic motion metrics", () => {

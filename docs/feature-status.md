@@ -152,6 +152,12 @@ architecture, design intent, and forward-looking targets, see
   or choose Steady Aim, Level Lock, or Settle & Hold manually. Every drill has a
   specific scoring rule and form cue, uses calibrated orientation data, and can
   be saved to IndexedDB under its drill label for later session review. The
+  recommendation uses only scored personal captures: sample shots, synthetic
+  demo holds, and records without usable component scores do not consume its
+  30-capture window. Saved demo training and manual recordings are labeled as
+  samples, stay local, and never alter that personal baseline. Each manual or
+  training capture commits its metadata, replay trace, and any real-data upload
+  tasks together, preventing a failed save from leaving a partial capture. The
   saved drill trace is time-preserving and bounded to 52 Hz even when live BLE
   telemetry arrives at full rate. The original 5-second draw countdown,
   5–30 second hold duration, live Pin Float
