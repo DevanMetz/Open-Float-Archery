@@ -120,7 +120,8 @@ architecture, design intent, and forward-looking targets, see
   do not produce a correlation; missing setup details prompt for context.
 - **Impact Plot & Group Analysis**: Each reviewed arrow can be placed directly
   on a normalized ten-ring target with pointer or keyboard input. Target
-  placement estimates the score but still allows a manual correction. Saved
+  placement estimates the score but still allows a manual correction. Target
+  taps and markers follow the visible ring boundaries at every screen size. Saved
   sessions plot numbered impacts, the group center, maximum pairwise spread,
   physical spread when every arrow has the same known face size, and a
   one-standard-deviation ellipse. After six consistently configured arrows,

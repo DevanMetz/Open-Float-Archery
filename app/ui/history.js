@@ -20,7 +20,7 @@ import {
   buildSessionScorecard,
   shotHistoryLabel,
 } from "./session-review.js?v=shot-store-137";
-import { mountImpactTarget } from "./impact-target.js?v=shot-store-131";
+import { mountImpactTarget } from "./impact-target.js?v=shot-store-138";
 
 export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab }) {
   // Escape user-entered text before injecting into innerHTML.

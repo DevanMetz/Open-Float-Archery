@@ -15,7 +15,8 @@ function clamp(value, min, max) {
 function normalizedPoint(canvas, clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
   const size = Math.min(rect.width, rect.height);
-  const radius = size / 2;
+  // Match the four-pixel inset used by draw(), including on narrow screens.
+  const radius = Math.max(1, size / 2 - 4);
   return {
     x: clamp((clientX - (rect.left + rect.width / 2)) / radius, -1.25, 1.25),
     y: clamp(((rect.top + rect.height / 2) - clientY) / radius, -1.25, 1.25),
@@ -29,7 +30,7 @@ export function mountImpactTarget({ canvas, onSelect }) {
 
   function draw() {
     const rect = canvas.getBoundingClientRect();
-    const cssSize = Math.max(160, Math.min(rect.width || 200, rect.height || rect.width || 200));
+    const cssSize = Math.max(1, Math.min(rect.width || 200, rect.height || rect.width || 200));
     const dpr = Math.max(1, window.devicePixelRatio || 1);
     const pixelSize = Math.round(cssSize * dpr);
     if (canvas.width !== pixelSize || canvas.height !== pixelSize) {
@@ -40,7 +41,7 @@ export function mountImpactTarget({ canvas, onSelect }) {
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.clearRect(0, 0, cssSize, cssSize);
     const center = cssSize / 2;
-    const radius = center - 4;
+    const radius = Math.max(1, center - 4);
 
     for (const ring of TARGET_COLORS) {
       context.beginPath();
