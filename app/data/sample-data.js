@@ -45,6 +45,7 @@ export function generateSampleData(now = Date.now()) {
       sample: true,
       session_id: null,
       device_id: SAMPLE_DEVICE_ID,
+      capture_kind: "arrow",
       timestamp: ts,
       label: "Sample shot",
       arrow_score: SAMPLE_ARROW_SCORES[idx] ?? null,

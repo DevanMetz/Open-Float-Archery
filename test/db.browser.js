@@ -237,7 +237,7 @@ runButton.addEventListener("click", async () => {
     });
 
     await check("manual recordings and rolling captures retain demo origin after disconnect", async () => {
-      const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-135");
+      const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-137");
       for (const method of ["saveManualRecording", "saveManual30sCapture"]) {
         let savedId;
         const recorder = Object.create(TelemetryStore.prototype);
@@ -256,6 +256,7 @@ runButton.addEventListener("click", async () => {
         const shot = await api.get("shots", savedId);
         const trace = await api.get("shot_traces", savedId);
         assert(shot.sample === true && shot.device_id === "OpenFloat-Demo", `${method} mislabeled synthetic data`);
+        assert(shot.capture_kind === "hold", `${method} did not preserve the capture type`);
         assert(trace.sample === true && trace.source === "sample", `${method} lost trace provenance`);
         assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === savedId), `${method} queued a demo upload`);
       }

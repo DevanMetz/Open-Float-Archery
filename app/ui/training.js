@@ -612,6 +612,7 @@ export function mountTraining({ store, el, bus }) {
         id: sessionShotId,
         session_id: null,
         device_id: sessionIsDemo ? "OpenFloat-Demo" : "OpenFloat-Sensor",
+        capture_kind: "hold",
         sample: sessionIsDemo,
         timestamp,
         peak_g: Number(maxG.toFixed(2)),

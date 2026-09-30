@@ -122,6 +122,8 @@ export function formatShotOutcome(shot, { includeContext = false } = {}) {
 
 export function canRecordArrowOutcome(shot) {
   if (!shot) return false;
+  if (shot.capture_kind === "hold") return false;
+  if (shot.capture_kind === "arrow") return true;
   const label = String(shot.label || "");
   if (/hold|training|manual recording|manual capture/i.test(label)) return false;
   return (

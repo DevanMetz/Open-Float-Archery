@@ -61,6 +61,17 @@ test("outcomes apply to arrow captures, not dry-practice holds", () => {
   assert.equal(canRecordArrowOutcome({ peak_g: 20, label: "Manual Recording" }), false);
 });
 
+test("capture type keeps custom-named holds out of arrow scoring", () => {
+  const holds = [
+    { id: "synthetic", capture_kind: "hold", sample: true, label: "Bow setup", peak_g: 1 },
+    { id: "real", capture_kind: "hold", label: "Release experiment", peak_g: 20 },
+  ];
+  for (const hold of holds) assert.equal(canRecordArrowOutcome(hold), false);
+  const arrow = { id: "arrow", capture_kind: "arrow", label: "Hold a little longer", peak_g: 2 };
+  assert.equal(canRecordArrowOutcome(arrow), true);
+  assert.deepEqual(buildScorecard([...holds, arrow]).arrows.map((shot) => shot.id), ["arrow"]);
+});
+
 test("session outcome summary reports scoring totals, context, and trend", () => {
   const shots = [
     scoredShot(0),

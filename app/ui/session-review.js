@@ -5,7 +5,7 @@ import {
   normalizeImpact,
   summarizeImpactGroup,
   summarizeSessionOutcomes,
-} from "../telemetry/outcome.js?v=shot-store-132";
+} from "../telemetry/outcome.js?v=shot-store-137";
 
 function escapeHtml(value) {
   return String(value ?? "")

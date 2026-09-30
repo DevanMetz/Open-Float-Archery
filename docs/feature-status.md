@@ -146,26 +146,22 @@ architecture, design intent, and forward-looking targets, see
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
 - **Adaptive Training Coach**: The Training tab analyzes hold stability and
-  level consistency across the newest 30 scored captures, identifies the weaker
-  available skill, and recommends a drill with a visible baseline and a
-  five-point stretch target (capped at 95). Archers can follow that prescription
-  or choose Steady Aim, Level Lock, or Settle & Hold manually. Every drill has a
-  specific scoring rule and form cue, uses calibrated orientation data, and can
-  be saved to IndexedDB under its drill label for later session review. The
-  recommendation uses only scored personal captures: sample shots, synthetic
-  demo holds, and records without usable component scores do not consume its
-  30-capture window. Saved demo training and manual recordings are labeled as
-  samples, stay local, and never alter that personal baseline. Each manual or
-  training capture commits its metadata, replay trace, and any real-data upload
-  tasks together, preventing a failed save from leaving a partial capture. The
-  selected drill and duration stay fixed until that result is saved or dismissed.
-  A disconnected or changed telemetry connection cancels an unfinished hold;
-  reconnecting allows a fresh attempt. Duplicate saves and dismissal during a
-  save are blocked while the capture commits. The
-  saved drill trace is time-preserving and bounded to 52 Hz even when live BLE
-  telemetry arrives at full rate. The original 5-second draw countdown,
-  5–30 second hold duration, live Pin Float
-  trace, sigma ellipse, cant/pitch deviation, and max-float review remain.
+  level consistency across the newest 30 scored personal captures. It identifies
+  the weaker available skill and recommends a drill with a visible baseline and
+  a five-point stretch target (capped at 95). Sample shots, synthetic demo holds,
+  and records without usable component scores do not consume that window.
+  Archers can follow the recommendation or choose Steady Aim, Level Lock, or
+  Settle & Hold. Every drill has its own scoring rule and form cue, calibrated
+  orientation, a 5-second draw countdown, and a 5-30 second hold. Live Pin Float,
+  a sigma ellipse, cant/pitch deviation, and maximum float support review. Saved
+  traces preserve timing and are bounded to 52 Hz even with full-rate BLE input.
+  The selected drill and duration stay fixed until the result is saved or
+  dismissed. A changed or disconnected telemetry connection cancels unfinished
+  holds so the archer can retry. Saves commit metadata, replay, and upload tasks
+  together; duplicate saves and dismissal are blocked while committing. Capture
+  type is separate from its label, keeping custom-named holds out of arrow
+  scorecards. Saved demo training and manual recordings stay visibly labeled,
+  remain local, and never alter the personal baseline.
 - **Bow Shop 3D Customization**: The Bow Shop tab loads `Blender/BowModel.glb`
   and creates color pickers from the named compound-bow materials in the GLB.
   Current bow materials are `string`, `cam`, `riser`, `grip`, and `text`; color

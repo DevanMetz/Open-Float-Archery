@@ -1,7 +1,7 @@
 // Shot history, review, recent shots, and deletion UI module.
 
 import { getAll, get, put, remove, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-134";
-import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-134";
+import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-137";
 import {
   buildScorecard,
   canRecordArrowOutcome,
@@ -9,7 +9,7 @@ import {
   impactDirectionLabel,
   normalizeArrowOutcome,
   normalizeImpact,
-} from "../telemetry/outcome.js?v=shot-store-132";
+} from "../telemetry/outcome.js?v=shot-store-137";
 import { resolveReviewMicSeries } from "../protocol/trace.js?v=shot-store-125";
 import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=shot-store-125";
 import {
@@ -19,7 +19,7 @@ import {
   buildSessionReview,
   buildSessionScorecard,
   shotHistoryLabel,
-} from "./session-review.js?v=shot-store-135";
+} from "./session-review.js?v=shot-store-137";
 import { mountImpactTarget } from "./impact-target.js?v=shot-store-131";
 
 export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab }) {

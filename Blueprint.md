@@ -838,6 +838,12 @@ their traces also carry `sample: true` and `source: "sample"`. The source is
 captured while recording, so disconnecting before Save cannot turn a demo into
 personal data. The metadata, trace, and optional upload tasks commit together.
 These fields reuse existing sample conventions; no database migration is needed.
+New shot records also store `capture_kind: "arrow"` for device release events or
+`"hold"` for manual recordings and training. Arrow scoring uses this explicit
+type before legacy label/impulse heuristics, so a custom title cannot turn a hold
+into an arrow result. Older records remain readable with their existing
+heuristics. The optional field is preserved in local backups and can be omitted
+by the cloud's existing compatibility path for schemas that lack the column.
 
 If using Firestore, avoid placing large raw traces inside user profile
 documents. Store shot metadata and raw traces separately. If using
