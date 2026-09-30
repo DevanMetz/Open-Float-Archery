@@ -156,6 +156,10 @@ architecture, design intent, and forward-looking targets, see
   downsampling to about 52 Hz. Slow streams and delayed callbacks keep their
   true duration; the rolling capture uses a 30-second time window. Demo timing
   follows the browser's actual callback intervals.
+  Disconnecting stops the recording and leaves a **Save** button available.
+  Failed saves retain the capture for retry in the current tab; pending saves
+  prevent duplicate clicks or discard, and reconnect waits until it is saved
+  or discarded. Closing or reloading with an unsaved recording prompts a warning.
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
 - **Adaptive Training Coach**: The Training tab analyzes hold stability and

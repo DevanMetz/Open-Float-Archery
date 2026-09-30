@@ -2,7 +2,7 @@
 // own the transport lifecycle (connect / disconnect).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-144";
+import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-145";
 import { createAdapter } from "./device/adapters.js?v=shot-store-144";
 import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-142";
 import {
@@ -19,10 +19,10 @@ import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-134";
 import { mountTraining } from "./ui/training.js?v=shot-store-137";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
-import { initHistory } from "./ui/history.js?v=shot-store-144";
+import { initHistory } from "./ui/history.js?v=shot-store-145";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-144";
+const APP_BUILD = "shot-store-145";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -51,7 +51,7 @@ const ELEMENT_IDS = [
   "resultScoreLabel", "resultSteadinessScore", "resultAvgCantDev", "resultAvgPitchDev", "resultMaxFloat",
   "resultCoachingTitle", "resultCoachingText", "saveTrainingShotBtn", "discardTrainingShotBtn",
   "recordToggleBtn", "recordToggleLabel", "recordStatusItem",
-  "recordTimeText", "recordSamplesText", "discardRecordBtn",
+  "recordTimeText", "recordSamplesText", "recordMessage", "discardRecordBtn",
   "thresholdSlider", "thresholdValue",
   "wakeSlider", "wakeValue",
   "sleepTimeoutSlider", "sleepTimeoutValue",
@@ -224,6 +224,9 @@ const store = createStore({
   followThroughMs: cached.followThrough !== undefined ? Number(cached.followThrough) : 1500,
   streamRate: cached.streamRate !== undefined ? (Number(cached.streamRate) === 0 ? 55 : Number(cached.streamRate) === 1 ? 111 : Number(cached.streamRate) === 2 ? 222 : Number(cached.streamRate) === 3 ? 555 : 1110) : 1110,
   manualRecordingActive: false,
+  manualRecordingPaused: false,
+  manualRecordingSaving: false,
+  manualRecordMessage: "",
   manualRecordSamples: 0,
   manualRecordElapsedSec: 0,
   liveTraceDuration: cached.liveTraceDuration !== undefined ? Number(cached.liveTraceDuration) : 10
@@ -520,25 +523,34 @@ store.subscribe((state) => {
   if (el.recordToggleBtn) {
     const connected = state.connected;
     const active = state.manualRecordingActive;
+    const paused = state.manualRecordingPaused;
+    const saving = state.manualRecordingSaving;
 
-    el.recordToggleBtn.disabled = !connected;
-    el.recordToggleBtn.classList.toggle("recording", active);
+    el.recordToggleBtn.disabled = saving || (!active && !connected) || (active && paused && !state.manualRecordSamples);
+    el.recordToggleBtn.classList.toggle("recording", active && !paused);
     if (el.recordToggleLabel) {
-      el.recordToggleLabel.textContent = active ? "Stop" : "Record";
+      el.recordToggleLabel.textContent = saving ? "Saving..." : active ? (paused ? "Save" : "Stop") : "Record";
     }
-    el.recordToggleBtn.title = !connected
-      ? "Connect a sensor to record a manual trace"
-      : active
-        ? "Stop and save the recording"
-        : "Record a manual trace";
+    el.recordToggleBtn.title = saving ? "Saving your recording"
+      : active ? (paused ? "Save the captured recording" : "Stop and save the recording")
+        : connected ? "Record a manual trace" : "Connect a sensor to record a manual trace";
   }
 
   if (el.discardRecordBtn) {
     el.discardRecordBtn.classList.toggle("hidden", !state.manualRecordingActive);
+    el.discardRecordBtn.disabled = state.manualRecordingSaving;
   }
 
   if (el.recordStatusItem) {
     el.recordStatusItem.classList.toggle("hidden", !state.manualRecordingActive);
+    el.recordStatusItem.classList.toggle("paused", state.manualRecordingPaused);
+    el.recordStatusItem.title = state.manualRecordingPaused ? "Recording stopped; awaiting save" : "Manual trace recording in progress";
+  }
+
+  if (el.recordMessage) {
+    const message = state.manualRecordMessage || "";
+    if (el.recordMessage.textContent !== message) el.recordMessage.textContent = message;
+    el.recordMessage.classList.toggle("hidden", !state.manualRecordMessage);
   }
 
   if (el.recordTimeText) {
@@ -602,8 +614,16 @@ async function disconnect() {
 }
 
 async function connect(kind = transport()) {
+  if (store.get().manualRecordingActive) {
+    store.set({ manualRecordMessage: store.get().manualRecordingSaving
+      ? "Wait for the recording to finish saving before connecting."
+      : "Save or discard the current recording before connecting." });
+    selectViewTab("tabDashboard");
+    el.recordToggleBtn.focus();
+    return;
+  }
   await disconnect();
-  telemetry.reset();
+  if (!telemetry.reset()) return;
   adapter = createAdapter(kind, bus);
   try {
     await adapter.connect();
@@ -805,9 +825,16 @@ el.recordToggleBtn.addEventListener("click", async () => {
   }
 });
 el.discardRecordBtn.addEventListener("click", () => {
+  if (store.get().manualRecordingSaving) return;
   if (confirm("Are you sure you want to discard this manual recording?")) {
     telemetry.discardManualRecording();
+    if (!el.recordToggleBtn.disabled) el.recordToggleBtn.focus();
   }
+});
+window.addEventListener("beforeunload", (event) => {
+  if (!store.get().manualRecordingActive) return;
+  event.preventDefault();
+  event.returnValue = "";
 });
 el.zeroBtn.addEventListener("click", () => {
   if (!adapter) return;

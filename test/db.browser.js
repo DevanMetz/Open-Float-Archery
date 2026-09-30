@@ -47,37 +47,40 @@ runButton.addEventListener("click", async () => {
     });
     const api = await import(`../app/core/db.js?browser-test=${testName}`);
     db = await api.initDb();
-    const transaction = db.transaction.bind(db);
     const completed = new WeakSet();
     let latestWrite;
     let abortNextWrite = false;
 
-    db.transaction = (...args) => {
-      const tx = transaction(...args);
-      if (tx.mode === "readwrite") {
-        latestWrite = tx;
-        tx.addEventListener("complete", () => completed.add(tx));
-        if (abortNextWrite) {
-          const abortStore = abortNextWrite;
-          abortNextWrite = false;
-          const objectStore = tx.objectStore.bind(tx);
-          tx.objectStore = (name) => {
-            const store = objectStore(name);
-            if (abortStore !== true && name !== abortStore) return store;
-            for (const method of ["put", "delete", "add"]) {
-              const original = store[method].bind(store);
-              store[method] = (...values) => {
-                const request = original(...values);
-                request.addEventListener("success", () => tx.abort(), { once: true });
-                return request;
-              };
-            }
-            return store;
-          };
+    function observeTransactions(connection) {
+      const transaction = connection.transaction.bind(connection);
+      connection.transaction = (...args) => {
+        const tx = transaction(...args);
+        if (tx.mode === "readwrite") {
+          latestWrite = tx;
+          tx.addEventListener("complete", () => completed.add(tx));
+          if (abortNextWrite) {
+            const abortStore = abortNextWrite;
+            abortNextWrite = false;
+            const objectStore = tx.objectStore.bind(tx);
+            tx.objectStore = (name) => {
+              const store = objectStore(name);
+              if (abortStore !== true && name !== abortStore) return store;
+              for (const method of ["put", "delete", "add"]) {
+                const original = store[method].bind(store);
+                store[method] = (...values) => {
+                  const request = original(...values);
+                  request.addEventListener("success", () => tx.abort(), { once: true });
+                  return request;
+                };
+              }
+              return store;
+            };
+          }
         }
-      }
-      return tx;
-    };
+        return tx;
+      };
+    }
+    observeTransactions(db);
 
     await check("put resolves only after transaction commit", async () => {
       const key = await api.put("shots", { id: "committed", label: "Original" });
@@ -354,8 +357,12 @@ runButton.addEventListener("click", async () => {
       assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === "outcome-demo"), "Demo outcome entered the queue");
     });
 
+    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-145");
+    const { EventBus, createStore } = await import("../app/core/store.js");
+    const captureDb = await (await import("../app/core/db.js?v=shot-store-135")).initDb();
+    observeTransactions(captureDb);
+
     await check("manual recordings and rolling captures retain demo origin after disconnect", async () => {
-      const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-144");
       for (const method of ["saveManualRecording", "saveManual30sCapture"]) {
         let savedId;
         const recorder = Object.create(TelemetryStore.prototype);
@@ -381,6 +388,48 @@ runButton.addEventListener("click", async () => {
         assert(trace.mic_series.at(-1).tUs === 363000, `${method} shifted the microphone timing`);
         assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === savedId), `${method} queued a demo upload`);
       }
+    });
+
+    function manualRecorder() {
+      return Object.assign(Object.create(TelemetryStore.prototype), {
+        bus: new EventBus(),
+        store: createStore({ connected: true, manualRecordingActive: true }),
+        isRecordingManual: true, isSavingManual: false, lost: 2, manualRecordingStartLost: 1,
+        manualRecordingBuffer: Array.from({ length: 5 }, (_, i) => ({ tUs: i * 20000, ax: 0, ay: 0, az: 1, roll: 0, pitch: 0 })),
+        manualRecordingDurationUs: 100000, manualRecordingLabel: "Save recovery check",
+      });
+    }
+
+    await check("a failed manual save keeps the stopped capture available for retry after disconnect", async () => {
+      const recorder = manualRecorder();
+      const before = (await api.getAll("shots")).length;
+      abortNextWrite = "sync_queue";
+      assert(await recorder.saveManualRecording() === null, "Failed write was reported as saved");
+      assert((await api.getAll("shots")).length === before, "Failed capture partially committed");
+      assert(recorder.store.get().manualRecordingActive && recorder.store.get().manualRecordingPaused, "Failed capture cannot be retried");
+      assert(!recorder.store.get().manualRecordingSaving && !recorder.isRecordingManual, "Recording was not frozen for retry");
+      assert(recorder.manualRecordingBuffer.length === 5, "Failed capture lost its samples");
+      recorder.store.set({ connected: false });
+      recorder.lost = 99;
+      const id = await recorder.saveManualRecording();
+      const saved = await api.get("shots", id);
+      assert(saved.packet_loss_count === 1, "Retry included loss after the recording stopped");
+      assert(saved.timestamp === recorder.manualRecordingStoppedAt, "Retry shifted the capture time");
+      assert((await api.get("shot_traces", id)).payload.length === 5, "Retry changed the recorded samples");
+      assert(!recorder.store.get().manualRecordingActive && recorder.manualRecordingBuffer.length === 0, "Committed capture remained unsaved");
+    });
+
+    await check("a pending manual save prevents duplicates and cannot be discarded or replaced", async () => {
+      const recorder = manualRecorder();
+      const before = (await api.getAll("shots")).length;
+      const first = recorder.saveManualRecording();
+      assert(recorder.store.get().manualRecordingSaving, "Pending save was not exposed to controls");
+      assert(recorder.discardManualRecording() === false, "Discard erased a pending save");
+      assert(recorder.startManualRecording("Replacement") === false, "A new capture replaced the pending one");
+      const second = recorder.saveManualRecording();
+      const [id, duplicate] = await Promise.all([first, second]);
+      assert(id && duplicate === null, "Concurrent stop created two saves");
+      assert((await api.getAll("shots")).length === before + 1, "Pending capture saved more than once");
     });
 
     const { CloudSyncAdapter } = await import("../app/telemetry/sync.js?v=shot-store-134");

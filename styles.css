@@ -2323,11 +2323,11 @@ td:last-child {
 }
 
 .discard-btn {
-  color: #ff8080;
+  color: var(--text);
 }
 
 .discard-btn:hover {
-  color: #fff;
+  color: var(--text);
   background: rgba(255, 90, 90, 0.25);
 }
 
@@ -2350,6 +2350,14 @@ td:last-child {
 
 .inline-metric-item.record-status.hidden {
   display: none;
+}
+
+.record-status.paused .metric-dot.rec {
+  animation: none;
+}
+
+.record-message {
+  margin: 0 0 10px;
 }
 
 @media (max-width: 560px) {

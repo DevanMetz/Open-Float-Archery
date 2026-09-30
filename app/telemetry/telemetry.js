@@ -183,13 +183,25 @@ export class TelemetryStore {
       this.store.set({ uploadPending: Math.max(0, pending | 0) }),
     );
     bus.on("status", ({ mode, text }) => {
+      const connected = mode === "live" || mode === "demo";
+      if (!connected && this.isRecordingManual) {
+        this.isRecordingManual = false;
+        this.manualRecordingEndLost = this.lost;
+        this.manualRecordingStoppedAt = new Date().toISOString();
+        store.set({
+          manualRecordingPaused: true,
+          manualRecordMessage: this.manualRecordingBuffer.length
+            ? "Connection ended. Save or discard this recording before reconnecting."
+            : "Connection ended before any samples arrived. Discard this recording to reconnect.",
+        });
+      }
       if (mode !== "live") {
         this.connectionShotIds.clear();
       }
       store.set({
         statusMode: mode,
         statusText: text,
-        connected: mode === "live" || mode === "demo",
+        connected,
       });
     });
 
@@ -201,6 +213,8 @@ export class TelemetryStore {
   }
 
   reset() {
+    // Switching transports must never erase an unsaved or pending capture.
+    if (this.store.get().manualRecordingActive) return false;
     this.lastSeq = null;
     this.frameCount = 0;
     this.lost = 0;
@@ -235,6 +249,7 @@ export class TelemetryStore {
     this.connectionShotIds = new Set();
 
     this.isRecordingManual = false;
+    this.isSavingManual = false;
     this.manualRecordingBuffer = [];
     this.manualRecordingDurationUs = 0;
     this.manualRecordingLabel = "";
@@ -260,9 +275,13 @@ export class TelemetryStore {
       scoreVersion: FLOAT_SCORE_VERSION,
       lastShotSummary: null,
       manualRecordingActive: false,
+      manualRecordingPaused: false,
+      manualRecordingSaving: false,
+      manualRecordMessage: "",
       manualRecordSamples: 0,
       manualRecordElapsedSec: 0
     });
+    return true;
   }
 
   ingest(sample) {
@@ -965,21 +984,29 @@ export class TelemetryStore {
   }
 
   startManualRecording(label) {
+    if (!this.store.get().connected || this.store.get().manualRecordingActive || this.isSavingManual) return false;
     this.isRecordingManual = true;
     this.manualRecordingBuffer = [];
     this.manualRecordingDurationUs = 0;
-    this.manualRecordingLabel = label;
+    this.manualRecordingLabel = String(label || "");
     this.manualRecordingStartLost = this.lost;
+    this.manualRecordingEndLost = null;
+    this.manualRecordingStoppedAt = null;
     
     this.store.set({
       manualRecordingActive: true,
+      manualRecordingPaused: false,
+      manualRecordingSaving: false,
+      manualRecordMessage: "Recording. Stop to save, or discard when finished.",
       manualRecordSamples: 0,
       manualRecordElapsedSec: 0
     });
     this.bus.emit("log", `Manual recording started: "${label || 'Untitled'}"`);
+    return true;
   }
 
   discardManualRecording() {
+    if (this.isSavingManual) return false;
     this.isRecordingManual = false;
     this.manualRecordingBuffer = [];
     this.manualRecordingDurationUs = 0;
@@ -987,19 +1014,28 @@ export class TelemetryStore {
     
     this.store.set({
       manualRecordingActive: false,
+      manualRecordingPaused: false,
+      manualRecordMessage: "Recording discarded.",
       manualRecordSamples: 0,
       manualRecordElapsedSec: 0
     });
     this.bus.emit("log", "Manual recording discarded.");
+    return true;
   }
 
   async saveManualRecording() {
+    if (this.isSavingManual) return null;
     if (this.manualRecordingBuffer.length === 0) {
       this.bus.emit("log", "No telemetry data recorded yet to save.");
+      this.store.set({ manualRecordMessage: "No samples to save yet. Wait for telemetry or discard this recording." });
       return null;
     }
 
     this.isRecordingManual = false;
+    this.isSavingManual = true;
+    this.manualRecordingEndLost ??= this.lost;
+    this.manualRecordingStoppedAt ??= new Date().toISOString();
+    this.store.set({ manualRecordingPaused: true, manualRecordingSaving: true, manualRecordMessage: "Saving recording..." });
     const isDemo = this.manualRecordingBuffer.some((point) => point.sample);
     const durationSec = this.manualRecordingDurationUs / 1000000;
     const rawSampleRateHz = durationSec > 0 ? this.manualRecordingBuffer.length / durationSec : 52;
@@ -1008,6 +1044,8 @@ export class TelemetryStore {
 
     this.bus.emit("log", `Saving manual recording: "${label}" (${durationSec.toFixed(1)}s, ${decimatedBuffer.length} replay points at about ${sampleRateHz} Hz)...`);
 
+    let manualShotId;
+    let shotRecord;
     try {
       // 1. Compute metrics
       let maxG = 0;
@@ -1044,15 +1082,15 @@ export class TelemetryStore {
 
       // 2. Save shot record
       const startLost = this.manualRecordingStartLost ?? this.lost;
-      const shotLoss = Math.max(0, this.lost - startLost);
-      const manualShotId = generateUUID();
-      const shotRecord = {
+      const shotLoss = Math.max(0, this.manualRecordingEndLost - startLost);
+      manualShotId = generateUUID();
+      shotRecord = {
         id: manualShotId,
         session_id: null,
         device_id: isDemo ? "OpenFloat-Demo" : "OpenFloat-Sensor",
         capture_kind: "hold",
         sample: isDemo,
-        timestamp: new Date().toISOString(),
+        timestamp: this.manualRecordingStoppedAt,
         peak_g: Number(maxG.toFixed(2)),
         cant_angle_deg: 0,
         pitch_angle_deg: 0,
@@ -1082,43 +1120,46 @@ export class TelemetryStore {
       });
       tracePayload.sample = isDemo;
       await saveCapture(shotRecord, tracePayload);
-
-      this.bus.emit("log", `Manual recording saved successfully: "${label}" (ID: ${manualShotId.slice(0, 8)}).`);
-      
-      this.store.set({
-        manualRecordingActive: false,
-        manualRecordSamples: 0,
-        manualRecordElapsedSec: 0,
-        lastShotSummary: {
-          timestamp: shotRecord.timestamp,
-          score: shotRecord.shot_score,
-          peakG: shotRecord.peak_g,
-          cant: shotRecord.cant_angle_deg,
-          pitch: shotRecord.pitch_angle_deg,
-          yaw: shotRecord.yaw_angle_deg,
-        }
-      });
-
-      this.bus.emit("shot-saved", {
-        shotId: null,
-        stored: false,
-        localShotId: manualShotId,
-      });
-
-      this.manualRecordingBuffer = [];
-      this.manualRecordingDurationUs = 0;
-      this.manualRecordingLabel = "";
-
-      if (this.syncAdapter) {
-        this.syncAdapter.triggerSync();
-      }
-
-      return manualShotId;
     } catch (error) {
       console.error("Failed to save manual recording:", error);
       this.bus.emit("log", `Manual recording save failed: ${error.message}`);
+      this.store.set({ manualRecordMessage: "Could not save. Your recording is still in this tab; press Save to retry." });
       return null;
+    } finally {
+      this.isSavingManual = false;
+      this.store.set({ manualRecordingSaving: false });
     }
+
+    this.manualRecordingBuffer = [];
+    this.manualRecordingDurationUs = 0;
+    this.manualRecordingLabel = "";
+    this.store.set({
+      manualRecordingActive: false,
+      manualRecordingPaused: false,
+      manualRecordMessage: "Recording saved.",
+      manualRecordSamples: 0,
+      manualRecordElapsedSec: 0,
+      lastShotSummary: {
+        timestamp: shotRecord.timestamp,
+        score: shotRecord.shot_score,
+        peakG: shotRecord.peak_g,
+        cant: shotRecord.cant_angle_deg,
+        pitch: shotRecord.pitch_angle_deg,
+        yaw: shotRecord.yaw_angle_deg,
+      }
+    });
+
+    this.bus.emit("log", `Manual recording saved successfully: "${label}" (ID: ${manualShotId.slice(0, 8)}).`);
+    this.bus.emit("shot-saved", {
+      shotId: null,
+      stored: false,
+      localShotId: manualShotId,
+    });
+
+    if (this.syncAdapter) {
+      this.syncAdapter.triggerSync();
+    }
+    return manualShotId;
   }
 
   getTrace() {

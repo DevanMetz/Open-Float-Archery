@@ -867,6 +867,13 @@ microphone samples keep the same timestamps. The trace's sample rate describes
 the retained data; explicit timestamps control replay duration. Rolling captures
 prune at 30 seconds of elapsed telemetry time. Demo `dtUs` is measured from
 successive timer callbacks, so synthetic recording time follows wall-clock time.
+
+Manual recordings stop collecting on disconnect and remain in the current tab
+until saved or explicitly discarded. Stopping freezes the capture time and loss
+count; a failed transaction leaves it available for retry. Pending saves block
+discard and duplicate submission, and unsaved recordings block transport resets.
+The browser warns before leaving with an unsaved recording; it is not a durable
+draft until the capture transaction commits.
 New shot records also store `capture_kind: "arrow"` for device release events or
 `"hold"` for manual recordings and training. Arrow scoring uses this explicit
 type before legacy label/impulse heuristics, so a custom title cannot turn a hold

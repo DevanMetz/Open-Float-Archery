@@ -64,7 +64,7 @@ test("demo timing follows measured timer intervals, including delayed callbacks"
 
 function recorder(t) {
   t.mock.method(globalThis, "setInterval", () => 1);
-  return new TelemetryStore(new EventBus(), createStore({ liveTraceDuration: 3 }));
+  return new TelemetryStore(new EventBus(), createStore({ liveTraceDuration: 3, connected: true }));
 }
 
 function sample(sequence, dtUs) {
@@ -84,4 +84,36 @@ test("the rolling capture retains at most thirty seconds even on a slow stream",
   for (let index = 0; index < 311; index += 1) telemetry.ingest(sample(index, 100000));
   assert.equal(telemetry.history30s.at(-1).tUs - telemetry.history30s[0].tUs, 30000000);
   assert.equal(telemetry.history30s.length, 301);
+});
+
+test("disconnect freezes manual recordings and prevents reset or replacement until save or discard", (t) => {
+  const telemetry = recorder(t);
+  assert.equal(telemetry.startManualRecording("Keep this hold"), true);
+  telemetry.ingest(sample(0, 10000));
+  telemetry.bus.emit("status", { mode: "", text: "Disconnected" });
+  telemetry.ingest(sample(3, 10000));
+  assert.equal(telemetry.manualRecordingBuffer.length, 1);
+  assert.equal(telemetry.manualRecordingEndLost, 0);
+  assert.equal(telemetry.store.get().manualRecordingActive, true);
+  assert.equal(telemetry.store.get().manualRecordingPaused, true);
+  assert.match(telemetry.store.get().manualRecordMessage, /Save or discard/);
+  assert.equal(telemetry.reset(), false);
+  telemetry.store.set({ connected: true });
+  assert.equal(telemetry.startManualRecording("Replacement"), false);
+  assert.equal(telemetry.manualRecordingLabel, "Keep this hold");
+  assert.equal(telemetry.discardManualRecording(), true);
+  assert.equal(telemetry.reset(), true);
+  assert.equal(telemetry.manualRecordingBuffer.length, 0);
+});
+
+test("pending recording saves reject discard, reset, replacement and duplicate save", async (t) => {
+  const telemetry = recorder(t);
+  telemetry.startManualRecording("Pending hold");
+  telemetry.ingest(sample(0, 10000));
+  telemetry.isSavingManual = true;
+  assert.equal(telemetry.discardManualRecording(), false);
+  assert.equal(telemetry.reset(), false);
+  assert.equal(telemetry.startManualRecording("Replacement"), false);
+  assert.equal(await telemetry.saveManualRecording(), null);
+  assert.equal(telemetry.manualRecordingBuffer.length, 1);
 });
