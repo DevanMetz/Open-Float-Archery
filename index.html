@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-131">
+  <link rel="stylesheet" href="styles.css?v=shot-store-132">
   <link rel="stylesheet" href="theme-graph-paper.css?v=proto-1" id="graphThemeLink">
   <meta name="theme-color" content="#061014" id="themeMetaColor">
   <script>
@@ -248,7 +248,8 @@
             <div id="reviewOutcomePanel" class="review-outcome-panel hidden" aria-label="Record arrow result">
               <div class="review-outcome-copy">
                 <span class="review-outcome-kicker">Arrow Outcome</span>
-                <strong id="reviewOutcomeStatus">Not scored</strong>
+                <strong id="reviewOutcomeStatus" role="status">Not scored</strong>
+                <span id="reviewArrowProgress" class="review-arrow-progress"></span>
                 <p>Plot the impact or enter the score to discover which form metrics move your group.</p>
               </div>
               <div class="outcome-impact-editor">
@@ -289,6 +290,7 @@
                 </div>
                 <div class="review-outcome-actions">
                   <button id="saveOutcomeBtn" type="button" class="primary">Save Result</button>
+                  <button id="saveNextOutcomeBtn" type="button" class="accent">Save &amp; Next</button>
                   <button id="clearOutcomeBtn" type="button" class="secondary">Clear</button>
                 </div>
               </div>
@@ -909,6 +911,6 @@
     })();
   </script>
 
-  <script type="module" src="app/main.js?v=shot-store-131"></script>
+  <script type="module" src="app/main.js?v=shot-store-132"></script>
 </body>
 </html>

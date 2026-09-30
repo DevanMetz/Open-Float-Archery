@@ -6,6 +6,7 @@ import {
   buildSessionImpactReview,
   buildSessionOutcomeReview,
   buildSessionReview,
+  buildSessionScorecard,
 } from "../app/ui/session-review.js";
 
 test("target-result review stays absent until an arrow is scored", () => {
@@ -55,4 +56,31 @@ test("null manual-shot components are not misreported as zero-score issues", () 
 
   assert.match(html, /Hold steadiness/);
   assert.doesNotMatch(html, /Release disturbance/);
+});
+
+test("scorecard renders chronological arrow links and the first unscored result", () => {
+  const { shots } = generateSampleData(Date.UTC(2026, 0, 1));
+  shots[1].arrow_score = null;
+  const html = buildSessionScorecard([...shots].reverse());
+  assert.match(html, /5\/6 scored/);
+  assert.match(html, /36 points/);
+  assert.match(html, /Arrow 2, not scored/);
+  assert.match(html, /data-review-shot-id="sample-shot-2">Score next arrow/);
+  assert.ok(html.indexOf("Arrow 1, score") < html.indexOf("Arrow 6, score"));
+  assert.match(buildSessionScorecard(shots, 6), /value="6" selected/);
+});
+
+test("scorecard escapes shot identifiers and is absent for hold-only practice", () => {
+  const html = buildSessionScorecard([{ id: '\"><img src=x>', peak_g: 20, arrow_score: 0 }]);
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /score M/);
+  assert.match(html, /1\/1 scored/);
+  assert.equal(buildSessionScorecard([{ id: "hold", label: "Level Lock Hold", peak_g: 20 }]), "");
+});
+
+test("impact markers use the same shooting order as the scorecard", () => {
+  const { shots } = generateSampleData(Date.UTC(2026, 0, 1));
+  const html = buildSessionImpactReview([...shots].reverse());
+  assert.match(html, /<title>6 - arrow 1<\/title>/);
+  assert.match(html, /<title>5 - arrow 6<\/title>/);
 });

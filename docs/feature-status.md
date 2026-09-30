@@ -100,15 +100,24 @@ architecture, design intent, and forward-looking targets, see
   session summarizes average Float Score, best and worst shot, consistency
   trend, shots by drill label, and the biggest recurring issue. A compact plot
   shows Float Score progression across the session.
+- **End Scorecard**: Saved sessions list arrows in shooting order, grouped into
+  three- or six-arrow ends with end totals and a running total. Unscored arrows
+  keep their place and remain distinct from misses. Tap an arrow or **Score next
+  arrow** to open its result editor; **Save & Next** advances through the session
+  and **Save & Finish** returns to Saved Shots. End size is saved per session and
+  included in local backups. Hold-only training is excluded from the scorecard.
 - **Arrow Results & Form Correlation**: Trace Review accepts a per-arrow target
   result (`M`, `1`–`10`, or `X`) plus optional distance, yards/meters, and face
   size. Results remain local-first, appear on recent and saved-shot cards, and
   roll up into session total, average, 10/X/miss counts, and early-vs-late
-  scoring trend. After six arrows have both a target result and telemetry,
+  scoring trend. Trends require a recorded, consistent distance and face size.
+  After six arrows have both a target result and telemetry at a recorded,
+  consistent target setup,
   OpenFloat reports the strongest positive form-to-score correlation with its
   coefficient and sample size, explicitly labeling it as a training lead rather
   than proof of causation. Reviews without a saved motion trace can still record
-  an outcome.
+  an outcome. Identical scores or telemetry retain their paired-arrow count but
+  do not produce a correlation; missing setup details prompt for context.
 - **Impact Plot & Group Analysis**: Each reviewed arrow can be placed directly
   on a normalized ten-ring target with pointer or keyboard input. Target
   placement estimates the score but still allows a manual correction. Saved

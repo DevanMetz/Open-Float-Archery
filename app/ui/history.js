@@ -3,12 +3,13 @@
 import { getAll, get, put, remove, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-125";
 import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-125";
 import {
+  buildScorecard,
   canRecordArrowOutcome,
   formatShotOutcome,
   impactDirectionLabel,
   normalizeArrowOutcome,
   normalizeImpact,
-} from "../telemetry/outcome.js?v=shot-store-131";
+} from "../telemetry/outcome.js?v=shot-store-132";
 import { resolveReviewMicSeries } from "../protocol/trace.js?v=shot-store-125";
 import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=shot-store-125";
 import {
@@ -16,7 +17,8 @@ import {
   buildSessionImpactReview,
   buildSessionOutcomeReview,
   buildSessionReview,
-} from "./session-review.js?v=shot-store-131";
+  buildSessionScorecard,
+} from "./session-review.js?v=shot-store-132";
 import { mountImpactTarget } from "./impact-target.js?v=shot-store-131";
 
 export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab }) {
@@ -48,6 +50,15 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   let selectedImpact = null;
   let currentOutcomeShotId = null;
   let impactTarget = null;
+  let reviewArrows = [];
+  let outcomeSaving = false;
+  let savedOutcomeExists = false;
+  let reviewRequest = 0;
+
+  function focusOutcomeScore() {
+    const buttons = el.outcomeScoreButtons;
+    (buttons?.querySelector(".selected") || buttons?.querySelector("[data-outcome-score]"))?.focus();
+  }
 
   function updateImpactHint() {
     if (el.outcomeImpactHint) {
@@ -55,12 +66,13 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         ? `${impactDirectionLabel(selectedImpact)} / ${Math.round(selectedImpact.radius * 100)}% of target radius`
         : "Tap the target, or focus it and press Enter.";
     }
-    if (el.clearImpactBtn) el.clearImpactBtn.disabled = !selectedImpact;
+    if (el.clearImpactBtn) el.clearImpactBtn.disabled = outcomeSaving || !selectedImpact;
   }
 
   impactTarget = mountImpactTarget({
     canvas: el.outcomeImpactCanvas,
     onSelect(impact) {
+      if (outcomeSaving) return;
       selectedImpact = impact;
       if (impact) {
         selectedOutcome = { score: impact.score, isX: false };
@@ -97,14 +109,22 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
 
   function updateOutcomeButtons() {
+    el.reviewOutcomePanel?.setAttribute("aria-busy", String(outcomeSaving));
+    for (const input of [el.outcomeDistanceInput, el.outcomeDistanceUnit, el.outcomeFaceInput]) {
+      if (input) input.disabled = outcomeSaving;
+    }
     el.outcomeScoreButtons?.querySelectorAll("[data-outcome-score]").forEach((button) => {
       const score = Number(button.dataset.outcomeScore);
       const isX = button.dataset.outcomeX === "true";
       const selected = !!selectedOutcome && selectedOutcome.score === score && selectedOutcome.isX === isX;
       button.classList.toggle("selected", selected);
       button.setAttribute("aria-pressed", selected ? "true" : "false");
+      button.disabled = outcomeSaving;
     });
-    if (el.saveOutcomeBtn) el.saveOutcomeBtn.disabled = !selectedOutcome;
+    if (el.saveOutcomeBtn) el.saveOutcomeBtn.disabled = outcomeSaving || !selectedOutcome;
+    if (el.saveNextOutcomeBtn) el.saveNextOutcomeBtn.disabled = outcomeSaving || !selectedOutcome;
+    if (el.clearOutcomeBtn) el.clearOutcomeBtn.disabled = outcomeSaving || !savedOutcomeExists;
+    updateImpactHint();
   }
 
   function renderOutcomeEditor(shot) {
@@ -116,13 +136,15 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const outcome = normalizeArrowOutcome(shot);
     selectedImpact = normalizeImpact(shot);
     selectedOutcome = outcome ? { score: outcome.score, isX: outcome.isX } : null;
-    const context = storedOutcomeContext();
+    // Defaults are for new outcomes only. Existing partial context stays blank,
+    // and an explicit yards value takes precedence over the last-used meters.
+    const context = outcome ? {} : storedOutcomeContext();
     if (el.outcomeDistanceInput) {
       el.outcomeDistanceInput.value = shot.target_distance ?? context.distance ?? "";
     }
     if (el.outcomeDistanceUnit) {
-      el.outcomeDistanceUnit.value = shot.target_distance_unit === "m"
-        ? "m"
+      el.outcomeDistanceUnit.value = ["m", "yd"].includes(shot.target_distance_unit)
+        ? shot.target_distance_unit
         : context.unit === "m" ? "m" : "yd";
     }
     if (el.outcomeFaceInput) {
@@ -133,7 +155,18 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         ? formatShotOutcome(shot, { includeContext: true })
         : "Not scored";
     }
-    if (el.clearOutcomeBtn) el.clearOutcomeBtn.disabled = !outcome && !selectedImpact;
+    savedOutcomeExists = !!outcome || !!selectedImpact;
+    reviewArrows = reviewArrows.map((arrow) => arrow.id === shot.id ? shot : arrow);
+    const arrowIndex = reviewArrows.findIndex((arrow) => arrow.id === shot.id);
+    const remaining = reviewArrows.filter((arrow) => !normalizeArrowOutcome(arrow)).length;
+    if (el.reviewArrowProgress) {
+      el.reviewArrowProgress.textContent = arrowIndex < 0 ? "" :
+        `Arrow ${arrowIndex + 1} of ${reviewArrows.length} / ${remaining} still to score`;
+    }
+    if (el.saveNextOutcomeBtn) {
+      el.saveNextOutcomeBtn.textContent = arrowIndex >= 0 && arrowIndex < reviewArrows.length - 1
+        ? "Save & Next" : "Save & Finish";
+    }
     impactTarget?.setImpact(selectedImpact);
     updateImpactHint();
     updateOutcomeButtons();
@@ -156,20 +189,23 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const distance = clear ? null : optionalPositiveNumber(el.outcomeDistanceInput, "Distance", 300);
     const faceCm = clear ? null : optionalPositiveNumber(el.outcomeFaceInput, "Face size", 200);
     const unit = el.outcomeDistanceUnit?.value === "m" ? "m" : "yd";
-    const shot = await get("shots", currentOutcomeShotId);
+    const shotId = currentOutcomeShotId;
+    const outcome = selectedOutcome;
+    const impact = selectedImpact;
+    const shot = await get("shots", shotId);
     if (!shot) throw new Error("The reviewed shot is no longer in local storage.");
 
     const updatedShot = {
       ...shot,
-      arrow_score: clear ? null : selectedOutcome.score,
-      arrow_is_x: clear ? false : selectedOutcome.isX,
+      arrow_score: clear ? null : outcome.score,
+      arrow_is_x: clear ? false : outcome.isX,
       target_distance: clear ? null : distance,
       target_distance_unit: clear ? null : unit,
       target_face_cm: clear ? null : faceCm,
       outcome_recorded_at: clear ? null : new Date().toISOString(),
-      impact_x: clear || !selectedImpact ? null : selectedImpact.x,
-      impact_y: clear || !selectedImpact ? null : selectedImpact.y,
-      impact_recorded_at: clear || !selectedImpact ? null : new Date().toISOString(),
+      impact_x: clear || !impact ? null : impact.x,
+      impact_y: clear || !impact ? null : impact.y,
+      impact_recorded_at: clear || !impact ? null : new Date().toISOString(),
     };
 
     await put("shots", updatedShot);
@@ -186,8 +222,10 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     if (!clear) {
       localStorage.setItem(OUTCOME_CONTEXT_KEY, JSON.stringify({ distance, unit, faceCm }));
     }
-    store.set({ reviewInfo: buildReviewInfo(updatedShot) });
-    renderOutcomeEditor(updatedShot);
+    if (store.get().reviewShotId === shotId) {
+      store.set({ reviewInfo: buildReviewInfo(updatedShot) });
+      renderOutcomeEditor(updatedShot);
+    }
     await Promise.all([loadRecentShotsList(), loadShotHistoryList()]);
     if (!shot.sample && syncAdapter) syncAdapter.triggerSync();
     bus.emit(
@@ -196,9 +234,15 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         ? `Cleared target result for shot ${updatedShot.id.slice(0, 8)}.`
         : `Saved arrow ${formatShotOutcome(updatedShot, { includeContext: true })} for shot ${updatedShot.id.slice(0, 8)}.`,
     );
+    return updatedShot;
   }
 
   async function loadShotHistoryList() {
+    const expandedSessions = new Set(
+      [...el.historyList.querySelectorAll(".session-group:not(.collapsed)")]
+        .map((group) => group.dataset.sessionId),
+    );
+    const hadSessions = !!el.historyList.querySelector(".session-group");
     el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">Loading saved history...</p>`;
     try {
       const shots = await getAll("shots");
@@ -222,7 +266,9 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       for (const group of groups) {
         const override = overrideMap.get(group.anchorId) || null;
         const groupEl = document.createElement("div");
-        groupEl.className = "session-group" + (isFirst ? "" : " collapsed");
+        const expanded = hadSessions ? expandedSessions.has(group.anchorId) : isFirst;
+        groupEl.className = "session-group" + (expanded ? "" : " collapsed");
+        groupEl.dataset.sessionId = group.anchorId;
         isFirst = false;
 
         const sessionName = (override && override.name) || defaultSessionName(group.startTime);
@@ -284,6 +330,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
               <button class="session-cancel-btn" type="button">Cancel</button>
             </div>
           </div>
+          <div class="session-scorecard-slot">${buildSessionScorecard(group.shots, override?.arrows_per_end)}</div>
           ${buildSessionReview(group.shots)}
           ${buildSessionOutcomeReview(group.shots)}
           ${buildSessionImpactReview(group.shots)}
@@ -310,13 +357,14 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
           e.stopPropagation();
           const nameVal = groupEl.querySelector(".session-name-input").value.trim();
           const bowVal = groupEl.querySelector(".session-bow-input").value || null;
-          const record = {
-            id: group.anchorId,
-            name: nameVal || null,
-            bow_profile_id: bowVal,
-            updated_at: new Date().toISOString(),
-          };
           try {
+            const record = {
+              ...await get("session_overrides", group.anchorId),
+              id: group.anchorId,
+              name: nameVal || null,
+              bow_profile_id: bowVal,
+              updated_at: new Date().toISOString(),
+            };
             await put("session_overrides", record);
             bus.emit("log", `Updated session "${nameVal || defaultSessionName(group.startTime)}".`);
             await loadShotHistoryList();
@@ -325,14 +373,33 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
             bus.emit("log", `Error saving session: ${err.message}`);
           }
         });
-        groupEl.querySelectorAll("[data-review-shot-id]").forEach((button) => {
-          button.addEventListener("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const shotId = button.dataset.reviewShotId;
-            const shot = group.shots.find((candidate) => candidate.id === shotId);
-            if (shot) reviewShotTrace(shot);
-          });
+        groupEl.addEventListener("click", (event) => {
+          const button = event.target.closest("[data-review-shot-id]");
+          if (!button) return;
+          event.preventDefault();
+          const shot = group.shots.find((candidate) => candidate.id === button.dataset.reviewShotId);
+          if (shot) reviewShotTrace(shot, { focusOutcome: !!button.closest(".session-scorecard") });
+        });
+        groupEl.addEventListener("change", async (event) => {
+          if (!event.target.matches(".session-end-size")) return;
+          const select = event.target;
+          select.disabled = true;
+          try {
+            const current = await get("session_overrides", group.anchorId);
+            const arrowsPerEnd = Number(select.value) === 6 ? 6 : 3;
+            await put("session_overrides", {
+              ...current,
+              id: group.anchorId,
+              arrows_per_end: arrowsPerEnd,
+              updated_at: new Date().toISOString(),
+            });
+            groupEl.querySelector(".session-scorecard-slot").innerHTML = buildSessionScorecard(group.shots, arrowsPerEnd);
+            groupEl.querySelector(".session-end-size")?.focus();
+          } catch (error) {
+            select.disabled = false;
+            bus.emit("log", `Could not save scorecard grouping: ${error.message}`);
+            alert(`Could not save scorecard grouping: ${error.message}`);
+          }
         });
 
         const containerEl = groupEl.querySelector(".session-shots-container");
@@ -584,7 +651,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     };
   }
 
-  async function reviewShotTrace(shot) {
+  async function reviewShotTrace(shot, { focusOutcome = false } = {}) {
+    const request = ++reviewRequest;
     try {
       let trace = await get("shot_traces", shot.id);
 
@@ -635,6 +703,11 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         ? `| Est. Range: ${range.yards.toFixed(1)} yds (${Math.round(range.feet)} ft) @ ${speed} fps`
         : "";
 
+      const sessions = groupShotsByTime(await getAll("shots"));
+      const session = sessions.find((group) => group.shots.some((arrow) => arrow.id === shot.id));
+      if (request !== reviewRequest) return;
+      reviewArrows = buildScorecard(session?.shots || [shot]).arrows;
+
       store.set({
         reviewMode: true,
         reviewShotId: shot.id,
@@ -675,11 +748,15 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       });
 
       await refreshReviewCompareOptions(shot.id, false);
+      if (request !== reviewRequest || store.get().reviewShotId !== shot.id) return;
       if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
       renderOutcomeEditor(shot);
 
       bus.emit("log", `Entering review mode for shot ${shot.id.slice(0, 8)}...`);
       selectViewTab("tabDashboard");
+      if (focusOutcome) {
+        focusOutcomeScore();
+      }
     } catch (error) {
       console.error("Failed to load trace:", error);
       alert("Error fetching trace payload: " + error.message);
@@ -687,6 +764,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
 
   el.exitReviewBtn.addEventListener("click", () => {
+    reviewRequest += 1;
+    reviewArrows = [];
     store.set({
       reviewMode: false,
       reviewShotId: null,
@@ -795,18 +874,40 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     });
   });
 
-  el.saveOutcomeBtn?.addEventListener("click", async () => {
-    el.saveOutcomeBtn.disabled = true;
+  async function saveOutcome({ clear = false, advance = false } = {}) {
+    if (outcomeSaving) return;
+    const shotId = currentOutcomeShotId;
+    const arrowIndex = reviewArrows.findIndex((shot) => shot.id === shotId);
+    const nextId = arrowIndex >= 0 ? reviewArrows[arrowIndex + 1]?.id : null;
+    outcomeSaving = true;
+    updateOutcomeButtons();
     try {
-      await persistArrowOutcome();
+      const saved = await persistArrowOutcome({ clear });
+      if (saved && advance && store.get().reviewShotId === shotId) {
+        const next = nextId ? await get("shots", nextId) : null;
+        if (store.get().reviewShotId !== shotId) return;
+        if (next) {
+          await reviewShotTrace(next, { focusOutcome: true });
+        } else {
+          el.exitReviewBtn.click();
+          selectViewTab("tabHistory");
+        }
+      }
     } catch (error) {
       console.error("Failed to save arrow outcome:", error);
       bus.emit("log", `Target result save failed: ${error.message}`);
       alert(error.message);
     } finally {
+      outcomeSaving = false;
       updateOutcomeButtons();
+      if (advance && store.get().reviewMode) {
+        focusOutcomeScore();
+      }
     }
-  });
+  }
+
+  el.saveOutcomeBtn?.addEventListener("click", () => saveOutcome());
+  el.saveNextOutcomeBtn?.addEventListener("click", () => saveOutcome({ advance: true }));
 
   el.clearImpactBtn?.addEventListener("click", () => {
     selectedImpact = null;
@@ -817,16 +918,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     }
   });
 
-  el.clearOutcomeBtn?.addEventListener("click", async () => {
-    el.clearOutcomeBtn.disabled = true;
-    try {
-      await persistArrowOutcome({ clear: true });
-    } catch (error) {
-      console.error("Failed to clear arrow outcome:", error);
-      bus.emit("log", `Target result clear failed: ${error.message}`);
-      alert(error.message);
-    }
-  });
+  el.clearOutcomeBtn?.addEventListener("click", () => saveOutcome({ clear: true }));
 
   store.subscribe((currentState) => {
     if (currentState.reviewMode) return;

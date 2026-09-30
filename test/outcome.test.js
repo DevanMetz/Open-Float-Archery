@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildScorecard,
   canRecordArrowOutcome,
   correlateDirectionalImpacts,
   correlateOutcomesWithForm,
@@ -204,4 +205,104 @@ test("mixed target contexts suppress directional impact coaching", () => {
   assert.equal(summary.mixedContext, true);
   assert.equal(summary.insight.status, "unclear");
   assert.match(summary.insight.title, /consistent/);
+});
+
+test("invalid imported scores and blank metrics do not become scored arrows", () => {
+  for (const arrow_score of [true, false, [], {}, "   ", 9.9]) {
+    assert.equal(normalizeArrowOutcome({ arrow_score }), null);
+  }
+  assert.equal(normalizeArrowOutcome({ arrow_score: "0" }).score, 0);
+  assert.equal(normalizeImpact({ impact_x: false, impact_y: 0 }), null);
+});
+
+test("constant results retain their paired count without inventing a correlation", () => {
+  const shots = Array.from({ length: 6 }, (_, index) => scoredShot(index, {
+    arrow_score: 10,
+    impact_x: 0,
+    impact_y: 0,
+    cant_angle_deg: index,
+  }));
+  for (const analyze of [correlateOutcomesWithForm, correlateDirectionalImpacts]) {
+    const partial = analyze(shots.slice(0, 4));
+    assert.equal(partial.status, "collecting");
+    assert.equal(partial.sampleCount, 4);
+    const complete = analyze(shots);
+    assert.equal(complete.status, "unclear");
+    assert.equal(complete.sampleCount, 6);
+    assert.equal(complete.correlation, null);
+    assert.match(complete.detail, /do not vary enough/);
+  }
+});
+
+test("unknown target setups cannot be silently pooled with recorded setups", () => {
+  const shots = Array.from({ length: 6 }, (_, index) => scoredShot(index, {
+    impact_x: index * 0.1,
+    impact_y: 0,
+    cant_angle_deg: index,
+  }));
+  shots[5].target_distance = null;
+  shots[5].target_face_cm = null;
+  const summary = summarizeSessionOutcomes(shots);
+  assert.equal(summary.mixedContext, true);
+  assert.equal(summary.trend, null);
+  assert.equal(summary.insight.status, "unclear");
+  assert.equal(correlateOutcomesWithForm(shots).status, "unclear");
+  assert.equal(correlateDirectionalImpacts(shots).status, "unclear");
+});
+
+test("all missing target setups still allow totals but ask for context before coaching", () => {
+  const shots = Array.from({ length: 6 }, (_, index) => scoredShot(index, {
+    target_distance: null,
+    target_face_cm: null,
+    impact_x: index * 0.1,
+    impact_y: 0,
+    cant_angle_deg: index,
+  }));
+  const summary = summarizeSessionOutcomes(shots);
+  assert.equal(summary.total, 15);
+  assert.equal(summary.mixedContext, false);
+  assert.equal(summary.trend, null);
+  assert.equal(summary.insight.title, "Record the target setup");
+  assert.equal(summarizeImpactGroup(shots).insight.title, "Record the target setup");
+});
+
+test("setup comparisons use stored precision rather than rounded display text", () => {
+  const shots = [scoredShot(6, { target_distance: 20.01 }), scoredShot(7, { target_distance: 20.04 })];
+  assert.equal(summarizeSessionOutcomes(shots).mixedContext, true);
+  assert.equal(summarizeImpactGroup(shots.map((shot) => ({ ...shot, impact_x: 0, impact_y: 0 }))).mixedContext, true);
+});
+
+test("scorecard keeps chronological slots, unscored arrows, misses, and Xs distinct", () => {
+  const shots = [
+    scoredShot(4, { arrow_score: null }),
+    scoredShot(0, { arrow_score: 10, arrow_is_x: true }),
+    scoredShot(2, { arrow_score: 0 }),
+    scoredShot(1, { arrow_score: null }),
+    scoredShot(3, { arrow_score: 8 }),
+    scoredShot(5, { label: "Steady Aim Hold", arrow_score: null }),
+  ];
+  const originalOrder = shots.map((shot) => shot.id);
+  const card = buildScorecard(shots);
+  assert.equal(card.arrows.length, 5);
+  assert.equal(card.scoredCount, 3);
+  assert.equal(card.total, 18);
+  assert.equal(card.ends.length, 2);
+  assert.deepEqual(card.ends[0].entries.map((entry) => entry.outcome?.label ?? "--"), ["X", "--", "M"]);
+  assert.equal(card.ends[0].total, 10);
+  assert.equal(card.ends[0].complete, false);
+  assert.equal(card.ends[1].runningTotal, 18);
+  assert.deepEqual(card.ends[1].entries.map((entry) => entry.number), [4, 5]);
+  assert.deepEqual(shots.map((shot) => shot.id), originalOrder);
+});
+
+test("scorecard supports six-arrow ends and defaults unsupported group sizes to three", () => {
+  const shots = Array.from({ length: 7 }, (_, index) => scoredShot(index, { arrow_score: 10 }));
+  const card = buildScorecard(shots, 6);
+  assert.equal(card.ends[0].total, 60);
+  assert.equal(card.ends[0].complete, true);
+  assert.equal(card.ends[1].complete, false);
+  assert.equal(card.ends[1].entries[0].number, 7);
+  assert.equal(buildScorecard(shots, "6").arrowsPerEnd, 6);
+  assert.equal(buildScorecard(shots, 0).arrowsPerEnd, 3);
+  assert.equal(buildScorecard([]).ends.length, 0);
 });

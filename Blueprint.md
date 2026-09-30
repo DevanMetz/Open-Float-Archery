@@ -800,7 +800,12 @@ source of truth.
 tracks live `sessions`. Shots are saved with `session_id: null`, and practice
 sessions are derived from shot timestamps at display time (any gap over 30
 minutes starts a new session). A `session_overrides` object store keyed by each
-group's earliest shot id holds the user-edited `name` and `bow_profile_id`. The
+group's earliest shot id holds the user-edited `name`, `bow_profile_id`, and
+optional `arrows_per_end` (3 or 6, default 3). Scorecard ends group arrow captures
+in chronological order; training holds are excluded and unscored arrows keep
+their positions. These are display groups, not inferred hardware end events.
+Changing the group size preserves session name and bow, and local backups
+include the setting without an IndexedDB version change. The
 cloud `sessions` table above remains the recommended server model for future
 sync; the local schema favors timestamp-derived grouping so no manual
 start/stop is required.
@@ -818,6 +823,12 @@ independent of any one target-face diameter while still allowing physical group
 size when a consistent face size is known. Session review uses those points for
 a centroid, maximum pairwise spread, covariance ellipse, and cautious
 orientation-to-impact correlations.
+Both form-to-score and direction relationships require at least six paired
+arrows with a known, consistent distance and face size. Missing contexts are
+never pooled with known ones. Constant scores or telemetry retain their sample
+count but produce no coefficient, and scoring trends are withheld for missing
+or mixed target setups. Setup comparisons use stored numeric precision rather
+than rounded display labels.
 
 For both new and existing Supabase projects, run [`supabase/schema.sql`](supabase/schema.sql).
 It is idempotent (`create table if not exists` + `add column if not exists`),

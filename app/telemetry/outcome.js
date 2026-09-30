@@ -13,7 +13,8 @@ function clamp(value, min, max) {
 }
 
 function finiteValue(value) {
-  if (value == null || value === "") return null;
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && value.trim() === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -48,8 +49,8 @@ function pearsonCorrelation(pairs) {
 
 export function normalizeArrowOutcome(shot) {
   const rawScore = finiteValue(shot?.arrow_score);
-  if (rawScore == null || rawScore < 0 || rawScore > 10) return null;
-  const score = Math.round(rawScore);
+  if (!Number.isInteger(rawScore) || rawScore < 0 || rawScore > 10) return null;
+  const score = rawScore;
   const isX = score === 10 && shot?.arrow_is_x === true;
   const distance = finiteValue(shot?.target_distance);
   const faceCm = finiteValue(shot?.target_face_cm);
@@ -77,6 +78,40 @@ export function formatOutcomeContext(outcome) {
   return parts.join(" / ");
 }
 
+// Compare stored values, not rounded display labels. Unknown setups must never
+// silently inherit the known setup of other arrows in a session.
+function targetContext(shots) {
+  const outcomes = shots.map(normalizeArrowOutcome);
+  const keys = new Set(outcomes.map((outcome) => JSON.stringify([
+    outcome?.distance ?? null,
+    outcome?.distance == null ? null : outcome.distanceUnit,
+    outcome?.faceCm ?? null,
+  ])));
+  return {
+    mixed: keys.size > 1,
+    complete: outcomes.length > 0 && outcomes.every((outcome) =>
+      outcome?.distance != null && outcome?.faceCm != null),
+    label: keys.size === 1 ? formatOutcomeContext(outcomes[0]) : "",
+  };
+}
+
+function contextInsight(shots, sampleCount, minimumPairs) {
+  const context = targetContext(shots);
+  if (!context.mixed && context.complete) return null;
+  return {
+    status: "unclear",
+    title: context.mixed ? "Keep the target setup consistent" : "Record the target setup",
+    detail: context.mixed
+      ? "These arrows have different or missing target setups. Use the same distance and face size before looking for a telemetry relationship."
+      : "Add distance and face size to these arrows before looking for a telemetry relationship.",
+    sampleCount,
+    minimumPairs,
+    metricKey: null,
+    metricLabel: null,
+    correlation: null,
+  };
+}
+
 export function formatShotOutcome(shot, { includeContext = false } = {}) {
   const outcome = normalizeArrowOutcome(shot);
   if (!outcome) return "--";
@@ -94,6 +129,38 @@ export function canRecordArrowOutcome(shot) {
     shot.device_shot_id != null ||
     Number(shot.peak_g || 0) >= 4
   );
+}
+
+// Ends are display groups in capture order. Missing results keep their place
+// and contribute no score; they are never converted to misses or sorted away.
+export function buildScorecard(shots, arrowsPerEnd = 3) {
+  const endSize = Number(arrowsPerEnd) === 6 ? 6 : 3;
+  const arrows = (shots || []).filter(canRecordArrowOutcome).sort(
+    (a, b) => (Date.parse(a.timestamp) || 0) - (Date.parse(b.timestamp) || 0),
+  );
+  const ends = [];
+  let total = 0;
+  let scoredCount = 0;
+  for (let offset = 0; offset < arrows.length; offset += endSize) {
+    const entries = arrows.slice(offset, offset + endSize).map((shot, index) => ({
+      shot,
+      number: offset + index + 1,
+      outcome: normalizeArrowOutcome(shot),
+    }));
+    const scored = entries.filter((entry) => entry.outcome);
+    const endTotal = scored.reduce((sum, entry) => sum + entry.outcome.score, 0);
+    total += endTotal;
+    scoredCount += scored.length;
+    ends.push({
+      number: ends.length + 1,
+      entries,
+      total: endTotal,
+      scoredCount: scored.length,
+      complete: entries.length === endSize && scored.length === endSize,
+      runningTotal: total,
+    });
+  }
+  return { arrowsPerEnd: endSize, arrows, ends, total, scoredCount };
 }
 
 export function normalizeImpact(shot) {
@@ -159,7 +226,7 @@ export function correlateDirectionalImpacts(shots, { minimumPairs = 6 } = {}) {
       sampleCount: pairs.length,
       correlation: pearsonCorrelation(pairs),
     };
-  }).filter((result) => result.correlation != null);
+  });
 
   const pairedCount = results.reduce(
     (largest, result) => Math.max(largest, result.sampleCount),
@@ -167,13 +234,29 @@ export function correlateDirectionalImpacts(shots, { minimumPairs = 6 } = {}) {
   );
   const eligible = results
     .filter((result) => result.sampleCount >= minimumPairs)
+    .filter((result) => result.correlation != null)
     .sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
 
-  if (!eligible.length) {
+  if (pairedCount < minimumPairs) {
     return {
       status: "collecting",
       title: "Build the directional picture",
       detail: `${pairedCount}/${minimumPairs} plotted arrows have matching orientation telemetry. Plot ${Math.max(0, minimumPairs - pairedCount)} more before OpenFloat calls out a direction pattern.`,
+      sampleCount: pairedCount,
+      correlation: null,
+      metricKey: null,
+    };
+  }
+
+  const setupIssue = contextInsight(
+    (shots || []).filter((shot) => normalizeImpact(shot)), pairedCount, minimumPairs,
+  );
+  if (setupIssue) return setupIssue;
+  if (!eligible.length) {
+    return {
+      status: "unclear",
+      title: "Not enough variation for a direction link",
+      detail: `${pairedCount} plotted arrows have matching telemetry, but the values do not vary enough to calculate a direction relationship. Keep recording normal practice.`,
       sampleCount: pairedCount,
       correlation: null,
       metricKey: null,
@@ -228,9 +311,7 @@ export function summarizeImpactGroup(shots) {
   const ys = entries.map((entry) => entry.impact.y);
   const centerX = average(xs);
   const centerY = average(ys);
-  const contextValues = entries
-    .map((entry) => formatOutcomeContext(normalizeArrowOutcome(entry.shot)) || "__missing__");
-  const contexts = new Set(contextValues);
+  const context = targetContext(entries.map((entry) => entry.shot));
   const faceValues = entries
     .map((entry) => finiteValue(entry.shot?.target_face_cm))
     .filter((value) => value != null && value > 0);
@@ -273,7 +354,7 @@ export function summarizeImpactGroup(shots) {
     };
   }
 
-  const mixedContext = contexts.size > 1;
+  const mixedContext = context.mixed;
   const insight = mixedContext
     ? {
         status: "unclear",
@@ -315,21 +396,39 @@ export function correlateOutcomesWithForm(shots, { minimumPairs = 6 } = {}) {
       sampleCount: pairs.length,
       correlation: pearsonCorrelation(pairs),
     };
-  }).filter((result) => result.correlation != null);
+  });
 
+  const pairedCount = ranked.reduce(
+    (largest, result) => Math.max(largest, result.sampleCount),
+    0,
+  );
   const eligible = ranked
     .filter((result) => result.sampleCount >= minimumPairs)
+    .filter((result) => result.correlation != null)
     .sort((a, b) => b.correlation - a.correlation);
 
-  if (!eligible.length) {
-    const pairedCount = ranked.reduce(
-      (largest, result) => Math.max(largest, result.sampleCount),
-      0,
-    );
+  if (pairedCount < minimumPairs) {
     return {
       status: "collecting",
       title: "Build the form-to-score picture",
       detail: `${pairedCount}/${minimumPairs} scored arrows have matching telemetry. Log ${Math.max(0, minimumPairs - pairedCount)} more before OpenFloat calls out a relationship.`,
+      sampleCount: pairedCount,
+      minimumPairs,
+      metricKey: null,
+      metricLabel: null,
+      correlation: null,
+    };
+  }
+
+  const setupIssue = contextInsight(
+    (shots || []).filter((shot) => normalizeArrowOutcome(shot)), pairedCount, minimumPairs,
+  );
+  if (setupIssue) return setupIssue;
+  if (!eligible.length) {
+    return {
+      status: "unclear",
+      title: "Not enough variation for a score link",
+      detail: `${pairedCount} scored arrows have matching telemetry, but the values do not vary enough to calculate a relationship. Keep recording normal practice.`,
       sampleCount: pairedCount,
       minimumPairs,
       metricKey: null,
@@ -389,17 +488,15 @@ export function summarizeSessionOutcomes(shots) {
     (a, b) => new Date(a.shot.timestamp) - new Date(b.shot.timestamp),
   );
   const scores = chronological.map((entry) => entry.outcome.score);
-  const contexts = new Set(
-    chronological.map((entry) => formatOutcomeContext(entry.outcome)).filter(Boolean),
-  );
+  const context = targetContext(chronological.map((entry) => entry.shot));
   const half = Math.max(1, Math.floor(scores.length / 2));
   const early = average(scores.slice(0, half));
   const late = average(scores.slice(-half));
-  const insight = contexts.size > 1
+  const insight = context.mixed
     ? {
         status: "unclear",
         title: "Keep the target setup consistent",
-        detail: `These ${scores.length} results mix distances or face sizes. OpenFloat will wait for a consistent setup before linking form to score.`,
+        detail: `These ${scores.length} results have different or missing target setups. OpenFloat will wait for a consistent setup before linking form to score.`,
         sampleCount: scores.length,
         minimumPairs: 6,
         metricKey: null,
@@ -415,9 +512,9 @@ export function summarizeSessionOutcomes(shots) {
     xCount: chronological.filter((entry) => entry.outcome.isX).length,
     tenCount: scores.filter((score) => score === 10).length,
     missCount: scores.filter((score) => score === 0).length,
-    trend: scores.length >= 4 ? late - early : null,
-    context: contexts.size === 1 ? [...contexts][0] : "",
-    mixedContext: contexts.size > 1,
+    trend: scores.length >= 4 && !context.mixed && context.complete ? late - early : null,
+    context: context.label,
+    mixedContext: context.mixed,
     insight,
   };
 }

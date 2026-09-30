@@ -38,6 +38,7 @@ select {
 .app {
   min-height: 100vh;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr;
 }
 
@@ -1818,6 +1819,15 @@ td:last-child {
   font-size: 11px;
 }
 
+.review-arrow-progress {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-outcome-panel[aria-busy="true"] canvas {
+  pointer-events: none;
+}
+
 .review-compare-field {
   display: flex;
   flex-direction: column;
@@ -3332,6 +3342,7 @@ canvas,
   max-width: 800px;
   margin: 0 auto;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 
@@ -3727,6 +3738,144 @@ canvas,
   background: color-mix(in srgb, var(--amber) 4%, transparent);
 }
 
+.session-scorecard {
+  margin-left: 10px;
+  padding: 14px 12px;
+  border-left: 2px solid var(--green);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--green) 4%, transparent);
+}
+
+.session-group.collapsed .session-scorecard-slot {
+  display: none;
+}
+
+.scorecard-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.scorecard-head > div {
+  flex: 1;
+  min-width: 130px;
+}
+
+.scorecard-head h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.scorecard-head p,
+.scorecard-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scorecard-head label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.scorecard-head select {
+  min-height: 36px;
+  width: auto;
+}
+
+.session-scorecard table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.session-scorecard th:first-child { width: 9%; }
+.session-scorecard th:nth-child(2) { width: 55%; }
+.session-scorecard th:nth-child(3),
+.session-scorecard th:nth-child(4) { width: 18%; }
+
+.session-scorecard .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.session-scorecard th,
+.session-scorecard td {
+  padding: 8px 5px;
+  border-bottom: 1px solid var(--line);
+}
+
+.session-scorecard th {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-scorecard td > small {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.scorecard-arrows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.scorecard-arrow {
+  display: grid;
+  gap: 2px;
+  min-width: 44px;
+  min-height: 48px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  text-align: center;
+}
+
+.scorecard-arrow small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.scorecard-arrow strong {
+  color: var(--green);
+  font-size: 16px;
+}
+
+.scorecard-arrow.unscored {
+  border-style: dashed;
+}
+
+.scorecard-arrow.unscored strong {
+  color: var(--muted);
+}
+
+.scorecard-arrow:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.scorecard-note {
+  margin-top: 10px;
+}
+
 .session-group.collapsed .session-outcome-review {
   display: none;
 }
@@ -4050,7 +4199,26 @@ canvas,
 }
 
 @media (max-width: 620px) {
+  .history-item-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 6px;
+  }
+
+  .history-metrics {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .history-stat { align-items: flex-start; }
+  .history-item-export-btn { grid-column: 2; grid-row: 1; margin-right: 0; }
+  .history-item-delete-btn { grid-column: 3; grid-row: 1; }
+
   .session-review,
+  .session-scorecard,
   .session-outcome-review,
   .session-impact-review,
   .session-float-plot,

@@ -1,9 +1,11 @@
 import {
+  buildScorecard,
   formatShotOutcome,
+  normalizeArrowOutcome,
   normalizeImpact,
   summarizeImpactGroup,
   summarizeSessionOutcomes,
-} from "../telemetry/outcome.js?v=shot-store-131";
+} from "../telemetry/outcome.js?v=shot-store-132";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -255,13 +257,58 @@ export function buildSessionFloatPlot(shots) {
   `;
 }
 
+export function buildSessionScorecard(shots, arrowsPerEnd = 3) {
+  const card = buildScorecard(shots, arrowsPerEnd);
+  if (!card.arrows.length) return "";
+
+  const next = card.arrows.find((shot) => !normalizeArrowOutcome(shot));
+  const rows = card.ends.map((end) => {
+    const arrows = end.entries.map(({ shot, number, outcome }) => `
+      <button type="button" class="scorecard-arrow${outcome ? "" : " unscored"}"
+        data-review-shot-id="${escapeHtml(shot.id)}"
+        aria-label="Arrow ${number}, ${outcome ? `score ${outcome.label}` : "not scored"}. Review result">
+        <small>${number}</small><strong>${outcome?.label ?? "--"}</strong>
+      </button>
+    `).join("");
+    return `
+      <tr>
+        <th scope="row">${end.number}</th>
+        <td><div class="scorecard-arrows">${arrows}</div></td>
+        <td><strong>${end.scoredCount ? end.total : "--"}</strong>${end.complete ? "" : `<small>${end.scoredCount}/${card.arrowsPerEnd} scored</small>`}</td>
+        <td>${end.runningTotal}</td>
+      </tr>
+    `;
+  }).join("");
+
+  return `
+    <section class="session-scorecard" aria-label="Session arrow scorecard">
+      <div class="scorecard-head">
+        <div><h3>Arrow Scorecard</h3><p>${card.scoredCount}/${card.arrows.length} scored &middot; ${card.total} points</p></div>
+        <label>Arrows per end
+          <select class="session-end-size" aria-label="Arrows per end">
+            <option value="3"${card.arrowsPerEnd === 3 ? " selected" : ""}>3 arrows</option>
+            <option value="6"${card.arrowsPerEnd === 6 ? " selected" : ""}>6 arrows</option>
+          </select>
+        </label>
+        ${next ? `<button type="button" class="primary mini-btn" data-review-shot-id="${escapeHtml(next.id)}">Score next arrow</button>` : ""}
+      </div>
+      <table>
+        <caption class="sr-only">Arrow results in shooting order. Unscored arrows are shown as two dashes.</caption>
+        <thead><tr><th scope="col">End</th><th scope="col">Arrows</th><th scope="col">Total</th><th scope="col">Running</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p class="scorecard-note">Grouped in shooting order. Tap an arrow to score it or review its trace. Unscored arrows stay blank.</p>
+    </section>
+  `;
+}
+
 export function buildSessionOutcomeReview(shots) {
   const summary = summarizeSessionOutcomes(shots);
   if (!summary.count) return "";
 
   const average = summary.average.toFixed(1);
   const trend = summary.trend == null
-    ? "Log 4 arrows for a trend"
+    ? summary.count < 4 ? "Log 4 arrows for a trend" : "Needs a consistent target setup"
     : `${summary.trend >= 0 ? "+" : ""}${summary.trend.toFixed(1)} late vs early`;
   const context = summary.mixedContext
     ? "Mixed target setups"
@@ -293,7 +340,8 @@ export function buildSessionOutcomeReview(shots) {
 }
 
 export function buildSessionImpactReview(shots) {
-  const summary = summarizeImpactGroup(shots);
+  const arrows = buildScorecard(shots).arrows;
+  const summary = summarizeImpactGroup(arrows);
   if (!summary.count) return "";
 
   const center = 130;
@@ -311,7 +359,7 @@ export function buildSessionImpactReview(shots) {
     const ring = index + 1;
     return `<circle cx="${center}" cy="${center}" r="${ring * 10}" class="session-impact-ring ${ring >= 9 ? "gold" : ""}"></circle>`;
   }).join("");
-  const markers = (shots || []).map((shot, index) => {
+  const markers = arrows.map((shot, index) => {
     const impact = normalizeImpact(shot);
     if (!impact) return "";
     const x = center + impact.x * radius;

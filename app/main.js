@@ -19,10 +19,10 @@ import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-130";
 import { mountTraining } from "./ui/training.js?v=shot-store-129";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-125";
-import { initHistory } from "./ui/history.js?v=shot-store-131";
+import { initHistory } from "./ui/history.js?v=shot-store-132";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-131";
 
-const APP_BUILD = "shot-store-131";
+const APP_BUILD = "shot-store-132";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -37,6 +37,7 @@ const ELEMENT_IDS = [
   "reviewCompareField", "reviewCompareLegend", "exportShotBtn", "exitReviewBtn",
   "reviewOutcomePanel", "reviewOutcomeStatus", "outcomeScoreButtons", "outcomeDistanceInput",
   "outcomeDistanceUnit", "outcomeFaceInput", "saveOutcomeBtn", "clearOutcomeBtn",
+  "saveNextOutcomeBtn", "reviewArrowProgress",
   "outcomeImpactCanvas", "outcomeImpactHint", "clearImpactBtn",
   "navDashboardBtn", "navTrainingBtn", "navHistoryBtn", "navBowShopBtn", "navSettingsBtn", "navGuideBtn",
   "tabDashboard", "tabTraining", "tabHistory", "tabBowShop", "tabSettings", "tabGuide",
