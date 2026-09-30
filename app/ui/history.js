@@ -55,6 +55,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   let outcomeSaving = false;
   let savedOutcomeExists = false;
   let reviewRequest = 0;
+  let reviewReturnFocus = null;
 
   function focusOutcomeScore() {
     const buttons = el.outcomeScoreButtons;
@@ -266,7 +267,9 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       el.historyList.innerHTML = "";
       const historyPreviewJobs = [];
       let isFirst = true;
+      let sessionIndex = 0;
       for (const group of groups) {
+        const contentId = `session-content-${++sessionIndex}`;
         const override = overrideMap.get(group.anchorId) || null;
         const groupEl = document.createElement("div");
         const expanded = hadSessions ? expandedSessions.has(group.anchorId) : isFirst;
@@ -296,37 +299,40 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
         groupEl.innerHTML = `
           <div class="session-header">
-            <div class="session-meta">
-              <div class="session-title-row">
-                <span class="session-arrow-icon">▼</span>
+            <button class="session-toggle" type="button" aria-expanded="${expanded}" aria-controls="${contentId}">
+            <span class="session-meta">
+              <span class="session-title-row">
+                <span class="session-arrow-icon" aria-hidden="true">▼</span>
                 <span class="session-location">${escapeHtml(sessionName)}</span>
-                <button class="session-edit-btn" type="button" title="Edit session name and bow">✎</button>
-              </div>
-              <div class="session-info-row">
+              </span>
+              <span class="session-info-row">
                 <span class="session-date">${dateStr}</span>
                 <span class="session-divider">|</span>
                 <span class="session-bow">${escapeHtml(bowName)}</span>
-              </div>
-            </div>
-            <div class="session-stats">
-              <div class="session-stat-badge">
+              </span>
+            </span>
+            <span class="session-stats">
+              <span class="session-stat-badge">
                 <span class="badge-label">Shots</span>
                 <span class="badge-val">${shotCount}</span>
-              </div>
-              <div class="session-stat-badge">
+              </span>
+              <span class="session-stat-badge">
                 <span class="badge-label">Avg Float</span>
                 <span class="badge-val">${avgScore}</span>
-              </div>
-            </div>
+              </span>
+            </span>
+            </button>
+            <button class="session-edit-btn" type="button" title="Edit session name and bow" aria-label="Edit ${escapeHtml(sessionName)}, ${escapeHtml(dateStr)}" aria-expanded="false">✎</button>
           </div>
+          <div class="session-content" id="${contentId}" ${expanded ? "" : "hidden"}>
           <div class="session-editor hidden">
             <div class="field">
-              <label>Session Name</label>
-              <input type="text" class="session-name-input" value="${escapeHtml(sessionName)}" placeholder="e.g. Morning 70m Practice">
+              <label for="session-name-${sessionIndex}">Session Name</label>
+              <input id="session-name-${sessionIndex}" type="text" class="session-name-input" value="${escapeHtml(sessionName)}" placeholder="e.g. Morning 70m Practice">
             </div>
             <div class="field">
-              <label>Bow Used</label>
-              <select class="session-bow-input">${bowOptions}</select>
+              <label for="session-bow-${sessionIndex}">Bow Used</label>
+              <select id="session-bow-${sessionIndex}" class="session-bow-input">${bowOptions}</select>
             </div>
             <div class="session-editor-actions">
               <button class="primary session-save-btn" type="button">Save</button>
@@ -339,22 +345,32 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
           ${buildSessionImpactReview(group.shots)}
           ${buildSessionFloatPlot(group.shots)}
           <div class="session-shots-container"></div>
+          </div>
         `;
 
-        const headerEl = groupEl.querySelector(".session-header");
+        const toggle = groupEl.querySelector(".session-toggle");
+        const contentEl = groupEl.querySelector(".session-content");
         const editorEl = groupEl.querySelector(".session-editor");
-        headerEl.addEventListener("click", () => {
-          groupEl.classList.toggle("collapsed");
-        });
+        const editButton = groupEl.querySelector(".session-edit-btn");
+        function setExpanded(open) {
+          groupEl.classList.toggle("collapsed", !open);
+          contentEl.hidden = !open;
+          toggle.setAttribute("aria-expanded", String(open));
+        }
+        toggle.addEventListener("click", () => setExpanded(contentEl.hidden));
 
-        // Edit button: open the inline editor without toggling collapse.
-        groupEl.querySelector(".session-edit-btn").addEventListener("click", (e) => {
-          e.stopPropagation();
-          editorEl.classList.toggle("hidden");
+        editButton.addEventListener("click", () => {
+          const open = editorEl.classList.contains("hidden") || contentEl.hidden;
+          setExpanded(true);
+          editorEl.classList.toggle("hidden", !open);
+          editButton.setAttribute("aria-expanded", String(open));
+          if (open) groupEl.querySelector(".session-name-input").focus();
         });
         groupEl.querySelector(".session-cancel-btn").addEventListener("click", (e) => {
           e.stopPropagation();
           editorEl.classList.add("hidden");
+          editButton.setAttribute("aria-expanded", "false");
+          editButton.focus();
         });
         groupEl.querySelector(".session-save-btn").addEventListener("click", async (e) => {
           e.stopPropagation();
@@ -371,6 +387,9 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
             await put("session_overrides", record);
             bus.emit("log", `Updated session "${nameVal || defaultSessionName(group.startTime)}".`);
             await loadShotHistoryList();
+            [...el.historyList.querySelectorAll(".session-group")]
+              .find((item) => item.dataset.sessionId === group.anchorId)
+              ?.querySelector(".session-edit-btn")?.focus();
           } catch (err) {
             console.error("Error saving session override:", err);
             bus.emit("log", `Error saving session: ${err.message}`);
@@ -426,6 +445,10 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
             reviewShotTrace(shot);
           });
           const deleteBtn = item.querySelector(".history-item-delete-btn");
+          item.querySelector(".history-review-btn").addEventListener("click", (event) => {
+            event.stopPropagation();
+            reviewShotTrace(shot);
+          });
           deleteBtn?.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -445,6 +468,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       }
 
       await paintHistoryShotPreviews(historyPreviewJobs);
+      updateBulkSelectCount();
     } catch (error) {
       console.error("Error loading shot history:", error);
       el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center; color: var(--red);">Failed to load history: ${error.message}</p>`;
@@ -656,6 +680,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
   async function reviewShotTrace(shot, { focusOutcome = false } = {}) {
     const request = ++reviewRequest;
+    if (!store.get().reviewMode) reviewReturnFocus = document.activeElement;
     try {
       let trace = await get("shot_traces", shot.id);
 
@@ -759,6 +784,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       selectViewTab("tabDashboard");
       if (focusOutcome) {
         focusOutcomeScore();
+      } else {
+        el.exitReviewBtn.focus();
       }
     } catch (error) {
       console.error("Failed to load trace:", error);
@@ -808,6 +835,17 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     selectedImpact = null;
     impactTarget?.setImpact(null);
     el.reviewOutcomePanel?.classList.add("hidden");
+    if (reviewReturnFocus?.isConnected && reviewReturnFocus.getClientRects().length) {
+      reviewReturnFocus.focus();
+    } else {
+      // Switching views refreshes recent cards, so the original DOM button
+      // may have been replaced while its shot is still visible.
+      const shotId = reviewReturnFocus?.closest("[data-shot-id]")?.dataset.shotId;
+      const recentCard = shotId && [...el.recentShotsList.querySelectorAll(".recent-shot-card")]
+        .find((card) => card.dataset.shotId === shotId);
+      (recentCard || el.viewTargetBtn)?.focus();
+    }
+    reviewReturnFocus = null;
     bus.emit("log", "Exited review mode. Returned to live telemetry stream.");
   });
 
@@ -972,13 +1010,13 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         `;
 
     item.innerHTML = `
-      <input type="checkbox" class="${chkClass}" data-shot-id="${shot.id}" type="checkbox">
+      <input type="checkbox" class="${chkClass}" data-shot-id="${escapeHtml(shot.id)}" aria-label="Select ${escapeHtml(title)}, ${escapeHtml(new Date(shot.timestamp).toLocaleString())}">
       <div class="history-item-preview-wrap is-empty" aria-hidden="true">
         <canvas class="history-item-trace-preview"></canvas>
       </div>
       <div class="history-item-body">
         <div class="history-meta">
-          <div class="history-title">${escapeHtml(title)}</div>
+          <button type="button" class="history-title history-review-btn" aria-label="Review ${escapeHtml(title)}, ${escapeHtml(timestampStr)}">${escapeHtml(title)}</button>
           <div class="history-subtitle">${escapeHtml(timestampStr)}</div>
         </div>
         <div class="history-metrics">
@@ -1202,44 +1240,46 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
 
   function buildRecentShotCardElement(shot, trace, titleIndex, totalShots) {
-    const item = document.createElement("div");
+    const item = document.createElement("button");
+    item.type = "button";
     item.className = "recent-shot-card";
     item.dataset.shotId = shot.id;
 
     const { timeStr, score, stability, peakG, arrow } = recentShotCardMetrics(shot);
     const title = shotHistoryLabel(shot, Math.max(1, totalShots - titleIndex));
+    item.setAttribute("aria-label", `Review ${title}, ${timeStr}. Float ${score}${arrow == null ? "" : `, arrow ${arrow}`}`);
     const arrowMetric = arrow == null
       ? ""
       : `
-          <div class="recent-shot-metric">
+          <span class="recent-shot-metric">
             <span class="metric-label">Arrow</span>
             <strong class="metric-val arrow">${escapeHtml(arrow)}</strong>
-          </div>
+          </span>
         `;
 
     item.innerHTML = `
-      <div class="recent-shot-preview-wrap is-empty" aria-hidden="true">
+      <span class="recent-shot-preview-wrap is-empty" aria-hidden="true">
         <canvas class="recent-shot-preview"></canvas>
-      </div>
-      <div class="recent-shot-header">
+      </span>
+      <span class="recent-shot-header">
         <span class="recent-shot-title">${escapeHtml(title)}</span>
         <span class="recent-shot-time">${escapeHtml(timeStr)}</span>
-      </div>
-      <div class="recent-shot-metrics">
+      </span>
+      <span class="recent-shot-metrics">
         ${arrowMetric}
-        <div class="recent-shot-metric">
+        <span class="recent-shot-metric">
           <span class="metric-label">Float</span>
           <strong class="metric-val score">${score}</strong>
-        </div>
-        <div class="recent-shot-metric">
+        </span>
+        <span class="recent-shot-metric">
           <span class="metric-label">Stability</span>
           <strong class="metric-val stability">${stability}%</strong>
-        </div>
-        <div class="recent-shot-metric">
+        </span>
+        <span class="recent-shot-metric">
           <span class="metric-label">Peak G</span>
           <strong class="metric-val peak">${peakG}g</strong>
-        </div>
-      </div>
+        </span>
+      </span>
     `;
 
     const previewCanvas = item.querySelector(".recent-shot-preview");
@@ -1255,6 +1295,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   function updateRecentShotCardMetrics(card, shot, titleIndex, totalShots) {
     const { timeStr, score, stability, peakG, arrow } = recentShotCardMetrics(shot);
     const title = shotHistoryLabel(shot, Math.max(1, totalShots - titleIndex));
+    card.setAttribute("aria-label", `Review ${title}, ${timeStr}. Float ${score}${arrow == null ? "" : `, arrow ${arrow}`}`);
     const titleEl = card.querySelector(".recent-shot-title");
     const timeEl = card.querySelector(".recent-shot-time");
     const scoreEl = card.querySelector(".metric-val.score");
@@ -1423,6 +1464,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     if (el.bulkSelectCount) {
       el.bulkSelectCount.textContent = `${selectedCount} selected`;
     }
+    if (el.bulkDeleteBtn) el.bulkDeleteBtn.disabled = selectedCount === 0;
   }
 
   if (el.historySelectModeBtn) {
@@ -1438,6 +1480,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         });
       }
       updateBulkSelectCount();
+      el.bulkSelectAllBtn?.focus();
     });
   }
 
@@ -1454,6 +1497,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         });
       }
       updateBulkSelectCount();
+      el.historySelectModeBtn?.focus();
     });
   }
 

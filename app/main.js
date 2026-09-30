@@ -19,10 +19,10 @@ import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-134";
 import { mountTraining } from "./ui/training.js?v=shot-store-137";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
-import { initHistory } from "./ui/history.js?v=shot-store-138";
+import { initHistory } from "./ui/history.js?v=shot-store-139";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-138";
+const APP_BUILD = "shot-store-139";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [

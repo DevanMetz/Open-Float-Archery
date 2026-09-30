@@ -900,6 +900,9 @@ input[type="range"] {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
   cursor: pointer;
   transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
@@ -1570,6 +1573,29 @@ td:last-child {
   flex-direction: column;
   gap: 3px;
   min-width: 0;
+}
+
+.history-review-btn {
+  min-height: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font-family: inherit;
+}
+
+.history-review-btn:hover {
+  text-decoration: underline;
+}
+
+.recent-shot-card:focus-visible,
+.history-review-btn:focus-visible,
+.session-toggle:focus-visible,
+.session-edit-btn:focus-visible,
+.history-item-checkbox:focus-visible {
+  outline: 3px solid var(--cyan);
+  outline-offset: 3px;
 }
 
 .history-title {
@@ -3414,9 +3440,34 @@ canvas,
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 12px 16px;
-  cursor: pointer;
+  padding: 0 12px 0 0;
+  gap: 8px;
   transition: border-color 0.2s, background 0.2s;
+}
+
+.session-toggle {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+
+.session-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.session-content[hidden] {
+  display: none;
 }
 
 .session-header:hover {
@@ -4199,6 +4250,13 @@ canvas,
 }
 
 @media (max-width: 620px) {
+  .session-toggle {
+    flex-wrap: wrap;
+    padding: 10px;
+  }
+
+  .session-info-row { flex-wrap: wrap; }
+
   .history-item-body {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;

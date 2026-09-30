@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-132">
+  <link rel="stylesheet" href="styles.css?v=shot-store-139">
   <link rel="stylesheet" href="theme-graph-paper.css?v=proto-1" id="graphThemeLink">
   <meta name="theme-color" content="#061014" id="themeMetaColor">
   <script>
@@ -454,12 +454,12 @@
             <div class="panel-head" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; width: 100%;">
               <div>
                 <h2>Saved Shot Logs</h2>
-                <p class="note">Click on any past shot below to review its complete 2D telemetry trace and scores.</p>
+                <p class="note">Open a saved shot to review its complete 2D telemetry trace and scores.</p>
               </div>
               <div id="historyBulkActions" class="bulk-actions-bar hidden" style="display: flex; align-items: center; gap: 8px;">
                 <button id="bulkSelectAllBtn" class="secondary mini-btn" type="button">Select All</button>
-                <span id="bulkSelectCount" class="note" style="margin: 0; font-weight: 600; color: var(--cyan);">0 selected</span>
-                <button id="bulkDeleteBtn" class="danger mini-btn" type="button" title="Delete selected shots">Delete Selected</button>
+                <span id="bulkSelectCount" class="note" role="status" style="margin: 0; font-weight: 600; color: var(--cyan);">0 selected</span>
+                <button id="bulkDeleteBtn" class="danger mini-btn" type="button" title="Delete selected shots" disabled>Delete Selected</button>
                 <button id="bulkCancelBtn" class="secondary mini-btn" type="button">Cancel</button>
               </div>
               <div id="historyDefaultActions">
@@ -911,6 +911,6 @@
     })();
   </script>
 
-  <script type="module" src="app/main.js?v=shot-store-138"></script>
+  <script type="module" src="app/main.js?v=shot-store-139"></script>
 </body>
 </html>

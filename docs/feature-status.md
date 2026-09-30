@@ -143,6 +143,12 @@ architecture, design intent, and forward-looking targets, see
   device when firmware supports the command.
 - **Bow Profile Manager**: Organize and save stabilizer configurations, draw weights, and notes under custom bow profiles.
 - **Automatic Practice Sessions**: Saved shots are grouped into collapsible sessions automatically by timestamp — any gap longer than 30 minutes starts a new session. Rename any session and assign the bow used directly from the Saved Shots view.
+- **Keyboard Shot Review**: Recent captures, saved-shot titles, and session
+  headers use native buttons with visible keyboard focus. Enter or Space opens
+  a review or expands a session; hidden session content leaves the tab order.
+  Review and session editing place focus on their controls and return it when
+  dismissed. Shot selection has descriptive checkbox labels and announces the
+  selected count; bulk deletion stays disabled until a shot is selected.
 - **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
