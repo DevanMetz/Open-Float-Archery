@@ -1,5 +1,7 @@
 // Mini Pin Float target previews for shot list cards.
 
+import { tracePhases, phaseForIndex } from "./trace-phases.js?v=shot-store-153";
+
 const TARGET_COLORS = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
 const PREVIEW_SCALE_FIT = 0.9;
 const PREVIEW_RING_INSET = 0.43;
@@ -23,23 +25,6 @@ function refreshInkColors() {
     follow: cssVar("--trace-follow") || "rgba(230, 244, 239, 0.5)",
     hold: cssVar("--green") || "#30E39B",
   };
-}
-
-function findReleaseIndex(data, thresholdG = 12.0) {
-  let releaseIdx = 0;
-  let maxG = 0;
-  for (let i = 0; i < data.length; i++) {
-    const pt = data[i];
-    const g = Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0);
-    if (g > maxG) {
-      maxG = g;
-      releaseIdx = i;
-    }
-  }
-  if (maxG <= thresholdG && data.length >= 20) {
-    return { releaseIdx: Math.round(data.length * 0.62), hasRelease: true };
-  }
-  return { releaseIdx, hasRelease: maxG > thresholdG };
 }
 
 function holdWindow(data, releaseIdx, hasRelease) {
@@ -68,16 +53,6 @@ function reviewTraceCenter(data, releaseIdx, hasRelease, holdData) {
   return { roll: data[0]?.roll || 0, pitch: data[0]?.pitch || 0 };
 }
 
-function phaseForIndex(index, releaseIdx, hasRelease, length) {
-  if (!hasRelease) return "hold";
-  const releaseStart = Math.max(2, releaseIdx - Math.max(4, Math.round(length * 0.025)));
-  const releaseEnd = Math.min(length - 1, releaseIdx + Math.max(8, Math.round(length * 0.055)));
-  if (index < releaseStart) return "hold";
-  if (index < releaseIdx) return "break";
-  if (index <= releaseEnd) return "release";
-  return "follow";
-}
-
 function phaseColor(phase) {
   if (phase === "release") return inkColors.release;
   if (phase === "break") return inkColors.break;
@@ -85,14 +60,14 @@ function phaseColor(phase) {
   return inkColors.hold;
 }
 
-function decimateTrace(trace, maxPoints = 140) {
-  if (!trace || trace.length <= maxPoints) return trace || [];
-  const out = [];
+function previewIndices(trace, releaseIdx, maxPoints = 140) {
+  if (trace.length <= maxPoints) return trace.map((_, index) => index);
+  const indices = new Set([releaseIdx]);
   const step = (trace.length - 1) / (maxPoints - 1);
   for (let i = 0; i < maxPoints; i++) {
-    out.push(trace[Math.min(trace.length - 1, Math.round(i * step))]);
+    indices.add(Math.min(trace.length - 1, Math.round(i * step)));
   }
-  return out;
+  return [...indices].sort((a, b) => a - b);
 }
 
 function drawTargetRings(ctx, cx, cy, maxRadius) {
@@ -206,15 +181,16 @@ export function drawTraceTargetPreview(canvas, tracePayload, options = {}) {
     return false;
   }
 
-  const thresholdG = options.thresholdG ?? 12;
   refreshInkColors();
-  const data = decimateTrace(tracePayload);
+  const data = tracePayload;
+  const phases = tracePhases(data, options);
+  const { releaseIdx, hasRelease } = phases;
+  const indices = previewIndices(data, releaseIdx);
   const { ctx, side, cx, cy, maxRadius } = prepareCanvas(canvas);
 
   ctx.clearRect(0, 0, side, side);
   drawTargetRings(ctx, cx, cy, maxRadius);
 
-  const { releaseIdx, hasRelease } = findReleaseIndex(data, thresholdG);
   const holdData = holdWindow(data, releaseIdx, hasRelease);
   const center = reviewTraceCenter(data, releaseIdx, hasRelease, holdData);
   const scale = computePreviewMapScale(data, center, maxRadius);
@@ -226,10 +202,10 @@ export function drawTraceTargetPreview(canvas, tracePayload, options = {}) {
   ctx.lineWidth = 1.6;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  for (let i = 1; i < data.length; i++) {
-    const p1 = mapPoint(data[i - 1]);
-    const p2 = mapPoint(data[i]);
-    const phase = phaseForIndex(i, releaseIdx, hasRelease, data.length);
+  for (let i = 1; i < indices.length; i++) {
+    const p1 = mapPoint(data[indices[i - 1]]);
+    const p2 = mapPoint(data[indices[i]]);
+    const phase = phaseForIndex(indices[i], phases);
     ctx.strokeStyle = phaseColor(phase);
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y);

@@ -20,6 +20,10 @@ and release/hit marker alignment in both chart views.
 Saved-score checks distinguish missing measurements from zero, normalize numeric
 strings, exclude invalid values from averages and coaching, and retain gaps in
 session trend plots. Legacy stability fallback applies only to unversioned shots.
+Release-phase checks cover hold and firmware provenance, recorded event timing,
+capture thresholds, gaps and edge samples, narrow impulses in thumbnails, and
+angle-only Motion rendering. Native history checks verify comparison provenance
+and refresh release markers when a late browser trace arrives.
 
 For native IndexedDB regression checks, serve the repository and open
 `http://localhost:4178/test/browser.html` in Chrome or Edge. Click **Run storage

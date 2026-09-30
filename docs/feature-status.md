@@ -76,6 +76,10 @@ architecture, design intent, and forward-looking targets, see
 - Pin Float shot review shows phase-colored traces (green aiming hold,
   amber/red release break, and gray follow-through), centered on the point of
   shot detection so the release reticle sits at the center of the target face.
+  Release timing uses the device event stored in an automatic browser trace,
+  or a measured impulse above the capture threshold. Holds and current firmware
+  recovery traces do not invent release or impact markers. Previews and the
+  timeline share the same phase decision; thumbnails retain narrow impulses.
 - **OpenFloat Float Score**: The browser computes an independent, open-source
   0-100 form score from trace data. The score blends hold stability, release
   quality, follow-through control, and level consistency. It is versioned in
@@ -175,12 +179,13 @@ architecture, design intent, and forward-looking targets, see
   target, bow orientation, and microphone meter. Scrubbing stops playback,
   pause/resume uses one animation loop, and older untimed traces retain their
   sample-rate fallback. Audio bands and draggable markers share the motion/audio
-  time range in both Pin Float and Quaternion views.
+  time range in both Pin Float and Motion views. Motion shows quaternions,
+  measured acceleration, or recorded angles according to the available data.
   Disconnecting stops the recording and leaves a **Save** button available.
   Failed saves retain the capture for retry in the current tab; pending saves
   prevent duplicate clicks or discard, and reconnect waits until it is saved
   or discarded. Closing or reloading with an unsaved recording prompts a warning.
-- **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
+- **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot on the same replay scrubber. Each trace uses its own movement scale and capture type; a confirmed release is centered, while holds use their mean orientation.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
 - **Adaptive Training Coach**: The Training tab analyzes hold stability and
   level consistency across the newest 30 scored personal captures. It identifies

@@ -1,7 +1,7 @@
 // Shot history, review, recent shots, and deletion UI module.
 
 import { getAll, get, put, removeSavedShots, saveShotOutcome, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-146";
-import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-152";
+import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-153";
 import { scoreValue, shotFloatScore, averageShotScore } from "../telemetry/score.js?v=shot-store-150";
 import {
   buildScorecard,
@@ -12,7 +12,7 @@ import {
   normalizeImpact,
 } from "../telemetry/outcome.js?v=shot-store-150";
 import { resolveReviewMicSeries } from "../protocol/trace.js?v=shot-store-125";
-import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=shot-store-125";
+import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=shot-store-153";
 import {
   buildSessionFloatPlot,
   buildSessionImpactReview,
@@ -22,6 +22,7 @@ import {
   shotHistoryLabel,
 } from "./session-review.js?v=shot-store-150";
 import { mountImpactTarget } from "./impact-target.js?v=shot-store-138";
+import { tracePhases } from "./trace-phases.js?v=shot-store-153";
 
 export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab }) {
   // Escape user-entered text before injecting into innerHTML.
@@ -624,6 +625,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         compareSampleRateHz: trace.sample_rate_hz || 52,
         compareShotLabel: label,
         compareThresholdG: shot.threshold_g != null ? Number(shot.threshold_g) : 12,
+        compareCaptureKind: canRecordArrowOutcome(shot) ? "arrow" : "hold",
+        compareTraceSource: trace.source || null,
       });
       bus.emit("log", `Comparing with shot ${shotId.slice(0, 8)}…`);
     } catch (error) {
@@ -647,12 +650,10 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     return 280; // Fallback default speed
   }
 
-  function estimateShotRange(trace, sampleRateHz, bowSpeedFps) {
+  function estimateShotRange(trace, sampleRateHz, bowSpeedFps, releaseIdx) {
     if (!trace || !trace.payload || trace.payload.length === 0) return null;
     const payload = trace.payload;
     const hz = sampleRateHz || 52;
-
-    const getG = (f) => Math.sqrt((f.ax || 0) ** 2 + (f.ay || 0) ** 2 + (f.az || 0) ** 2);
 
     const getTimeMs = (idx) => {
       const f = payload[idx];
@@ -660,35 +661,11 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       return (idx * 1000.0) / hz;
     };
 
-    let maxIdx = -1;
-    let maxG = -1;
-    for (let i = 0; i < payload.length; i++) {
-      const g = getG(payload[i]);
-      if (g > maxG) {
-        maxG = g;
-        maxIdx = i;
-      }
-    }
-
-    if (maxG < 4.0 || maxIdx === -1) {
-      return null;
-    }
-
-    const maxTime = getTimeMs(maxIdx);
-
-    let releaseIdx = maxIdx;
-    while (releaseIdx > 0) {
-      if (getG(payload[releaseIdx]) <= 1.25) {
-        break;
-      }
-      releaseIdx--;
-    }
-
     const releaseTime = getTimeMs(releaseIdx);
 
     let searchStartIdx = -1;
     for (let i = releaseIdx; i < payload.length; i++) {
-      if (getTimeMs(i) >= maxTime + 200) {
+      if (getTimeMs(i) >= releaseTime + 200) {
         searchStartIdx = i;
         break;
       }
@@ -758,6 +735,26 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     };
   }
 
+  function reviewTraceState(shot, trace, speed) {
+    const sampleRateHz = trace.sample_rate_hz || 52;
+    const thresholdG = shot.threshold_g != null ? Number(shot.threshold_g) : 12;
+    const captureKind = canRecordArrowOutcome(shot) ? "arrow" : "hold";
+    const phases = tracePhases(trace.payload, { thresholdG, captureKind, source: trace.source, sampleRateHz });
+    const range = phases.hasRelease ? estimateShotRange(trace, sampleRateHz, speed, phases.releaseIdx) : null;
+    return {
+      reviewTrace: trace.payload,
+      reviewTraceSource: trace.source || null,
+      reviewMicSeries: resolveReviewMicSeries(trace, sampleRateHz),
+      reviewSampleRateHz: sampleRateHz,
+      reviewThresholdG: thresholdG,
+      reviewRangeEst: range ? `| Est. Range: ${range.yards.toFixed(1)} yds (${Math.round(range.feet)} ft) @ ${speed} fps` : "",
+      reviewReleaseIdx: phases.hasRelease ? phases.releaseIdx : null,
+      reviewReleaseTimeMs: phases.releaseTimeMs,
+      reviewHitIdx: range ? range.hitIdx : null,
+      reviewHitTimeMs: range ? range.hitTime : null,
+    };
+  }
+
   function reviewMetrics(shot) {
     const formScore = roundedScore(shotFloatScore(shot));
     const holdStability = roundedScore(shot.hold_stability) ?? (shot.score_version ? null : roundedScore(shot.stability_score));
@@ -768,6 +765,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const coaching = coachForScore({ formScore, holdStability, releaseQuality, followThrough, roll });
     return {
       formScore, holdStability, releaseQuality, followThrough, levelConsistency,
+      reviewCaptureKind: canRecordArrowOutcome(shot) ? "arrow" : "hold",
       reviewInfo: buildReviewInfo(shot),
       scoreVersion: shot.score_version || null,
       coachTitle: formScore == null ? "No Float Score" : coaching.coachTitle,
@@ -816,11 +814,6 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       const [speed, shots] = await Promise.all([getActiveArrowSpeed(), getAll("shots")]);
       shot = shots.find((candidate) => candidate.id === shotId);
       if (!shot || request !== reviewRequest) return;
-      const range = estimateShotRange(trace, trace.sample_rate_hz || 52, speed);
-      const rangeText = range 
-        ? `| Est. Range: ${range.yards.toFixed(1)} yds (${Math.round(range.feet)} ft) @ ${speed} fps`
-        : "";
-
       const sessions = groupShotsByTime(shots);
       const session = sessions.find((group) => group.shots.some((arrow) => arrow.id === shot.id));
       if (request !== reviewRequest) return;
@@ -830,15 +823,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         ...reviewMetrics(shot),
         reviewMode: true,
         reviewShotId: shot.id,
-        reviewTrace: trace.payload,
-        reviewMicSeries: resolveReviewMicSeries(trace, trace.sample_rate_hz || 52),
-        reviewSampleRateHz: trace.sample_rate_hz || 52,
-        reviewThresholdG: shot.threshold_g != null ? Number(shot.threshold_g) : 12,
-        reviewRangeEst: rangeText,
-        reviewReleaseIdx: range ? range.releaseIdx : null,
-        reviewReleaseTimeMs: range ? range.releaseTime : null,
-        reviewHitIdx: range ? range.hitIdx : null,
-        reviewHitTimeMs: range ? range.hitTime : null,
+        ...reviewTraceState(shot, trace, speed),
         chartView: "target",
         replayActive: false,
         replayPaused: false,
@@ -1254,7 +1239,9 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const thresholdG = shot.threshold_g != null ? Number(shot.threshold_g) : 12;
     const paint = () => {
       if (trace?.payload?.length >= 2) {
-        drawTraceTargetPreview(canvas, trace.payload, { thresholdG });
+        drawTraceTargetPreview(canvas, trace.payload, { thresholdG,
+          captureKind: canRecordArrowOutcome(shot) ? "arrow" : "hold", source: trace.source,
+          sampleRateHz: trace.sample_rate_hz });
         wrap.classList.remove("is-empty");
       } else {
         drawEmptyTargetPreview(canvas);
@@ -1388,16 +1375,14 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     if (!localShotId || !store.get().reviewMode || store.get().reviewShotId !== localShotId) return;
     const request = ++reviewUpdateRequest;
     const review = reviewRequest;
-    const [shot, trace] = await Promise.all([get("shots", localShotId), get("shot_traces", localShotId)]);
+    const [shot, trace, speed] = await Promise.all([get("shots", localShotId), get("shot_traces", localShotId), getActiveArrowSpeed()]);
     if (request !== reviewUpdateRequest || review !== reviewRequest || store.get().reviewShotId !== localShotId) return;
     if (!shot) { exitReview({ restoreFocus: false }); return; }
     // Refresh telemetry without resetting an unsaved target result or moving
     // focus away from its editor. A changed trace stops the old replay clock.
     const patch = reviewMetrics(shot);
     if (trace?.payload) Object.assign(patch, {
-      reviewTrace: trace.payload,
-      reviewMicSeries: resolveReviewMicSeries(trace, trace.sample_rate_hz || 52),
-      reviewSampleRateHz: trace.sample_rate_hz || 52,
+      ...reviewTraceState(shot, trace, speed),
       replayActive: false,
       replayPaused: false,
     });

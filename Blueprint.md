@@ -691,6 +691,17 @@ browser recordings win regardless of arrival order. Skipped recovery writes
 leave scores, replay, and queued uploads unchanged. If the browser recording
 is missing or empty, the available firmware trace is retained normally.
 
+Review release phases use one shared decision for the target, thumbnail,
+comparison, waveform, and scrubber. Explicit holds (including legacy manual
+labels) have no release phase. Automatic browser arrow traces use the sample
+nearest their recorded event time (`tUs: 0`); other full traces require a measured
+acceleration impulse above the capture threshold. Current firmware traces do
+not carry release timing or acceleration, so their decoder preserves angles
+and audio without adding acceleration placeholders. Their Motion view plots
+angles, and old firmware records with decoder placeholders are also treated as
+angle-only data. No percentage-of-trace fallback invents a release. Existing
+saved data is preserved; these changes affect decoding and review.
+
 ## 11. Browser Data Parsing
 
 The browser should parse packed binary with `DataView`.

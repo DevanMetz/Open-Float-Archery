@@ -9,7 +9,7 @@ import {
   decodeFirmwareTraceBytes,
   extractMicWindow,
   prepareTimedTrace,
-} from "../protocol/trace.js?v=shot-store-144";
+} from "../protocol/trace.js?v=shot-store-153";
 import {
   computeFloatScoreFromTrace,
   computeLiveFloatScore,
@@ -1279,6 +1279,7 @@ export class TelemetryStore {
           if (activeState.reviewMode && activeState.reviewShotId === shotRecord.id) {
             this.store.set({
               reviewTrace: trace,
+              reviewTraceSource: tracePayload.source,
               reviewMicSeries: tracePayload.mic_series || null,
             });
           }

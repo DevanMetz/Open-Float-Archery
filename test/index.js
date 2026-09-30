@@ -11,3 +11,4 @@ import "./sync.test.js";
 import "./offline.test.js";
 import "./timing.test.js";
 import "./replay.test.js";
+import "./trace-phases.test.js";

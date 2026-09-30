@@ -2,10 +2,11 @@
 // own the transport lifecycle (connect / disconnect).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-152";
+import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-153";
 import { createAdapter } from "./device/adapters.js?v=shot-store-144";
-import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-148";
+import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-153";
 import { createReplayController, traceTimeline } from "./ui/replay.js?v=shot-store-148";
+import { tracePhases } from "./ui/trace-phases.js?v=shot-store-153";
 import {
   MOUNT_ORIENTATIONS,
   cloneMountAxes,
@@ -20,10 +21,10 @@ import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-146";
 import { mountTraining } from "./ui/training.js?v=shot-store-150";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
-import { initHistory } from "./ui/history.js?v=shot-store-152";
+import { initHistory } from "./ui/history.js?v=shot-store-153";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-152";
+const APP_BUILD = "shot-store-153";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -496,7 +497,8 @@ store.subscribe((state) => {
       el.traceScrubSlider.setAttribute("aria-valuetext", `${traceScrubLabel(state)} of ${reviewDurationSeconds(state).toFixed(1)}s`);
     }
     if (el.tracePhaseRail) {
-      const segments = tracePhaseSegments(state.reviewTrace, state.reviewSampleRateHz);
+      const { segments } = tracePhases(state.reviewTrace, { sampleRateHz: state.reviewSampleRateHz,
+        thresholdG: state.reviewThresholdG, captureKind: state.reviewCaptureKind, source: state.reviewTraceSource });
       const hold = el.tracePhaseRail.querySelector(".phase-hold");
       const brk = el.tracePhaseRail.querySelector(".phase-break");
       const release = el.tracePhaseRail.querySelector(".phase-release");
@@ -756,41 +758,6 @@ function traceScrubLabel(state) {
   const progress = Math.max(0, Math.min(1, state.replayProgress ?? 1));
   const elapsed = progress * reviewDurationSeconds(state);
   return `${elapsed.toFixed(1)}s`;
-}
-
-function tracePhaseSegments(trace, sampleRateHz) {
-  if (!trace || trace.length < 2) {
-    return { hold: 100, break: 0, release: 0, follow: 0 };
-  }
-
-  let releaseIdx = Math.round(trace.length * 0.62);
-  let maxG = 0;
-  for (let i = 0; i < trace.length; i++) {
-    const pt = trace[i];
-    const g = Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0);
-    if (g > maxG) {
-      maxG = g;
-      releaseIdx = i;
-    }
-  }
-
-  if (maxG <= 1.35) {
-    releaseIdx = Math.round(trace.length * 0.62);
-  }
-
-  const breakStart = Math.max(0, releaseIdx - Math.max(4, Math.round(trace.length * 0.025)));
-  const releaseEnd = Math.min(trace.length - 1, releaseIdx + Math.max(8, Math.round(trace.length * 0.055)));
-  const timeline = traceTimeline(trace, sampleRateHz);
-  const elapsed = (index) => timeline.times[index] - timeline.start;
-  const total = timeline.durationUs;
-  if (total <= 0) return { hold: 100, break: 0, release: 0, follow: 0 };
-
-  return {
-    hold: (elapsed(breakStart) / total) * 100,
-    break: ((elapsed(releaseIdx) - elapsed(breakStart)) / total) * 100,
-    release: ((elapsed(releaseEnd) - elapsed(releaseIdx)) / total) * 100,
-    follow: ((total - elapsed(releaseEnd)) / total) * 100,
-  };
 }
 
 el.statusBadge.addEventListener("click", async () => {

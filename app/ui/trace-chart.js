@@ -4,6 +4,7 @@
 
 import { cssVar } from "./bow-3d.js?v=shot-store-148";
 import { replayPosition, traceTimeline } from "./replay.js?v=shot-store-148";
+import { tracePhases, phaseForIndex } from "./trace-phases.js?v=shot-store-153";
 
 function reviewMicChartData(state) {
   if (!state.reviewMode) return null;
@@ -91,39 +92,6 @@ function phaseColor(phase) {
   if (phase === "break") return canvasInk.break;
   if (phase === "follow") return canvasInk.follow;
   return canvasInk.hold;
-}
-
-function findReleaseIndex(data, inferWhenMissing = false, thresholdG = 12.0) {
-  let releaseIdx = 0;
-  let maxG = 0;
-  for (let i = 0; i < data.length; i++) {
-    const pt = data[i];
-    const g = Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0);
-    if (g > maxG) {
-      maxG = g;
-      releaseIdx = i;
-    }
-  }
-  if (maxG <= thresholdG && inferWhenMissing && data.length >= 20) {
-    return {
-      releaseIdx: Math.round(data.length * 0.62),
-      hasRelease: true,
-    };
-  }
-  return {
-    releaseIdx,
-    hasRelease: maxG > thresholdG,
-  };
-}
-
-function phaseForIndex(index, releaseIdx, hasRelease, length) {
-  if (!hasRelease) return "hold";
-  const releaseStart = Math.max(2, releaseIdx - Math.max(4, Math.round(length * 0.025)));
-  const releaseEnd = Math.min(length - 1, releaseIdx + Math.max(8, Math.round(length * 0.055)));
-  if (index < releaseStart) return "hold";
-  if (index < releaseIdx) return "break";
-  if (index <= releaseEnd) return "release";
-  return "follow";
 }
 
 function holdWindow(data, releaseIdx, hasRelease) {
@@ -366,7 +334,12 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
       const thresholdG = state.reviewMode && state.reviewThresholdG != null
         ? state.reviewThresholdG
         : (state.threshold ?? 12.0);
-      const { releaseIdx, hasRelease } = findReleaseIndex(data, state.reviewMode, thresholdG);
+      const phases = tracePhases(data, { thresholdG,
+        live: !state.reviewMode,
+        captureKind: state.reviewMode ? state.reviewCaptureKind : undefined,
+        source: state.reviewMode ? state.reviewTraceSource : undefined,
+        sampleRateHz: state.reviewSampleRateHz });
+      const { releaseIdx, hasRelease } = phases;
       const holdData = holdWindow(data, releaseIdx, hasRelease);
 
       if (state.reviewMode) {
@@ -393,7 +366,9 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
       if (state.reviewMode && state.compareTrace && state.compareTrace.length >= 2) {
         const compareData = state.compareTrace;
         const compareThreshold = state.compareThresholdG ?? 12;
-        const compareRelease = findReleaseIndex(compareData, true, compareThreshold);
+        const compareRelease = tracePhases(compareData, { thresholdG: compareThreshold,
+          captureKind: state.compareCaptureKind, source: state.compareTraceSource,
+          sampleRateHz: state.compareSampleRateHz });
         const compareHoldData = holdWindow(
           compareData,
           compareRelease.releaseIdx,
@@ -479,7 +454,7 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
       let curPhase = null;
       for (let i = 1; i < drawData.length; i++) {
         const origIdx = drawData[i]._origIdx ?? i;
-        const phase = phaseForIndex(origIdx, releaseIdx, hasRelease, data.length);
+        const phase = phaseForIndex(origIdx, phases);
         if (phase !== curPhase) {
           // Flush previous run
           if (curPhase !== null) ctx.stroke();
@@ -516,7 +491,7 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
       // Draw current pin dot or release position marker
       const finalPt = visibleData[visibleData.length - 1];
       const finalPoint = mapPoint(finalPt);
-      const finalPhase = phaseForIndex(visibleData.length - 1, releaseIdx, hasRelease, data.length);
+      const finalPhase = phaseForIndex(visibleData.length - 1, phases);
 
       ctx.fillStyle = phaseColor(finalPhase);
       ctx.beginPath();
@@ -542,9 +517,10 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
         ctx.textBaseline = "bottom";
         ctx.fillText(`zoom ${targetZoom.toFixed(1)}x`, w - 12, h - 12);
         ctx.textAlign = "left";
-        const phaseHint = "green hold  red release  gray follow";
+        const phaseHint = hasRelease ? "green hold  red release  gray follow"
+          : state.reviewCaptureKind === "hold" ? "green = hold recording" : "release timing unavailable";
         const compareHint = compareOverlay
-          ? "  |  cyan = compare (release centered, matched scale)"
+          ? "  |  cyan = compare (matched scale)"
           : "";
         ctx.fillText(phaseHint + compareHint, 12, h - 12);
       }
@@ -631,7 +607,8 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
         ["qy", cssVar("--amber")],
         ["qz", "#ff5d73"],
       ], w);
-    } else {
+    } else if ((!state.reviewMode || state.reviewTraceSource !== "firmware") && data.some((point) =>
+      [point.ax, point.ay, point.az].every(Number.isFinite))) {
       drawSeries(ctx, data, "ax", cssVar("--green"), w, h, timeRangeUs, 2, state.reviewSampleRateHz);
       drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h, timeRangeUs, 2, state.reviewSampleRateHz);
       drawSeries(ctx, data, "az", cssVar("--amber"), w, h, timeRangeUs, 2, state.reviewSampleRateHz);
@@ -640,8 +617,19 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
         ["ay", cssVar("--cyan")],
         ["az", cssVar("--amber")],
       ], w);
+    } else {
+      // Recovery traces contain angles, not acceleration. Do not render their
+      // missing axes (or old decoder placeholders) as measured acceleration.
+      const keys = ["roll", "pitch", "yaw"];
+      let limit = 1;
+      for (const point of data) for (const key of keys) {
+        if (Number.isFinite(point[key])) limit = Math.max(limit, Math.abs(point[key]));
+      }
+      const colors = [cssVar("--green"), cssVar("--cyan"), cssVar("--amber")];
+      keys.forEach((key, index) => drawSeries(ctx, data, key, colors[index], w, h, timeRangeUs, limit, state.reviewSampleRateHz));
+      drawChartLegend(ctx, keys.map((key, index) => [`${key} (deg)`, colors[index]]), w);
     }
-    drawSequenceMarkers(ctx, data, w, h, state.reviewMode);
+    drawSequenceMarkers(ctx, data, w, h, state, timeRangeUs);
   }
 }
 
@@ -910,37 +898,28 @@ function drawMicSeries(ctx, data, key, baseColor, w, h, options = {}) {
   ctx.restore();
 }
 
-function drawSequenceMarkers(ctx, data, w, h, reviewMode) {
-  if (data.length < 20) return;
-
-  const markerColor = canvasInk.marker;
-  const labels = reviewMode
-    ? [
-        { x: 0.2, text: "hold" },
-        { x: 0.62, text: "release" },
-        { x: 0.84, text: "follow" },
-      ]
-    : [
-        { x: 0.33, text: "hold" },
-        { x: 0.67, text: "float" },
-      ];
-
+function drawSequenceMarkers(ctx, data, w, h, state, timeRangeUs) {
+  const phases = tracePhases(data, { thresholdG: state.reviewMode ? state.reviewThresholdG : state.threshold,
+    live: !state.reviewMode,
+    captureKind: state.reviewMode ? state.reviewCaptureKind : undefined,
+    source: state.reviewMode ? state.reviewTraceSource : undefined, sampleRateHz: state.reviewSampleRateHz });
+  if (!phases.hasRelease) return;
+  const range = state.reviewMode ? timeRangeUs || traceTimeline(data, state.reviewSampleRateHz) : null;
+  if (range && range.end <= range.start) return;
+  const x = range ? (phases.releaseTimeMs * 1000 - range.start) / (range.end - range.start) * w
+    : phases.releaseIdx / (data.length - 1) * w;
   ctx.save();
   ctx.font = "700 10px ui-monospace, Consolas, monospace";
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
-  for (const marker of labels) {
-    const x = marker.x * w;
-    ctx.strokeStyle = markerColor;
-    ctx.setLineDash([4, 7]);
-    ctx.beginPath();
-    ctx.moveTo(x, 10);
-    ctx.lineTo(x, h - 10);
-    ctx.stroke();
-
-    ctx.setLineDash([]);
-    ctx.fillStyle = canvasInk.label;
-    ctx.fillText(marker.text, x, 12);
-  }
+  ctx.strokeStyle = canvasInk.marker;
+  ctx.setLineDash([4, 7]);
+  ctx.beginPath();
+  ctx.moveTo(x, 10);
+  ctx.lineTo(x, h - 10);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = canvasInk.label;
+  ctx.fillText("release", x, 12);
   ctx.restore();
 }

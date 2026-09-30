@@ -67,12 +67,7 @@ export function decodeFirmwareTraceBytes(rawBytes, bytesPerPoint = 0) {
     const pitch = view.getInt16(offset + 2, true) / 100;
     const yaw = stride >= 6 ? view.getInt16(offset + 4, true) / 100 : 0;
     const micAmp = stride >= 7 ? view.getUint8(offset + 6) : 0;
-    const isLast = i === numPoints - 1;
-
     trace.push({
-      ax: 0,
-      ay: 0,
-      az: isLast ? 5.0 : 1.0,
       roll,
       pitch,
       yaw,

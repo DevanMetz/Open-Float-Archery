@@ -33,8 +33,8 @@ test("decodeFirmwareTraceBytes decodes current 7-byte trace points with mic enve
   assert.deepEqual(decodeFirmwareTraceBytes(bytes), {
     bytesPerPoint: 7,
     trace: [
-      { ax: 0, ay: 0, az: 1, roll: 1.23, pitch: -4.56, yaw: 7.89, micAmp: 17 },
-      { ax: 0, ay: 0, az: 5, roll: -0.5, pitch: 0.25, yaw: -1.25, micAmp: 99 },
+      { roll: 1.23, pitch: -4.56, yaw: 7.89, micAmp: 17 },
+      { roll: -0.5, pitch: 0.25, yaw: -1.25, micAmp: 99 },
     ],
   });
 });
@@ -46,7 +46,7 @@ test("decodeFirmwareTraceBytes honors valid legacy and compact strides", () => {
   assert.deepEqual(decodeFirmwareTraceBytes(legacy, 6), {
     bytesPerPoint: 6,
     trace: [
-      { ax: 0, ay: 0, az: 5, roll: 1, pitch: 2, yaw: 3, micAmp: 0 },
+      { roll: 1, pitch: 2, yaw: 3, micAmp: 0 },
     ],
   });
 
@@ -56,7 +56,7 @@ test("decodeFirmwareTraceBytes honors valid legacy and compact strides", () => {
   assert.deepEqual(decodeFirmwareTraceBytes(compact, 4), {
     bytesPerPoint: 4,
     trace: [
-      { ax: 0, ay: 0, az: 5, roll: -1, pitch: 0.5, yaw: 0, micAmp: 0 },
+      { roll: -1, pitch: 0.5, yaw: 0, micAmp: 0 },
     ],
   });
 });
@@ -70,8 +70,8 @@ test("decodeFirmwareTraceBytes ignores invalid requested stride and auto-detects
   assert.deepEqual(decodeFirmwareTraceBytes(bytes, 5), {
     bytesPerPoint: 7,
     trace: [
-      { ax: 0, ay: 0, az: 1, roll: 1, pitch: 2, yaw: 3, micAmp: 10 },
-      { ax: 0, ay: 0, az: 5, roll: -1, pitch: -2, yaw: -3, micAmp: 20 },
+      { roll: 1, pitch: 2, yaw: 3, micAmp: 10 },
+      { roll: -1, pitch: -2, yaw: -3, micAmp: 20 },
     ],
   });
 });

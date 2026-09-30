@@ -498,7 +498,7 @@ runButton.addEventListener("click", async () => {
       assert(await api.removeSavedShots(["already-deleted"]) === 0, "Stale selection reported a deletion");
     });
 
-    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-152");
+    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-153");
     const { EventBus, createStore } = await import("../app/core/store.js");
     const captureDb = await (await import("../app/core/db.js?v=shot-store-152")).initDb();
     observeTransactions(captureDb);
@@ -789,7 +789,7 @@ runButton.addEventListener("click", async () => {
       window.confirm = () => true;
       window.alert = (message) => { throw new Error(message); };
       try {
-        const { initHistory } = await import("../app/ui/history.js?v=shot-store-152");
+        const { initHistory } = await import("../app/ui/history.js?v=shot-store-153");
         const store = createStore({ reviewMode: true, reviewShotId: ids[0], compareShotId: ids[1], replayActive: true });
         const ui = initHistory({ bus: new EventBus(), store, el, selectViewTab() {} });
         await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);
@@ -829,7 +829,7 @@ runButton.addEventListener("click", async () => {
       }
     });
     const historyMarkup = new DOMParser().parseFromString(await (await fetch("../index.html", { cache: "no-store" })).text(), "text/html");
-    const { initHistory } = await import("../app/ui/history.js?v=shot-store-152");
+    const { initHistory } = await import("../app/ui/history.js?v=shot-store-153");
     async function withHistoryUI(run) {
       const fixture = document.createElement("div");
       fixture.style.cssText = "position:absolute;left:-10000px;width:1000px";
@@ -917,6 +917,47 @@ runButton.addEventListener("click", async () => {
       assert(el.outcomeScoreButtons.querySelector('[data-outcome-score="0"]').classList.contains("selected"), "Float Score availability changed a recorded target miss");
       await ui.reviewShotTrace(captures[1]);
       assert(store.get().formScore === 0, "A valid zero Float Score disappeared from review");
+    }));
+
+    await check("hold and firmware reviews keep capture provenance and suppress unsupported release markers", () => withHistoryUI(async ({ ui, el, store }) => {
+      const payload = Array.from({ length: 80 }, (_, index) => ({
+        tUs: (index - 20) * 20000, ax: 0, ay: 0, az: index === 20 ? 16 : 1, roll: 0, pitch: 0,
+        micAmp: index >= 40 && index <= 43 ? 40 : 0,
+      }));
+      const captures = [
+        { id: "phase-hold", capture_kind: "hold", source: "browser" },
+        { id: "phase-legacy-hold", label: "Manual Recording", source: "browser" },
+        { id: "phase-firmware", capture_kind: "arrow", source: "firmware" },
+      ];
+      for (const { source, ...shot } of captures) {
+        await api.saveCapture({ ...shot, timestamp: "2100-01-01T12:00:00Z" }, { shot_id: shot.id, sample_rate_hz: 50, source, payload });
+        await ui.reviewShotTrace(shot);
+        assert(store.get().reviewTraceSource === source, "Review lost its trace source");
+        assert(store.get().reviewReleaseIdx === null && store.get().reviewHitIdx === null && store.get().reviewRangeEst === "", "Review invented release or impact timing");
+      }
+      const compared = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => { stop(); reject(new Error("Compare selection did not load")); }, 2000);
+        const stop = store.subscribe((state) => {
+          if (state.compareShotId !== "phase-hold") return;
+          clearTimeout(timeout); stop(); resolve();
+        });
+      });
+      el.reviewCompareSelect.value = "phase-hold";
+      el.reviewCompareSelect.dispatchEvent(new Event("change"));
+      await compared;
+      assert(store.get().compareCaptureKind === "hold" && store.get().compareTraceSource === "browser", "Comparison lost hold provenance");
+    }));
+
+    await check("late browser traces update release markers without requiring a new review", () => withHistoryUI(async ({ ui, store, publish }) => {
+      const shot = { id: "phase-late-trace", capture_kind: "arrow", timestamp: "2100-01-01T12:00:00Z" };
+      await api.saveCapture(shot, { shot_id: shot.id, source: "browser", payload: [] });
+      await ui.reviewShotTrace(shot);
+      assert(store.get().reviewReleaseIdx === null, "Empty trace showed a release");
+      const payload = Array.from({ length: 80 }, (_, index) => ({ tUs: (index - 20) * 20000, ax: 0, ay: 0, az: 1, roll: 0, pitch: 0 }));
+      await api.saveShotTrace({ shot_id: shot.id, source: "browser", sample_rate_hz: 50, payload });
+      await publish("shot-trace-saved", { localShotId: shot.id });
+      assert(store.get().reviewReleaseIdx === 20 && store.get().reviewReleaseTimeMs === 0, "Late trace did not use its recorded event time");
+      assert(store.get().reviewHitIdx === null && store.get().reviewRangeEst === "", "Release without impact audio invented a range");
     }));
 
     await check("a delayed capture refresh cannot restore a card deleted by a newer refresh", () => withHistoryUI(async ({ ui, el, publish }) => {
