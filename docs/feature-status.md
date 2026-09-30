@@ -155,6 +155,11 @@ architecture, design intent, and forward-looking targets, see
   uploads together. Session names, bow assignments and end sizes follow the
   surviving captures; scorecards and recent captures refresh after deletion.
   Deletion affects this browser's saved data; cloud copies are unchanged.
+  New captures and delayed traces refresh recent cards, history metrics, and
+  session summaries in timestamp order. Undated imports sort after dated
+  captures. Refreshes retain open session edits, selections, and keyboard focus;
+  late telemetry updates the active review without clearing an unfinished arrow
+  result. Opening a card reads the latest saved metadata.
 - **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
   Replay preserves measured sample times and microphone alignment while
   downsampling to about 52 Hz. Slow streams and delayed callbacks keep their

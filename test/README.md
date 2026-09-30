@@ -42,6 +42,9 @@ and delayed saves across reconnection. Deletion checks cover full rollback,
 unrelated queue rows, session anchor changes and split groups. A hidden copy of
 the real history markup verifies single and bulk deletion refresh scorecards,
 review state and recent captures, using only this page's temporary database.
+History checks cover older uploads arriving after newer shots, late scores,
+undated records, session drafts and focus, unsaved arrow results, and a delayed
+refresh completing after capture deletion.
 Simulated cloud
 responses exercise interrupted uploads, new work arriving during an upload,
 failed-upload retries, canceled queue entries, and shared Web Locks. No real cloud client is created and

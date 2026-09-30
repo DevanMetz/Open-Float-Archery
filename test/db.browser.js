@@ -714,7 +714,7 @@ runButton.addEventListener("click", async () => {
       window.confirm = () => true;
       window.alert = (message) => { throw new Error(message); };
       try {
-        const { initHistory } = await import("../app/ui/history.js?v=shot-store-147");
+        const { initHistory } = await import("../app/ui/history.js?v=shot-store-149");
         const store = createStore({ reviewMode: true, reviewShotId: ids[0], compareShotId: ids[1], replayActive: true });
         const ui = initHistory({ bus: new EventBus(), store, el, selectViewTab() {} });
         await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);
@@ -753,6 +753,106 @@ runButton.addEventListener("click", async () => {
         fixture.remove();
       }
     });
+    const historyMarkup = new DOMParser().parseFromString(await (await fetch("../index.html", { cache: "no-store" })).text(), "text/html");
+    const { initHistory } = await import("../app/ui/history.js?v=shot-store-149");
+    async function withHistoryUI(run) {
+      const fixture = document.createElement("div");
+      fixture.style.cssText = "position:absolute;left:-10000px;width:1000px";
+      fixture.append(historyMarkup.querySelector("main").cloneNode(true));
+      document.body.append(fixture);
+      const el = Object.fromEntries([...fixture.querySelectorAll("[id]")].map((node) => [node.id, node]));
+      const bus = new EventBus();
+      const store = createStore({ reviewMode: false });
+      const ui = initHistory({ bus, store, el, selectViewTab() {} });
+      const publish = (type, payload) => Promise.all([...bus.handlers.get(type)].map((handler) => handler(payload)));
+      try { await run({ ui, bus, store, el, publish }); }
+      finally { fixture.remove(); }
+    }
+
+    const uiShots = Array.from({ length: 6 }, (_, index) => ({
+      id: `ui-refresh-${index}`, timestamp: new Date(Date.parse("2098-01-01T12:00:00Z") + index * 10000).toISOString(),
+      capture_kind: "arrow", shot_score: (index + 1) * 10, sample: true,
+    }));
+    const uiTrace = (id) => ({ shot_id: id, sample_rate_hz: 2, payload: [{ tUs: 0, az: 1 }, { tUs: 500000, az: 16 }] });
+    for (const shot of uiShots) await api.saveCapture(shot, uiTrace(shot.id));
+
+    await check("capture events keep recents ordered and refresh metrics without losing session edits or focus", () => withHistoryUI(async ({ ui, el, publish }) => {
+      await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);
+      const ids = () => [...el.recentShotsList.querySelectorAll(".recent-shot-card")].map((card) => card.dataset.shotId);
+      const expected = uiShots.slice(1).reverse().map((shot) => shot.id);
+      await publish("shot-saved", { localShotId: uiShots[0].id });
+      assert(JSON.stringify(ids()) === JSON.stringify(expected), "An older upload displaced a newer recent capture");
+      const session = el.historyList.querySelector('[data-session-id="ui-refresh-0"]');
+      session.querySelector(".session-edit-btn").click();
+      const name = session.querySelector(".session-name-input");
+      name.value = "Unfinished session name";
+      name.focus();
+      name.setSelectionRange(3, 7);
+      await api.saveShotTrace(uiTrace(uiShots[5].id), { shot_score: 99 });
+      await publish("shot-trace-saved", { localShotId: uiShots[5].id });
+      const refreshed = el.historyList.querySelector('[data-session-id="ui-refresh-0"]');
+      const newName = refreshed.querySelector(".session-name-input");
+      assert(newName.value === "Unfinished session name" && !refreshed.querySelector(".session-editor").classList.contains("hidden"), "Refresh discarded an unfinished session edit");
+      assert(document.activeElement === newName && newName.selectionStart === 3 && newName.selectionEnd === 7, "Refresh lost editor focus or selection");
+      assert(refreshed.querySelectorAll(".badge-val")[1].textContent === "42", "Session average kept the old score");
+      const card = el.recentShotsList.querySelector('[data-shot-id="ui-refresh-5"]');
+      assert(card.querySelector(".metric-val.score").textContent === "99", "Recent card kept the old score");
+      card.focus();
+      await publish("shot-saved", { localShotId: uiShots[0].id });
+      assert(document.activeElement?.dataset.shotId === uiShots[5].id, "Recent-card focus was lost on refresh");
+    }));
+
+    await check("review loads current metadata and late traces preserve an unsaved arrow result", () => withHistoryUI(async ({ ui, el, store, publish }) => {
+      await api.saveShotTrace(uiTrace(uiShots[5].id), { shot_score: 99 });
+      await ui.reviewShotTrace(uiShots[5]);
+      assert(store.get().formScore === 99, "Opening a stale card restored its older score");
+      el.outcomeScoreButtons.querySelector('[data-outcome-score="9"]').click();
+      el.outcomeDistanceInput.value = "28";
+      el.outcomeDistanceInput.focus();
+      store.set({ replayActive: true });
+      await api.saveShotTrace(uiTrace(uiShots[5].id), { shot_score: 88 });
+      await publish("shot-trace-saved", { localShotId: uiShots[5].id });
+      assert(store.get().formScore === 88 && store.get().reviewInfo.includes("Float Score: 88"), "Active review did not receive the late score");
+      assert(!store.get().replayActive, "A replaced trace left the old replay running");
+      assert(el.outcomeScoreButtons.querySelector('[data-outcome-score="9"]').classList.contains("selected") && el.outcomeDistanceInput.value === "28", "Late telemetry reset an unsaved target result");
+      assert(document.activeElement === el.outcomeDistanceInput, "Late telemetry moved focus out of the target editor");
+    }));
+
+    await check("a delayed capture refresh cannot restore a card deleted by a newer refresh", () => withHistoryUI(async ({ ui, el, publish }) => {
+      const id = "ui-refresh-deleted";
+      await api.saveCapture({ id, timestamp: "2098-01-01T12:02:00Z", sample: true }, uiTrace(id));
+      const historyDb = await import("../app/core/db.js?v=shot-store-146");
+      const connection = await historyDb.initDb();
+      const transaction = connection.transaction;
+      let release;
+      let hold = true;
+      let ready;
+      const blocked = new Promise((resolve) => { ready = resolve; });
+      connection.transaction = function (...args) {
+        const tx = transaction.apply(this, args);
+        if (hold && args[0] === "shots" && args[1] === "readonly") {
+          hold = false;
+          Object.defineProperty(tx, "oncomplete", { set(handler) {
+            tx.addEventListener("complete", (event) => { release = () => handler(event); ready(); });
+          } });
+        }
+        return tx;
+      };
+      let delayed;
+      try {
+        delayed = publish("shot-saved", { localShotId: id });
+        await blocked;
+        await api.removeSavedShots([id]);
+        await ui.refreshAfterDeletion([id]);
+        release();
+        await delayed;
+        assert(!el.recentShotsList.querySelector(`[data-shot-id="${id}"]`) && !el.historyList.querySelector(`[data-shot-id="${id}"]`), "An old asynchronous refresh restored a deleted capture");
+      } finally {
+        connection.transaction = transaction;
+        release?.();
+        await delayed;
+      }
+    }));
   } catch (error) {
     failed += 1;
     const item = document.createElement("li");
