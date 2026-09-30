@@ -1,7 +1,7 @@
 // Local data backup / restore UI module.
 // Handles JSON export/import and queues imported user-owned records for cloud sync.
 
-import { exportAllData, getAll, importAllData, put } from "../core/db.js?v=shot-store-125";
+import { exportAllData, getAll, importAllData, normalizeImportPayload, put } from "../core/db.js?v=shot-store-133";
 import { SAMPLE_DEVICE_ID } from "../data/sample-data.js?v=shot-store-125";
 
 function setDataBackupStatus(el, message, isError = false) {
@@ -95,23 +95,10 @@ export function initDataBackup({ bus, syncAdapter, el, onImportComplete }) {
         throw new Error("file is not valid JSON.");
       }
 
-      let summary;
-      let stores;
-      if (payload && payload.format === "openfloat-shot-export" && payload.shot) {
-        // Single-shot export: one shot record plus its optional trace.
-        await put("shots", payload.shot);
-        if (payload.trace) await put("shot_traces", payload.trace);
-        stores = {
-          shots: [payload.shot],
-          shot_traces: payload.trace ? [payload.trace] : [],
-        };
-        summary = `1 shot${payload.trace ? " + trace" : ""}`;
-      } else {
-        // Full backup bundle (writes every store, incl. a restored sync_queue).
-        const counts = await importAllData(payload, { merge: true });
-        summary = summarizeCounts(counts);
-        stores = payload.stores || {};
-      }
+      payload = normalizeImportPayload(payload);
+      const counts = await importAllData(payload, { merge: true });
+      const summary = summarizeCounts(counts);
+      const stores = payload.stores;
 
       // Queue the imported user data for cloud replication, then kick a sync.
       // If cloud isn't configured, triggerSync is a quiet no-op and the tasks

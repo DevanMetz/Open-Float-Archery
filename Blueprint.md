@@ -810,6 +810,16 @@ cloud `sessions` table above remains the recommended server model for future
 sync; the local schema favors timestamp-derived grouping so no manual
 start/stop is required.
 
+**Local transaction guarantees:** storage helpers resolve writes, deletes, and
+sync-status changes only on IndexedDB transaction completion, so request success
+alone cannot trigger a sensor acknowledgement. A full backup or single-shot
+import uses one transaction across its affected stores. Synchronous key or clone
+errors explicitly abort that transaction, preserving existing data even during
+a replacement import. Import validation rejects unsupported format versions,
+malformed record lists, and a single-shot trace whose `shot_id` does not match.
+Failed database opens can retry, and connections close on version changes so
+another tab can upgrade without being blocked by an idle OpenFloat tab.
+
 If using Firestore, avoid placing large raw traces inside user profile
 documents. Store shot metadata and raw traces separately. If using
 Supabase/PostgreSQL, normalize sessions, shots, and trace payload references.

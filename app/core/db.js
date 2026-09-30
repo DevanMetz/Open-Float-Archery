@@ -22,7 +22,13 @@ export function initDb() {
     };
 
     request.onsuccess = (e) => {
-      resolve(e.target.result);
+      const db = e.target.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      db.onclose = () => { dbPromise = null; };
+      resolve(db);
     };
 
     request.onupgradeneeded = (e) => {
@@ -68,81 +74,67 @@ export function initDb() {
         db.createObjectStore("session_overrides", { keyPath: "id" });
       }
     };
+  }).catch((error) => {
+    // A transient open failure must not poison every later storage operation.
+    dbPromise = null;
+    throw error;
   });
 
   return dbPromise;
 }
 
-// Helper to perform a read-write transaction
-function getStore(storeName, mode = "readonly") {
-  return initDb().then((db) => {
-    const tx = db.transaction(storeName, mode);
-    return tx.objectStore(storeName);
+// Request success is provisional: the containing transaction can still abort.
+// Queue work synchronously and resolve only after the whole transaction commits.
+async function runTransaction(storeNames, mode, work) {
+  const db = await initDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeNames, mode);
+    let result;
+    tx.oncomplete = () => resolve(result);
+    tx.onerror = tx.onabort = (event) => reject(
+      tx.error || event.target.error || new DOMException("Database transaction aborted.", "AbortError"),
+    );
+    try {
+      const request = work(tx);
+      if (request) request.onsuccess = () => { result = request.result; };
+    } catch (error) {
+      // A synchronous DataError/DataCloneError does not abort other requests
+      // already queued in this transaction. Explicitly roll them back.
+      tx.abort();
+      reject(error);
+    }
   });
 }
 
-export async function put(storeName, item) {
-  const store = await getStore(storeName, "readwrite");
-  return new Promise((resolve, reject) => {
-    const req = store.put(item);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+export function put(storeName, item) {
+  return runTransaction(storeName, "readwrite", (tx) => tx.objectStore(storeName).put(item));
 }
 
-export async function get(storeName, key) {
-  const store = await getStore(storeName, "readonly");
-  return new Promise((resolve, reject) => {
-    const req = store.get(key);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+export function get(storeName, key) {
+  return runTransaction(storeName, "readonly", (tx) => tx.objectStore(storeName).get(key));
 }
 
-export async function remove(storeName, key) {
-  const store = await getStore(storeName, "readwrite");
-  return new Promise((resolve, reject) => {
-    const req = store.delete(key);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+export function remove(storeName, key) {
+  return runTransaction(storeName, "readwrite", (tx) => tx.objectStore(storeName).delete(key));
 }
 
-export async function getAll(storeName) {
-  const store = await getStore(storeName, "readonly");
-  return new Promise((resolve, reject) => {
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+export function getAll(storeName) {
+  return runTransaction(storeName, "readonly", (tx) => tx.objectStore(storeName).getAll());
 }
 
-export async function getPendingSyncTasks() {
-  const store = await getStore("sync_queue", "readonly");
-  const index = store.index("status");
-  return new Promise((resolve, reject) => {
-    const req = index.getAll("pending");
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+export function getPendingSyncTasks() {
+  return runTransaction("sync_queue", "readonly", (tx) =>
+    tx.objectStore("sync_queue").index("status").getAll("pending"));
 }
 
-export async function updateSyncTaskStatus(taskId, status) {
-  const store = await getStore("sync_queue", "readwrite");
-  return new Promise((resolve, reject) => {
+export function updateSyncTaskStatus(taskId, status) {
+  return runTransaction("sync_queue", "readwrite", (tx) => {
+    const store = tx.objectStore("sync_queue");
     const getReq = store.get(taskId);
     getReq.onsuccess = () => {
       const task = getReq.result;
-      if (!task) {
-        resolve();
-        return;
-      }
-      task.status = status;
-      const putReq = store.put(task);
-      putReq.onsuccess = () => resolve();
-      putReq.onerror = () => reject(putReq.error);
+      if (task) store.put({ ...task, status });
     };
-    getReq.onerror = () => reject(getReq.error);
   });
 }
 
@@ -153,17 +145,46 @@ export async function updateSyncTaskStatus(taskId, status) {
 export const EXPORT_FORMAT = "openfloat-export";
 export const EXPORT_VERSION = 1;
 
+function isRecord(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Both backup formats use the same atomic restore path. Validate the envelope
+// before opening a transaction, including the shot-to-trace link for a single
+// capture. Older v1 files without an explicit version remain readable.
+export function normalizeImportPayload(payload) {
+  if (!isRecord(payload) || ![EXPORT_FORMAT, "openfloat-shot-export"].includes(payload.format)) {
+    throw new Error("Unrecognized OpenFloat export file.");
+  }
+  if (payload.version != null && payload.version !== EXPORT_VERSION) {
+    throw new Error(`Unsupported OpenFloat export version: ${payload.version}.`);
+  }
+  let stores = payload.stores;
+  if (payload.format === "openfloat-shot-export") {
+    if (!isRecord(payload.shot) || typeof payload.shot.id !== "string" || !payload.shot.id.trim()) {
+      throw new Error("Single-shot export is missing a valid shot id.");
+    }
+    if (payload.trace != null && (!isRecord(payload.trace) || payload.trace.shot_id !== payload.shot.id)) {
+      throw new Error("The exported trace does not belong to this shot.");
+    }
+    stores = { shots: [payload.shot], shot_traces: payload.trace == null ? [] : [payload.trace] };
+  }
+  if (!isRecord(stores)) throw new Error("Export file is missing its data stores.");
+  for (const [name, records] of Object.entries(stores)) {
+    if (!Array.isArray(records) || records.some((record) => !isRecord(record))) {
+      throw new Error(`Export store ${name} must contain a list of records.`);
+    }
+  }
+  return { ...payload, format: EXPORT_FORMAT, version: EXPORT_VERSION, stores };
+}
+
 // Read every object store into a single JSON-serializable envelope.
 export async function exportAllData() {
   const db = await initDb();
   const storeNames = Array.from(db.objectStoreNames);
   const stores = {};
 
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(storeNames, "readonly");
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
+  await runTransaction(storeNames, "readonly", (tx) => {
     for (const name of storeNames) {
       const req = tx.objectStore(name).getAll();
       req.onsuccess = () => {
@@ -186,28 +207,21 @@ export async function exportAllData() {
 // everything else). Pass { merge: false } to clear each store before restoring.
 // Returns a per-store count of restored records.
 export async function importAllData(payload, { merge = true } = {}) {
-  if (!payload || payload.format !== EXPORT_FORMAT || !payload.stores) {
-    throw new Error("Unrecognized OpenFloat export file.");
-  }
+  const { stores } = normalizeImportPayload(payload);
 
   const db = await initDb();
   const validStores = new Set(Array.from(db.objectStoreNames));
-  const incoming = Object.keys(payload.stores).filter((name) => validStores.has(name));
+  const incoming = Object.keys(stores).filter((name) => validStores.has(name));
   if (!incoming.length) {
     throw new Error("Export file contains no known data stores.");
   }
 
   const counts = {};
-  await new Promise((resolve, reject) => {
-    const tx = db.transaction(incoming, "readwrite");
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-
+  await runTransaction(incoming, "readwrite", (tx) => {
     for (const name of incoming) {
       const store = tx.objectStore(name);
       if (!merge) store.clear();
-      const records = Array.isArray(payload.stores[name]) ? payload.stores[name] : [];
+      const records = stores[name];
       counts[name] = records.length;
       for (const record of records) {
         // sync_queue uses an auto-incrementing key; let it assign a fresh id

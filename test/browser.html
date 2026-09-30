@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenFloat browser storage checks</title>
+  <style>
+    body { max-width: 800px; margin: 32px auto; padding: 16px; font: 16px/1.5 system-ui, sans-serif; }
+    button { padding: 12px 18px; font: inherit; }
+    li { margin: 12px 0; }
+    .pass { color: #087348; }
+    .fail { color: #af2434; }
+  </style>
+</head>
+<body>
+  <h1>Browser storage checks</h1>
+  <p>Uses the browser's real IndexedDB with a new, temporary database for each run.
+    Existing OpenFloat data is never opened or changed. No device or account is needed.</p>
+  <button id="run" type="button">Run storage checks</button>
+  <p id="summary" role="status">Ready</p>
+  <ol id="results"></ol>
+  <script type="module" src="db.browser.js"></script>
+</body>
+</html>
