@@ -206,8 +206,8 @@ button.accent {
 }
 
 button.danger {
-  border-color: rgba(255, 93, 115, 0.5);
-  color: #ffd9df;
+  border-color: var(--red);
+  color: var(--text);
 }
 
 button:disabled {

@@ -22,7 +22,7 @@ import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
 import { initHistory } from "./ui/history.js?v=shot-store-141";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-142";
+const APP_BUILD = "shot-store-143";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
