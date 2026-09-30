@@ -1,6 +1,6 @@
 // Shot history, review, recent shots, and deletion UI module.
 
-import { getAll, get, put, remove, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-140";
+import { getAll, get, put, remove, saveShotOutcome, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-141";
 import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-137";
 import {
   buildScorecard,
@@ -198,11 +198,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const shotId = currentOutcomeShotId;
     const outcome = selectedOutcome;
     const impact = selectedImpact;
-    const shot = await get("shots", shotId);
-    if (!shot) throw new Error("The reviewed shot is no longer in local storage.");
-
-    const updatedShot = {
-      ...shot,
+    const updatedShot = await saveShotOutcome(shotId, {
       arrow_score: clear ? null : outcome.score,
       arrow_is_x: clear ? false : outcome.isX,
       target_distance: clear ? null : distance,
@@ -212,26 +208,24 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       impact_x: clear || !impact ? null : impact.x,
       impact_y: clear || !impact ? null : impact.y,
       impact_recorded_at: clear || !impact ? null : new Date().toISOString(),
-    };
-
-    await put("shots", updatedShot);
-    const isDemo = shot.sample === true || shot.device_id === "OpenFloat-Demo";
-    if (!isDemo) {
-      await put("sync_queue", {
-        table: "shots",
-        action: "UPDATE",
-        targetId: updatedShot.id,
-        payload: updatedShot,
-        status: "pending",
-      });
-    }
+    });
+    const isDemo = updatedShot.sample === true || updatedShot.device_id === "OpenFloat-Demo";
 
     if (!clear) {
-      localStorage.setItem(OUTCOME_CONTEXT_KEY, JSON.stringify({ distance, unit, faceCm }));
+      try {
+        localStorage.setItem(OUTCOME_CONTEXT_KEY, JSON.stringify({ distance, unit, faceCm }));
+      } catch (_) {
+        // Remembering form defaults is optional; the arrow result has committed.
+      }
     }
     if (store.get().reviewShotId === shotId) {
       store.set({ reviewInfo: buildReviewInfo(updatedShot) });
       renderOutcomeEditor(updatedShot);
+      if (el.reviewOutcomeStatus) {
+        el.reviewOutcomeStatus.textContent = clear
+          ? "Result cleared"
+          : `Saved ${formatShotOutcome(updatedShot, { includeContext: true })}`;
+      }
     }
     await Promise.all([loadRecentShotsList(), loadShotHistoryList()]);
     if (!isDemo && syncAdapter) syncAdapter.triggerSync();
@@ -928,6 +922,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
   async function saveOutcome({ clear = false, advance = false } = {}) {
     if (outcomeSaving) return;
+    const returnFocus = document.activeElement;
     const shotId = currentOutcomeShotId;
     const arrowIndex = reviewArrows.findIndex((shot) => shot.id === shotId);
     const nextId = arrowIndex >= 0 ? reviewArrows[arrowIndex + 1]?.id : null;
@@ -943,17 +938,26 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         } else {
           el.exitReviewBtn.click();
           selectViewTab("tabHistory");
+          el.navHistoryBtn?.focus();
         }
       }
     } catch (error) {
       console.error("Failed to save arrow outcome:", error);
       bus.emit("log", `Target result save failed: ${error.message}`);
+      if (store.get().reviewShotId === shotId && el.reviewOutcomeStatus) {
+        el.reviewOutcomeStatus.textContent = `Save failed: ${error.message}`;
+      }
       alert(error.message);
     } finally {
       outcomeSaving = false;
       updateOutcomeButtons();
-      if (advance && store.get().reviewMode) {
-        focusOutcomeScore();
+      const review = store.get();
+      if (review.reviewMode && (review.reviewShotId === shotId || (advance && review.reviewShotId === nextId))) {
+        if (advance) focusOutcomeScore();
+        else if (document.activeElement === document.body) {
+          if (!returnFocus.disabled && returnFocus.getClientRects().length) returnFocus.focus();
+          else focusOutcomeScore();
+        }
       }
     }
   }
@@ -1108,6 +1112,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         await remove("shot_traces", shotId);
       } catch (_) {}
       await remove("shots", shotId);
+      selectedShotIds.delete(shotId);
+      updateBulkSelectCount();
 
       try {
         const override = await get("session_overrides", shotId);

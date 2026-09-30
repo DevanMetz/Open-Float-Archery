@@ -23,6 +23,8 @@ retry after a failed database open, and import queue isolation.
 Selected-export checks cover linked-record filtering, partial session anchors,
 missing selections, restore compatibility, and snapshot consistency during a
 concurrent capture save.
+Outcome-edit checks cover committed upload payloads, score/impact rollback,
+preserving telemetry, missing captures, and local-only demo results.
 Capture checks cover matching metadata/trace ids, atomic replay and upload
 saves, and demo exclusion from the queue. Simulated cloud
 responses exercise interrupted uploads, new work arriving during an upload,

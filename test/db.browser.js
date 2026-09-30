@@ -318,6 +318,42 @@ runButton.addEventListener("click", async () => {
       assert(!await api.get("shots", "capture-mismatch"), "Mismatched capture was saved");
     });
 
+    await check("arrow results commit with their upload and preserve the latest telemetry and trace", async () => {
+      await api.saveCapture({ id: "outcome-edit", shot_score: 82, capture_kind: "arrow" }, {
+        shot_id: "outcome-edit", payload: [{ ax: 3 }],
+      });
+      const saved = await api.saveShotOutcome("outcome-edit", { arrow_score: 10, arrow_is_x: true, impact_x: 0.01 });
+      assert(completed.has(latestWrite), "Outcome save resolved before commit");
+      assert(saved.shot_score === 82 && saved.capture_kind === "arrow", "Outcome edit overwrote telemetry");
+      assert(saved.arrow_score === 10 && saved.arrow_is_x, "Outcome was not saved");
+      const uploads = (await api.getAll("sync_queue")).filter((task) => task.targetId === "outcome-edit" && task.action === "UPDATE");
+      assert(uploads.length === 1 && uploads[0].payload.arrow_score === 10 && uploads[0].payload.shot_score === 82, "Upload differs from the saved result");
+      assert((await api.get("shot_traces", "outcome-edit")).payload[0].ax === 3, "Outcome edit changed the trace");
+    });
+
+    await check("a failed outcome upload task rolls back the score and impact together", async () => {
+      abortNextWrite = "sync_queue";
+      await rejects(() => api.saveShotOutcome("outcome-edit", { arrow_score: 1, arrow_is_x: false, impact_x: 0.9 }));
+      const saved = await api.get("shots", "outcome-edit");
+      assert(saved.arrow_score === 10 && saved.arrow_is_x && saved.impact_x === 0.01, "Failed outcome partially committed");
+      const updates = (await api.getAll("sync_queue")).filter((task) => task.targetId === "outcome-edit" && task.action === "UPDATE");
+      assert(updates.length === 1, "Failed outcome left an upload task behind");
+    });
+
+    await check("outcome edits cannot recreate deleted captures", async () => {
+      await rejects(() => api.saveShotOutcome("deleted-outcome", { arrow_score: 9 }));
+      assert(!await api.get("shots", "deleted-outcome"), "Deleted capture was recreated");
+      assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === "deleted-outcome"), "Missing capture entered the upload queue");
+    });
+
+    await check("editing and clearing demo outcomes remains local", async () => {
+      await api.put("shots", { id: "outcome-demo", device_id: "OpenFloat-Demo", arrow_score: 4 });
+      await api.saveShotOutcome("outcome-demo", { arrow_score: 10, arrow_is_x: true });
+      const cleared = await api.saveShotOutcome("outcome-demo", { arrow_score: null, arrow_is_x: false });
+      assert(cleared.arrow_score === null && !cleared.arrow_is_x, "Result was not cleared");
+      assert(!(await api.getAll("sync_queue")).some((task) => task.targetId === "outcome-demo"), "Demo outcome entered the queue");
+    });
+
     await check("manual recordings and rolling captures retain demo origin after disconnect", async () => {
       const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-137");
       for (const method of ["saveManualRecording", "saveManual30sCapture"]) {

@@ -819,6 +819,11 @@ a replacement import. Import validation rejects unsupported format versions,
 malformed record lists, and a single-shot trace whose `shot_id` does not match.
 Failed database opens can retry, and connections close on version changes so
 another tab can upgrade without being blocked by an idle OpenFloat tab.
+Arrow outcome edits read the latest saved capture, patch the target fields, and
+queue that exact record in one write transaction. A queue failure rolls back the
+score and impact; an edit cannot recreate a capture deleted from another view.
+Remembering target-form defaults is optional and cannot turn a committed result
+into an apparent save failure.
 
 **Selected capture exports:** subset files use `openfloat-export` version 1 and
 the existing Settings import path. One read transaction collects selected

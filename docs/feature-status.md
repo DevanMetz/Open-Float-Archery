@@ -118,6 +118,8 @@ architecture, design intent, and forward-looking targets, see
   than proof of causation. Reviews without a saved motion trace can still record
   an outcome. Identical scores or telemetry retain their paired-arrow count but
   do not produce a correlation; missing setup details prompt for context.
+  Target edits preserve the latest telemetry and commit with their upload task;
+  a storage failure keeps the previously saved score and impact intact.
 - **Impact Plot & Group Analysis**: Each reviewed arrow can be placed directly
   on a normalized ten-ring target with pointer or keyboard input. Target
   placement estimates the score but still allows a manual correction. Target

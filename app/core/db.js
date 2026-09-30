@@ -210,6 +210,27 @@ export async function saveCapture(shot, trace) {
   });
 }
 
+// Patch the latest saved shot and queue that exact version in one transaction.
+// Reading inside the write transaction preserves telemetry fields that arrived
+// while the outcome editor was open, and never recreates a deleted capture.
+export async function saveShotOutcome(shotId, changes) {
+  let updatedShot;
+  await runTransaction(["shots", "sync_queue"], "readwrite", (tx) => {
+    const shots = tx.objectStore("shots");
+    const request = shots.get(shotId);
+    request.onsuccess = () => {
+      if (!request.result) return;
+      updatedShot = { ...request.result, ...changes, id: shotId };
+      shots.put(updatedShot);
+      for (const task of buildImportSyncTasks({ shots: [updatedShot] })) {
+        tx.objectStore("sync_queue").add({ ...task, action: "UPDATE" });
+      }
+    };
+  });
+  if (!updatedShot) throw new Error("The reviewed shot is no longer in local storage.");
+  return updatedShot;
+}
+
 // Read every object store into a single JSON-serializable envelope.
 export async function exportAllData() {
   const db = await initDb();
