@@ -17,6 +17,9 @@ Replay tests use a controlled animation clock and gapped recordings to verify
 real-time speed, pause/resume, scrubbing, capture switches, and shared motion/
 microphone timing. Canvas checks cover timed pin positions, audio-band bounds,
 and release/hit marker alignment in both chart views.
+Saved-score checks distinguish missing measurements from zero, normalize numeric
+strings, exclude invalid values from averages and coaching, and retain gaps in
+session trend plots. Legacy stability fallback applies only to unversioned shots.
 
 For native IndexedDB regression checks, serve the repository and open
 `http://localhost:4178/test/browser.html` in Chrome or Edge. Click **Run storage
@@ -44,7 +47,8 @@ the real history markup verifies single and bulk deletion refresh scorecards,
 review state and recent captures, using only this page's temporary database.
 History checks cover older uploads arriving after newer shots, late scores,
 undated records, session drafts and focus, unsaved arrow results, and a delayed
-refresh completing after capture deletion.
+refresh completing after capture deletion. They also verify score availability
+and numeric imports in session headers, recent cards, and active review.
 Simulated cloud
 responses exercise interrupted uploads, new work arriving during an upload,
 failed-upload retries, canceled queue entries, and shared Web Locks. No real cloud client is created and

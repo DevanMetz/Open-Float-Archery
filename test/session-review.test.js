@@ -6,6 +6,7 @@ import {
   buildSessionImpactReview,
   buildSessionOutcomeReview,
   buildSessionReview,
+  buildSessionFloatPlot,
   buildSessionScorecard,
   shotHistoryLabel,
 } from "../app/ui/session-review.js";
@@ -64,6 +65,32 @@ test("null manual-shot components are not misreported as zero-score issues", () 
 
   assert.match(html, /Hold steadiness/);
   assert.doesNotMatch(html, /Release disturbance/);
+});
+
+test("sessions without Float Scores do not rank or plot missing measurements as zero", () => {
+  const shots = [{ id: "missing" }, { id: "invalid", shot_score: false }, { id: "pending", score_version: "v1", stability_score: 90 }];
+  assert.match(buildSessionReview(shots), /No Float Scores available/);
+  assert.doesNotMatch(buildSessionReview(shots), /Best Shot|Needs Work|Recurring Issue/);
+  assert.equal(buildSessionFloatPlot(shots), "");
+});
+
+test("partial sessions retain zero scores, skip invalid components, and show gaps in their trend", () => {
+  const shots = [
+    { id: "zero", shot_score: "0", hold_stability: "80", release_quality: -1 },
+    { id: "missing", shot_score: null, hold_stability: false, release_quality: "" },
+    { id: "high", shot_score: "100", hold_stability: 90, release_quality: 101 },
+  ].map((shot, index) => ({ ...shot, timestamp: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString() }));
+  const review = buildSessionReview(shots);
+  assert.match(review, /<strong>50<\/strong>/);
+  assert.match(review, /2 of 3 captures scored/);
+  assert.match(review, /data-review-shot-id="zero"/);
+  assert.match(review, /data-review-shot-id="high"/);
+  assert.doesNotMatch(review, /data-review-shot-id="missing"|Release disturbance/);
+  const plot = buildSessionFloatPlot(shots);
+  assert.match(plot, /Float scores from 2 of 3 session captures/);
+  assert.equal((plot.match(/<circle /g) || []).length, 2);
+  assert.match(plot, /d="M 18\.0 76\.0\s+M 302\.0 14\.0" class="session-float-line"/);
+  assert.doesNotMatch(plot, /session-float-area|NaN/);
 });
 
 test("scorecard renders chronological arrow links and the first unscored result", () => {

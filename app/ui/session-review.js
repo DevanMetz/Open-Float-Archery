@@ -5,7 +5,8 @@ import {
   normalizeImpact,
   summarizeImpactGroup,
   summarizeSessionOutcomes,
-} from "../telemetry/outcome.js?v=shot-store-137";
+} from "../telemetry/outcome.js?v=shot-store-150";
+import { scoreValue, shotFloatScore, averageShotScore } from "../telemetry/score.js?v=shot-store-150";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -14,11 +15,6 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function shotFloatScore(shot) {
-  const value = shot?.shot_score != null ? Number(shot.shot_score) : Number(shot?.stability_score || 0);
-  return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
 }
 
 export function shotHistoryLabel(shot, fallbackIndex = 0) {
@@ -87,10 +83,8 @@ function recurringIssueSummary(shots) {
   const ranked = components
     .map((component) => {
       const values = shots
-        .map((shot) => shot[component.key])
-        .filter((value) => value != null && value !== "")
-        .map(Number)
-        .filter(Number.isFinite);
+        .map((shot) => scoreValue(shot[component.key]))
+        .filter((value) => value != null);
       return {
         ...component,
         count: values.length,
@@ -120,16 +114,23 @@ export function buildSessionReview(shots) {
   const chronological = [...shots].sort(
     (a, b) => new Date(a.timestamp) - new Date(b.timestamp),
   );
-  const scores = chronological.map(shotFloatScore);
-  if (!scores.length) return "";
+  if (!chronological.length) return "";
+  const scored = chronological.filter((shot) => shotFloatScore(shot) != null);
+  const scores = scored.map(shotFloatScore);
+  if (!scores.length) return `
+    <div class="session-review" aria-label="Session review summary">
+      <div class="session-review-head"><span>Session Review</span><strong>--</strong></div>
+      <p>No Float Scores available for this session.</p>
+    </div>
+  `;
 
-  const avg = Math.round(sessionAverage(scores));
-  const best = chronological.reduce((winner, shot) =>
+  const avg = Math.round(averageShotScore(scored));
+  const best = scored.reduce((winner, shot) =>
     shotFloatScore(shot) > shotFloatScore(winner) ? shot : winner,
-  chronological[0]);
-  const worst = chronological.reduce((lowest, shot) =>
+  scored[0]);
+  const worst = scored.reduce((lowest, shot) =>
     shotFloatScore(shot) < shotFloatScore(lowest) ? shot : lowest,
-  chronological[0]);
+  scored[0]);
   const trend = sessionTrendSummary(scores);
   const issue = recurringIssueSummary(chronological);
 
@@ -153,7 +154,7 @@ export function buildSessionReview(shots) {
         <div class="session-review-stat">
           <span>Average</span>
           <strong>${avg}</strong>
-          <small>Float Score</small>
+          <small>${scores.length} of ${chronological.length} captures scored</small>
         </div>
         <button class="session-review-stat as-button" type="button" data-review-shot-id="${escapeHtml(best.id)}">
           <span>Best Shot</span>
@@ -189,19 +190,20 @@ export function buildSessionFloatPlot(shots) {
     (a, b) => new Date(a.timestamp) - new Date(b.timestamp),
   );
   const scores = chronological.map(shotFloatScore);
-  const count = scores.length;
+  const usable = scores.filter((score) => score != null);
+  const count = usable.length;
   if (!count) {
     return "";
   }
 
-  const latest = Math.round(scores[count - 1]);
-  const best = Math.round(Math.max(...scores));
-  const low = Math.round(Math.min(...scores));
-  const trend = count > 1 ? Math.round(scores[count - 1] - scores[0]) : 0;
+  const latest = Math.round(usable.at(-1));
+  const best = Math.round(Math.max(...usable));
+  const low = Math.round(Math.min(...usable));
+  const trend = count > 1 ? Math.round(usable.at(-1) - usable[0]) : 0;
   const trendText =
     count > 1
       ? `${trend > 0 ? "+" : ""}${trend} from first`
-      : "First shot in session";
+      : "One scored capture";
 
   const width = 320;
   const height = 96;
@@ -211,25 +213,28 @@ export function buildSessionFloatPlot(shots) {
   const plotW = width - padX * 2;
   const plotH = height - padTop - padBottom;
   const pointFor = (score, index) => {
-    const x = count === 1 ? width / 2 : padX + (plotW * index) / (count - 1);
+    if (score == null) return null;
+    const x = scores.length === 1 ? width / 2 : padX + (plotW * index) / (scores.length - 1);
     const y = padTop + (1 - score / 100) * plotH;
     return { x, y };
   };
   const points = scores.map(pointFor);
   const path = points
-    .map((pt, index) => `${index === 0 ? "M" : "L"} ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`)
+    .map((pt, index) => pt ? `${!points[index - 1] ? "M" : "L"} ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}` : "")
     .join(" ");
   const areaPath =
-    count > 1
+    count > 1 && count === scores.length
       ? `${path} L ${points[count - 1].x.toFixed(1)} ${height - padBottom} L ${points[0].x.toFixed(1)} ${height - padBottom} Z`
       : "";
 
+  const lastScoredIndex = scores.findLastIndex((score) => score != null);
   const dots = points
     .map((pt, index) => {
+      if (!pt) return "";
       const score = Math.round(scores[index]);
       const label = chronological[index].label || `Shot ${index + 1}`;
       return `
-        <circle cx="${pt.x.toFixed(1)}" cy="${pt.y.toFixed(1)}" r="${index === count - 1 ? 4.2 : 3.2}" class="session-float-dot${score === best ? " best" : ""}">
+        <circle cx="${pt.x.toFixed(1)}" cy="${pt.y.toFixed(1)}" r="${index === lastScoredIndex ? 4.2 : 3.2}" class="session-float-dot${score === best ? " best" : ""}">
           <title>${escapeHtml(label)}: ${score}</title>
         </circle>
       `;
@@ -242,7 +247,7 @@ export function buildSessionFloatPlot(shots) {
         <span>Float Score Trend</span>
         <strong>${latest}</strong>
       </div>
-      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Float scores from ${count} session shots. Latest ${latest}, best ${best}, low ${low}.">
+      <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Float scores from ${count} of ${scores.length} session captures. Latest scored ${latest}, best ${best}, low ${low}.">
         <line x1="${padX}" y1="${padTop}" x2="${width - padX}" y2="${padTop}" class="session-float-grid"></line>
         <line x1="${padX}" y1="${padTop + plotH / 2}" x2="${width - padX}" y2="${padTop + plotH / 2}" class="session-float-grid"></line>
         <line x1="${padX}" y1="${height - padBottom}" x2="${width - padX}" y2="${height - padBottom}" class="session-float-grid baseline"></line>

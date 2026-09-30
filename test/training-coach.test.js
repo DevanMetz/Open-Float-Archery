@@ -67,7 +67,7 @@ test("sample and synthetic captures never change the personal training baseline"
 
 test("unscored captures do not displace usable history from the recent window", () => {
   const real = { timestamp: "2026-01-01", hold_stability: 80, level_consistency: 70 };
-  const invalid = [null, undefined, "", "  ", false, true, [], {}, "bad"];
+  const invalid = [null, undefined, "", "  ", false, true, [], {}, "bad", -1, 101, "101", Infinity];
   const newer = invalid.map((value) => ({
     timestamp: "2026-02-01", hold_stability: value, level_consistency: value,
   }));

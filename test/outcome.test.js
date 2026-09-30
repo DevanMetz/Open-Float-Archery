@@ -245,6 +245,17 @@ test("constant results retain their paired count without inventing a correlation
   }
 });
 
+test("form-to-score correlations exclude out-of-range measurements and retain a valid zero", () => {
+  const measurements = ["0", "60", 70, 80, 90, -1, 101];
+  const shots = measurements.map((value, index) => scoredShot(index, {
+    hold_stability: value, release_quality: value, follow_through: value, level_consistency: value,
+  }));
+  const insight = correlateOutcomesWithForm(shots);
+  assert.equal(insight.sampleCount, 5);
+  assert.equal(insight.status, "collecting");
+  assert.equal(insight.correlation, null);
+});
+
 test("unknown target setups cannot be silently pooled with recorded setups", () => {
   const shots = Array.from({ length: 6 }, (_, index) => scoredShot(index, {
     impact_x: index * 0.1,

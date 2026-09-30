@@ -80,7 +80,10 @@ architecture, design intent, and forward-looking targets, see
   0-100 form score from trace data. The score blends hold stability, release
   quality, follow-through control, and level consistency. It is versioned in
   saved shots as `openfloat-float-score-v1` so future scoring changes can be
-  compared safely.
+  compared safely. Saved scores accept finite numbers and numeric strings from
+  0 through 100. Missing or invalid measurements show `--` and are excluded
+  from averages, rankings, and coaching; a measured zero remains valid. Session
+  summaries report how many captures have scores, and trend plots retain gaps.
 - The shot review canvas also renders a 1-sigma float ellipse, release reticle,
   and an animated replay marker. The replay controls live in their own sections
   below the target (not overlapping it): a Trace Review banner and a full-width

@@ -14,7 +14,8 @@ import {
   computeFloatScoreFromTrace,
   computeLiveFloatScore,
   FLOAT_SCORE_VERSION,
-} from "./score.js?v=shot-store-123";
+  scoreValue,
+} from "./score.js?v=shot-store-150";
 
 export const MAX_TRACE_POINTS = 1000;
 
@@ -36,7 +37,7 @@ function clamp(value, min, max) {
 }
 
 export function coachForScore({ formScore, holdStability, releaseQuality, followThrough, roll }) {
-  if (formScore == null) {
+  if (scoreValue(formScore) == null) {
     return {
       coachTitle: "Waiting for movement",
       coachText: "Connect a sensor or run the demo to start reading hold stability.",
@@ -49,28 +50,37 @@ export function coachForScore({ formScore, holdStability, releaseQuality, follow
       coachText: "Level the riser before expansion; cant drift is the biggest score limiter right now.",
     };
   }
-  if (holdStability < 65) {
+  holdStability = scoreValue(holdStability);
+  releaseQuality = scoreValue(releaseQuality);
+  followThrough = scoreValue(followThrough);
+  if (holdStability != null && holdStability < 65) {
     return {
       coachTitle: "Settle the hold",
       coachText: "Movement is building before the shot. Let the float shrink before you commit.",
     };
   }
-  if (releaseQuality === null || followThrough === null) {
+  if (holdStability != null && releaseQuality == null && followThrough == null) {
     return {
       coachTitle: "Steady hold practice",
       coachText: "Focus on maintaining bubble level consistency and reducing hand drift during the hold.",
     };
   }
-  if (releaseQuality < 65) {
+  if (releaseQuality != null && releaseQuality < 65) {
     return {
       coachTitle: "Soften the break",
       coachText: "Release motion is sharp. Keep pulling through instead of punching the shot.",
     };
   }
-  if (followThrough < 65) {
+  if (followThrough != null && followThrough < 65) {
     return {
       coachTitle: "Stay in the shot",
       coachText: "The bow is moving quickly after release. Hold posture through impact.",
+    };
+  }
+  if (holdStability == null || releaseQuality == null || followThrough == null) {
+    return {
+      coachTitle: "More trace data needed",
+      coachText: "Some form measurements are unavailable. Record another capture to review the full sequence.",
     };
   }
   return {

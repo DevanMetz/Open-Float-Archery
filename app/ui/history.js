@@ -1,7 +1,8 @@
 // Shot history, review, recent shots, and deletion UI module.
 
 import { getAll, get, put, removeSavedShots, saveShotOutcome, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-146";
-import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-147";
+import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-150";
+import { scoreValue, shotFloatScore, averageShotScore } from "../telemetry/score.js?v=shot-store-150";
 import {
   buildScorecard,
   canRecordArrowOutcome,
@@ -9,7 +10,7 @@ import {
   impactDirectionLabel,
   normalizeArrowOutcome,
   normalizeImpact,
-} from "../telemetry/outcome.js?v=shot-store-137";
+} from "../telemetry/outcome.js?v=shot-store-150";
 import { resolveReviewMicSeries } from "../protocol/trace.js?v=shot-store-125";
 import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=shot-store-125";
 import {
@@ -19,7 +20,7 @@ import {
   buildSessionReview,
   buildSessionScorecard,
   shotHistoryLabel,
-} from "./session-review.js?v=shot-store-137";
+} from "./session-review.js?v=shot-store-150";
 import { mountImpactTarget } from "./impact-target.js?v=shot-store-138";
 
 export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab }) {
@@ -117,17 +118,30 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     }
   }
 
+  function roundedScore(raw) {
+    const value = scoreValue(raw);
+    return value == null ? null : Math.round(value);
+  }
+
+  function captureMetrics(shot) {
+    const score = roundedScore(shotFloatScore(shot));
+    const stability = roundedScore(shot.stability_score);
+    const rawPeak = shot.peak_g;
+    const peak = typeof rawPeak === "string" && rawPeak.trim() ? Number(rawPeak) : rawPeak;
+    return {
+      score: score ?? "--",
+      stability: stability == null ? "--" : `${stability}%`,
+      peakG: typeof peak === "number" && Number.isFinite(peak) && peak >= 0 ? `${peak.toFixed(1)}g` : "--",
+    };
+  }
+
   function buildReviewInfo(shot) {
-    const score = shot.shot_score != null
-      ? Math.round(shot.shot_score)
-      : Math.round(shot.stability_score || 0);
-    const peakG = Number.isFinite(Number(shot.peak_g)) ? Number(shot.peak_g).toFixed(1) : "--";
-    const stability = shot.stability_score != null ? Math.round(shot.stability_score) : "--";
+    const { score, peakG, stability } = captureMetrics(shot);
     const outcome = normalizeArrowOutcome(shot);
     const outcomePart = outcome ? ` | Arrow: ${outcome.label}` : "";
     const timeStr = new Date(shot.timestamp).toLocaleTimeString();
     const demoPart = shot.sample === true || shot.device_id === "OpenFloat-Demo" ? "Demo capture | " : "";
-    return `${demoPart}Float Score: ${score}${outcomePart} | Peak Force: ${peakG}g | Stability: ${stability}% | Captured: ${timeStr}`;
+    return `${demoPart}Float Score: ${score}${outcomePart} | Peak Force: ${peakG} | Stability: ${stability} | Captured: ${timeStr}`;
   }
 
   function updateOutcomeButtons() {
@@ -330,11 +344,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         const bowName = bowDisplayName(bow);
 
         const shotCount = group.shots.length;
-        let totalScore = 0;
-        for (const s of group.shots) {
-          totalScore += s.shot_score != null ? s.shot_score : (s.stability_score || 0);
-        }
-        const avgScore = shotCount > 0 ? Math.round(totalScore / shotCount) : 0;
+        const avgScore = roundedScore(averageShotScore(group.shots)) ?? "--";
 
         const bowOptions = ['<option value="">Default Bow</option>']
           .concat(bows.map(b => {
@@ -542,7 +552,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
   function formatShotCompareLabel(shot) {
     const timeStr = new Date(shot.timestamp).toLocaleString();
-    const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
+    const score = roundedScore(shotFloatScore(shot)) ?? "--";
     const label = shotHistoryLabel(shot);
     return `${label} - ${timeStr} (Float Score: ${score})`;
   }
@@ -749,19 +759,19 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
 
   function reviewMetrics(shot) {
-    const formScore = Math.round(shot.shot_score ?? shot.stability_score ?? 0);
-    const holdStability = shot.hold_stability != null ? Math.round(shot.hold_stability) : (shot.stability_score != null ? Math.round(shot.stability_score) : null);
-    const releaseQuality = shot.release_quality != null ? Math.round(shot.release_quality) : null;
-    const followThrough = shot.follow_through != null ? Math.round(shot.follow_through) : null;
-    const levelConsistency = shot.level_consistency != null ? Math.round(shot.level_consistency) : null;
+    const formScore = roundedScore(shotFloatScore(shot));
+    const holdStability = roundedScore(shot.hold_stability) ?? (shot.score_version ? null : roundedScore(shot.stability_score));
+    const releaseQuality = roundedScore(shot.release_quality);
+    const followThrough = roundedScore(shot.follow_through);
+    const levelConsistency = roundedScore(shot.level_consistency);
     const roll = shot.cant_angle_deg || shot.roll_angle_deg || 0;
     const coaching = coachForScore({ formScore, holdStability, releaseQuality, followThrough, roll });
     return {
       formScore, holdStability, releaseQuality, followThrough, levelConsistency,
       reviewInfo: buildReviewInfo(shot),
       scoreVersion: shot.score_version || null,
-      coachTitle: coaching.coachTitle,
-      coachText: coaching.coachText,
+      coachTitle: formScore == null ? "No Float Score" : coaching.coachTitle,
+      coachText: formScore == null ? "This capture has no saved Float Score. Its trace and target result can still be reviewed." : coaching.coachText,
       lastShotSummary: { timestamp: shot.timestamp, score: formScore, peakG: shot.peak_g, cant: roll, pitch: shot.pitch_angle_deg || 0 },
     };
   }
@@ -1057,9 +1067,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       minute: "2-digit",
       second: "2-digit",
     });
-    const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
-    const stability = shot.stability_score != null ? Math.round(shot.stability_score) : "--";
-    const peakG = Number.isFinite(Number(shot.peak_g)) ? Number(shot.peak_g).toFixed(1) : "--";
+    const { score, stability, peakG } = captureMetrics(shot);
     const arrow = canRecordArrowOutcome(shot) ? formatShotOutcome(shot) : null;
     return { timeStr, score, stability, peakG, arrow };
   }
@@ -1074,10 +1082,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
     const timestampStr = new Date(shot.timestamp).toLocaleTimeString();
     const title = shotHistoryLabel(shot);
-    const score = shot.shot_score != null ? Math.round(shot.shot_score) : Math.round(shot.stability_score || 0);
-    const stability =
-      shot.stability_score != null ? Math.round(shot.stability_score) : "--";
-    const peakG = Number.isFinite(Number(shot.peak_g)) ? Number(shot.peak_g).toFixed(1) : "--";
+    const { score, stability, peakG } = captureMetrics(shot);
     const arrow = canRecordArrowOutcome(shot) ? formatShotOutcome(shot) : null;
     const arrowMetric = arrow == null
       ? ""
@@ -1106,11 +1111,11 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
           </div>
           <div class="history-stat">
             <span class="history-stat-label">Stability</span>
-            <span class="history-stat-val stability">${stability}%</span>
+            <span class="history-stat-val stability">${stability}</span>
           </div>
           <div class="history-stat">
             <span class="history-stat-label">Peak G</span>
-            <span class="history-stat-val peak">${peakG}g</span>
+            <span class="history-stat-val peak">${peakG}</span>
           </div>
         </div>
         <button
@@ -1294,11 +1299,11 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         </span>
         <span class="recent-shot-metric">
           <span class="metric-label">Stability</span>
-          <strong class="metric-val stability">${stability}%</strong>
+          <strong class="metric-val stability">${stability}</strong>
         </span>
         <span class="recent-shot-metric">
           <span class="metric-label">Peak G</span>
-          <strong class="metric-val peak">${peakG}g</strong>
+          <strong class="metric-val peak">${peakG}</strong>
         </span>
       </span>
     `;

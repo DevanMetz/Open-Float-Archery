@@ -467,7 +467,7 @@ runButton.addEventListener("click", async () => {
       assert(await api.removeSavedShots(["already-deleted"]) === 0, "Stale selection reported a deletion");
     });
 
-    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-147");
+    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-150");
     const { EventBus, createStore } = await import("../app/core/store.js");
     const captureDb = await (await import("../app/core/db.js?v=shot-store-147")).initDb();
     observeTransactions(captureDb);
@@ -714,7 +714,7 @@ runButton.addEventListener("click", async () => {
       window.confirm = () => true;
       window.alert = (message) => { throw new Error(message); };
       try {
-        const { initHistory } = await import("../app/ui/history.js?v=shot-store-149");
+        const { initHistory } = await import("../app/ui/history.js?v=shot-store-150");
         const store = createStore({ reviewMode: true, reviewShotId: ids[0], compareShotId: ids[1], replayActive: true });
         const ui = initHistory({ bus: new EventBus(), store, el, selectViewTab() {} });
         await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);
@@ -754,7 +754,7 @@ runButton.addEventListener("click", async () => {
       }
     });
     const historyMarkup = new DOMParser().parseFromString(await (await fetch("../index.html", { cache: "no-store" })).text(), "text/html");
-    const { initHistory } = await import("../app/ui/history.js?v=shot-store-149");
+    const { initHistory } = await import("../app/ui/history.js?v=shot-store-150");
     async function withHistoryUI(run) {
       const fixture = document.createElement("div");
       fixture.style.cssText = "position:absolute;left:-10000px;width:1000px";
@@ -816,6 +816,32 @@ runButton.addEventListener("click", async () => {
       assert(!store.get().replayActive, "A replaced trace left the old replay running");
       assert(el.outcomeScoreButtons.querySelector('[data-outcome-score="9"]').classList.contains("selected") && el.outcomeDistanceInput.value === "28", "Late telemetry reset an unsaved target result");
       assert(document.activeElement === el.outcomeDistanceInput, "Late telemetry moved focus out of the target editor");
+    }));
+
+    await check("history and review distinguish unavailable Float Scores from zero and imported numbers", () => withHistoryUI(async ({ ui, el, store }) => {
+      const scores = [null, "0", "100", "bad", false];
+      const captures = scores.map((shot_score, index) => ({
+        id: `ui-score-${index}`, timestamp: new Date(Date.parse("2099-01-01T12:00:00Z") + index * 10000).toISOString(),
+        sample: true, capture_kind: "arrow", score_version: "openfloat-float-score-v1", shot_score,
+        stability_score: null, peak_g: null, arrow_score: index === 0 ? 0 : null,
+      }));
+      for (const capture of captures) await api.saveCapture(capture, uiTrace(capture.id));
+      await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);
+      const session = el.historyList.querySelector('[data-session-id="ui-score-0"]');
+      assert(session.querySelectorAll(".badge-val")[1].textContent === "50", "Missing or string scores corrupted the session average");
+      assert(session.textContent.includes("2 of 5 captures scored"), "Partial score coverage was hidden");
+      for (let index = 0; index < captures.length; index++) {
+        const card = el.recentShotsList.querySelector(`[data-shot-id="ui-score-${index}"]`);
+        const expected = index === 1 ? "0" : index === 2 ? "100" : "--";
+        assert(card.querySelector(".metric-val.score").textContent === expected, `Wrong score display for capture ${index}`);
+        assert(card.querySelector(".metric-val.peak").textContent === "--", "Missing peak force became zero g");
+      }
+      await ui.reviewShotTrace(captures[0]);
+      assert(store.get().formScore === null && store.get().coachTitle === "No Float Score", "Missing review scores became a poor form diagnosis");
+      assert(store.get().reviewInfo.includes("Float Score: --") && store.get().reviewInfo.includes("Peak Force: --"), "Review fabricated missing measurements");
+      assert(el.outcomeScoreButtons.querySelector('[data-outcome-score="0"]').classList.contains("selected"), "Float Score availability changed a recorded target miss");
+      await ui.reviewShotTrace(captures[1]);
+      assert(store.get().formScore === 0, "A valid zero Float Score disappeared from review");
     }));
 
     await check("a delayed capture refresh cannot restore a card deleted by a newer refresh", () => withHistoryUI(async ({ ui, el, publish }) => {

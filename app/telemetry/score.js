@@ -4,6 +4,27 @@
 
 export const FLOAT_SCORE_VERSION = "openfloat-float-score-v1";
 
+// Saved scores are measurements on a 0-100 scale. Zero is valid; blanks,
+// booleans, and out-of-range imports are unavailable, not clamped measurements.
+export function scoreValue(raw) {
+  if (typeof raw !== "number" && typeof raw !== "string") return null;
+  if (typeof raw === "string" && !raw.trim()) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
+}
+
+export function shotFloatScore(shot) {
+  if (shot?.shot_score != null) return scoreValue(shot.shot_score);
+  // Only older records used stability as the overall score. A newer capture
+  // with an explicit score version must not invent a score while it is pending.
+  return shot?.score_version ? null : scoreValue(shot?.stability_score);
+}
+
+export function averageShotScore(shots) {
+  const scores = shots.map(shotFloatScore).filter((score) => score != null);
+  return scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null;
+}
+
 const LIVE_SCORE_WINDOW = 120;
 
 function clamp(value, min, max) {

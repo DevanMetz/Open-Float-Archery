@@ -1,6 +1,8 @@
 // Arrow-result analytics. These helpers are intentionally local and
 // deterministic so target scores never require an account or cloud service.
 
+import { scoreValue } from "./score.js?v=shot-store-150";
+
 export const OUTCOME_METRICS = Object.freeze([
   Object.freeze({ key: "hold_stability", label: "Hold stability" }),
   Object.freeze({ key: "release_quality", label: "Release quality" }),
@@ -389,7 +391,7 @@ export function correlateOutcomesWithForm(shots, { minimumPairs = 6 } = {}) {
     const pairs = [];
     for (const shot of shots || []) {
       const outcome = normalizeArrowOutcome(shot);
-      const metricValue = finiteValue(shot?.[metric.key]);
+      const metricValue = scoreValue(shot?.[metric.key]);
       if (!outcome || metricValue == null) continue;
       pairs.push({ x: metricValue, y: outcome.score });
     }

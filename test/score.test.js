@@ -5,7 +5,45 @@ import {
   FLOAT_SCORE_VERSION,
   computeFloatScoreFromTrace,
   computeLiveFloatScore,
+  scoreValue,
+  shotFloatScore,
+  averageShotScore,
 } from "../app/telemetry/score.js";
+import { coachForScore } from "../app/telemetry/telemetry.js";
+
+test("saved scores preserve valid zeros and numeric strings while rejecting missing or invalid measurements", () => {
+  for (const value of [null, undefined, "", "  ", false, true, [], {}, NaN, Infinity, -1, 101, "bad"]) {
+    assert.equal(scoreValue(value), null, `Unexpected score for ${String(value)}`);
+  }
+  assert.equal(scoreValue("0"), 0);
+  assert.equal(scoreValue(" 87.5 "), 87.5);
+  assert.equal(scoreValue(100), 100);
+});
+
+test("session averages use available scores and restrict stability fallback to legacy records", () => {
+  assert.equal(shotFloatScore({ stability_score: "65" }), 65);
+  assert.equal(shotFloatScore({ score_version: FLOAT_SCORE_VERSION, stability_score: 65 }), null);
+  assert.equal(shotFloatScore({ shot_score: "bad", stability_score: 65 }), null);
+  assert.equal(shotFloatScore({ shot_score: 0, stability_score: 65 }), 0);
+  assert.equal(averageShotScore([{ shot_score: "80" }, {}, { shot_score: "100" }]), 90);
+  assert.equal(averageShotScore([{ shot_score: 0 }, { shot_score: 80 }, { shot_score: -1 }]), 40);
+  assert.equal(averageShotScore([{}, { shot_score: null }]), null);
+});
+
+test("coaching only diagnoses available form components", () => {
+  const good = { formScore: 85, holdStability: 85, releaseQuality: 85, followThrough: 85, roll: 0 };
+  assert.equal(coachForScore(good).coachTitle, "Strong sequence");
+  for (const missing of [null, undefined, "", false, -1, 101]) {
+    assert.equal(coachForScore({ ...good, holdStability: missing }).coachTitle, "More trace data needed");
+    assert.equal(coachForScore({ ...good, releaseQuality: missing }).coachTitle, "More trace data needed");
+    assert.equal(coachForScore({ ...good, followThrough: missing }).coachTitle, "More trace data needed");
+    assert.equal(coachForScore({ ...good, formScore: missing }).coachTitle, "Waiting for movement");
+  }
+  assert.equal(coachForScore({ formScore: 85 }).coachTitle, "More trace data needed");
+  assert.equal(coachForScore({ formScore: 85, holdStability: 85 }).coachTitle, "Steady hold practice");
+  assert.equal(coachForScore({ ...good, holdStability: "0" }).coachTitle, "Settle the hold");
+  assert.equal(coachForScore({ ...good, holdStability: null, releaseQuality: 0 }).coachTitle, "Soften the break");
+});
 
 const RELEASE_INDEX = 100;
 

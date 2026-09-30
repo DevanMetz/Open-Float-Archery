@@ -1,6 +1,8 @@
 // Pure training analysis and scoring helpers. Keeping this module free of DOM
 // and storage dependencies makes the coaching rules transparent and testable.
 
+import { scoreValue } from "../telemetry/score.js?v=shot-store-150";
+
 export const TRAINING_DRILLS = Object.freeze({
   steady: Object.freeze({
     id: "steady",
@@ -47,11 +49,7 @@ function standardDeviation(values) {
 }
 
 function finiteMetric(shot, key) {
-  const raw = shot?.[key];
-  if (typeof raw !== "number" && typeof raw !== "string") return null;
-  if (typeof raw === "string" && !raw.trim()) return null;
-  const value = Number(raw);
-  return Number.isFinite(value) ? clamp(value, 0, 100) : null;
+  return scoreValue(shot?.[key]);
 }
 
 function averageMetric(shots, key) {

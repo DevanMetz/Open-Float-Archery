@@ -2,14 +2,14 @@
 // Manages the prep countdown, audio tones, live target tracing, scoring, and DB persistence.
 
 import { getAll, saveCapture, generateUUID } from "../core/db.js?v=shot-store-135";
-import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=shot-store-99";
+import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=shot-store-150";
 import {
   TRAINING_DRILLS,
   analyzeTrainingHistory,
   downsampleTrainingTrace,
   scoreTrainingHold,
   trainingFeedback,
-} from "./training-coach.js?v=shot-store-135";
+} from "./training-coach.js?v=shot-store-150";
 
 const TARGET_COLORS = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
 

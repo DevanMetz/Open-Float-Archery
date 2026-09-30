@@ -666,6 +666,15 @@ While the device is connected it does **not** persist a trace for each shot; the
 
 Saved-shot history derives practice sessions from timestamp gaps. Each session renders a review summary: average Float Score, best shot, worst shot, consistency trend, shots by drill label, biggest recurring issue, and a compact Float Score plot across the session. The score is an OpenFloat-specific v1 metric (`openfloat-float-score-v1`) derived from hold stability, release quality, follow-through control, and level consistency; it is not modeled on a commercial scoring system.
 
+Saved scores and their components are available only when they contain a finite
+number (or a nonblank numeric string from an import) in the range 0-100. A real
+zero remains valid. Missing, malformed, or out-of-range scores display as `--`
+and do not contribute to session averages, rankings, training recommendations,
+or form-to-target correlations. Session summaries expose scored-capture counts,
+and plots leave gaps for missing scores. Only unversioned legacy records can
+fall back from a missing `shot_score` to `stability_score`; versioned captures
+await their own saved score. These read-time rules do not rewrite saved records.
+
 ## 11. Browser Data Parsing
 
 The browser should parse packed binary with `DataView`.
