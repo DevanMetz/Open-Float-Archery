@@ -620,11 +620,12 @@ export class TelemetryStore {
       const localShotId = generateUUID();
       const ax = (shot.axMg || 0) / 1000;
       const ay = (shot.ayMg || 0) / 1000;
-      const az = (shot.azMg || 1000) / 1000;
+      const az = (shot.azMg ?? 1000) / 1000;
       const computedRoll = Math.atan2(ay, az) * (180 / Math.PI);
       const computedPitch = Math.atan2(-ax, Math.hypot(ay, az)) * (180 / Math.PI);
 
-      const computedYaw = activeState.yaw || 0;
+      const yaw = Number.isFinite(shot.yawDeg) ? shot.yawDeg
+        : !shot.stored && Number.isFinite(activeState.yaw) ? activeState.yaw : null;
       const shotRecord = {
         id: localShotId,
         session_id: null,
@@ -636,16 +637,19 @@ export class TelemetryStore {
         peak_g: peakG,
         cant_angle_deg: Number((shot.rollDeg !== undefined ? shot.rollDeg : computedRoll).toFixed(1)),
         pitch_angle_deg: Number((shot.pitchDeg !== undefined ? shot.pitchDeg : computedPitch).toFixed(1)),
-        yaw_angle_deg: Number((shot.yawDeg !== undefined ? shot.yawDeg : computedYaw).toFixed(1)),
+        yaw_angle_deg: yaw == null ? null : Number(yaw.toFixed(1)),
         roll_angle_deg: Number((shot.rollDeg !== undefined ? shot.rollDeg : computedRoll).toFixed(1)),
-        stability_score: Number((100 - Math.min(100, Math.hypot(shot.gxDps || 0, shot.gyDps || 0, shot.gzDps || 0))).toFixed(1)),
-        shot_score: activeState.formScore || 0,
-        hold_stability: activeState.holdStability != null ? activeState.holdStability : null,
-        release_quality: activeState.releaseQuality != null ? activeState.releaseQuality : null,
-        follow_through: activeState.followThrough != null ? activeState.followThrough : null,
-        level_consistency: activeState.levelConsistency != null ? activeState.levelConsistency : null,
-        score_version: activeState.scoreVersion || FLOAT_SCORE_VERSION,
-        packet_loss_count: 0
+        // Event metadata has no hold/release windows. Live dashboard metrics
+        // can belong to a different movement, especially during stored uploads.
+        // Only this capture's browser trace can supply its full v1 score.
+        stability_score: null,
+        shot_score: null,
+        hold_stability: null,
+        release_quality: null,
+        follow_through: null,
+        level_consistency: null,
+        score_version: FLOAT_SCORE_VERSION,
+        packet_loss_count: null
       };
 
       await saveCapture(shotRecord);
@@ -853,6 +857,7 @@ export class TelemetryStore {
       });
       const endLost = frozenWithTime.at(-1)?.lost ?? startLost;
       const updatedShot = await saveShotTrace(tracePayload, {
+        stability_score: traceScore.holdStability,
         shot_score: traceScore.formScore,
         hold_stability: traceScore.holdStability,
         release_quality: traceScore.releaseQuality,

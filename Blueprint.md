@@ -675,6 +675,16 @@ and plots leave gaps for missing scores. Only unversioned legacy records can
 fall back from a missing `shot_score` to `stability_score`; versioned captures
 await their own saved score. These read-time rules do not rewrite saved records.
 
+New device events save null form scores, components, stability, and packet-loss
+counts until their own browser trace is committed. They never copy the current
+live dashboard score. The browser trace supplies the full v1 score and uses
+hold stability for the capture's displayed stability. Current firmware recovery
+traces contain orientation and optional audio, without acceleration, rotation
+rate, or a release sample index; they remain reviewable but cannot supply the
+full v1 score. Stored events without a recorded yaw also leave yaw unavailable
+instead of borrowing the orientation at upload time. Existing saved records
+are preserved.
+
 ## 11. Browser Data Parsing
 
 The browser should parse packed binary with `DataView`.

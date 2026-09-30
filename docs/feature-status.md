@@ -84,6 +84,9 @@ architecture, design intent, and forward-looking targets, see
   0 through 100. Missing or invalid measurements show `--` and are excluded
   from averages, rankings, and coaching; a measured zero remains valid. Session
   summaries report how many captures have scores, and trend plots retain gaps.
+  New device captures wait for their own browser trace before showing form and
+  stability scores. Recovered firmware traces contain angles/audio only, so
+  they remain available for replay without inheriting the live dashboard score.
 - The shot review canvas also renders a 1-sigma float ellipse, release reticle,
   and an animated replay marker. The replay controls live in their own sections
   below the target (not overlapping it): a Trace Review banner and a full-width

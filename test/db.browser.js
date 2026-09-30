@@ -467,7 +467,7 @@ runButton.addEventListener("click", async () => {
       assert(await api.removeSavedShots(["already-deleted"]) === 0, "Stale selection reported a deletion");
     });
 
-    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-150");
+    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-151");
     const { EventBus, createStore } = await import("../app/core/store.js");
     const captureDb = await (await import("../app/core/db.js?v=shot-store-147")).initDb();
     observeTransactions(captureDb);
@@ -483,6 +483,34 @@ runButton.addEventListener("click", async () => {
     }
     const deviceShot = (shotId) => ({ shotId, shotCount: shotId, stored: true, axMg: 0, ayMg: 0, azMg: 16000 });
     const traceChunk = (shotId) => ({ shotId, chunkIndex: 0, totalChunks: 1, pointStride: 7, payload: new Uint8Array([0, 0, 0, 0, 0, 0, 12]) });
+
+    await check("device captures wait for their own score instead of inheriting unrelated live telemetry", async () => {
+      const keys = ["stability_score", "shot_score", "hold_stability", "release_quality", "follow_through", "level_consistency", "packet_loss_count"];
+      for (const stored of [true, false]) {
+        const recorder = deviceRecorder();
+        recorder.store.set({ formScore: 99, holdStability: 98, releaseQuality: 97, followThrough: 96, levelConsistency: 95 });
+        recorder.scheduleBrowserShotTraceCapture = () => {};
+        const shotId = stored ? 41006 : 41007;
+        const id = await recorder.onShot({ ...deviceShot(shotId), stored });
+        const shot = await api.get("shots", id);
+        for (const key of keys) assert(shot[key] === null, `${key} was invented from live state or missing event data`);
+        assert(shot.yaw_angle_deg === (stored ? null : 12), "Stored capture inherited current live yaw");
+        const queued = (await api.getAll("sync_queue")).find((task) => task.table === "shots" && task.targetId === id);
+        assert(queued.payload.shot_score === null && recorder.store.get().lastShotSummary.score === null, "Unrelated score entered the queue or latest-capture summary");
+        if (stored) {
+          await recorder.onTraceChunk(traceChunk(shotId));
+          assert((await api.get("shots", id)).shot_score === null, "Angle-only firmware trace invented a full Float Score");
+        } else {
+          recorder.shotTraceBuffer = Array.from({ length: 100 }, (_, index) => ({
+            tUs: index * 20000, ax: 0, ay: 0, az: index === 70 ? 16 : 1, roll: 0, pitch: 0, rotDps: 0, lost: 0,
+          }));
+          await recorder.saveBrowserShotTrace(id, shotId, 1400000, {}, 50, 600, 0);
+          const scored = await api.get("shots", id);
+          assert(Number.isFinite(scored.shot_score) && scored.shot_score !== 99, "Capture did not receive its own computed score");
+          assert(scored.stability_score === scored.hold_stability && scored.packet_loss_count === 0, "Trace did not fill its measured stability and loss");
+        }
+      }
+    });
 
     await check("device metadata and upload commit before acknowledgement, with retry after failure", async () => {
       const recorder = deviceRecorder();
@@ -523,7 +551,7 @@ runButton.addEventListener("click", async () => {
       const recorder = deviceRecorder();
       const saved = [];
       recorder.bus.on("shot-saved", (event) => saved.push(event));
-      const writing = recorder.onShot(deviceShot(41004));
+      const writing = recorder.onShot({ ...deviceShot(41004), yawDeg: 12 });
       const tracing = recorder.onTraceChunk(traceChunk(41004));
       recorder.reset();
       recorder.store.set({ formScore: 99, yaw: 88 });
@@ -714,7 +742,7 @@ runButton.addEventListener("click", async () => {
       window.confirm = () => true;
       window.alert = (message) => { throw new Error(message); };
       try {
-        const { initHistory } = await import("../app/ui/history.js?v=shot-store-150");
+        const { initHistory } = await import("../app/ui/history.js?v=shot-store-151");
         const store = createStore({ reviewMode: true, reviewShotId: ids[0], compareShotId: ids[1], replayActive: true });
         const ui = initHistory({ bus: new EventBus(), store, el, selectViewTab() {} });
         await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);
@@ -754,7 +782,7 @@ runButton.addEventListener("click", async () => {
       }
     });
     const historyMarkup = new DOMParser().parseFromString(await (await fetch("../index.html", { cache: "no-store" })).text(), "text/html");
-    const { initHistory } = await import("../app/ui/history.js?v=shot-store-150");
+    const { initHistory } = await import("../app/ui/history.js?v=shot-store-151");
     async function withHistoryUI(run) {
       const fixture = document.createElement("div");
       fixture.style.cssText = "position:absolute;left:-10000px;width:1000px";

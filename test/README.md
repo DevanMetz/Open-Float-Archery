@@ -41,8 +41,12 @@ manual save, and duplicate submission.
 Late-trace checks cover score/outcome races, deleted records, atomic rollback,
 and demo provenance. Simulated device events exercise acknowledgement after
 commit, concurrent repeats, metadata arriving before trace, reused device ids,
-and delayed saves across reconnection. Deletion checks cover full rollback,
-unrelated queue rows, session anchor changes and split groups. A hidden copy of
+and delayed saves across reconnection.
+Device-score checks keep unrelated live metrics out of metadata, queued
+uploads, and angle-only firmware recovery; the capture's own browser trace
+fills its measured score, stability, and packet loss.
+Deletion checks cover full rollback, unrelated queue rows, session anchor
+changes and split groups. A hidden copy of
 the real history markup verifies single and bulk deletion refresh scorecards,
 review state and recent captures, using only this page's temporary database.
 History checks cover older uploads arriving after newer shots, late scores,
