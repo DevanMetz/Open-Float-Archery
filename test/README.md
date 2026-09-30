@@ -30,6 +30,26 @@ legacy fallback, and stale replies/disconnects. Native storage checks run the
 same wire fixture through the adapter and telemetry assembler to verify every
 saved point and reject inconsistent or incomplete records. These are simulated
 notifications; firmware still needs an on-device recovery test.
+Timed recovery adds metadata/CRC rejection, measured intervals, migrated untimed
+records, fallback negotiation, exact release markers between samples, and
+protection against losing timing to a legacy upload.
+
+The firmware ring, persistence migration, and frame encoder have a host C check.
+With a C11 compiler on PATH, run from the repository root (PowerShell shown):
+
+```powershell
+New-Item -ItemType Directory -Force firmware/build-host-test | Out-Null
+clang -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/trace_buffer.c firmware/tests/trace_buffer_test.c -o firmware/build-host-test/trace_buffer_test.exe
+./firmware/build-host-test/trace_buffer_test.exe firmware/build-host-test/timed-trace.bin
+node tools/verify_trace_timing.mjs firmware/build-host-test/timed-trace.bin
+```
+
+The final command decodes bytes emitted by the actual C encoder with the actual
+browser parser and compares every point/timestamp with the shared fixture.
+It covers 1,000 points, 535 chunks, mixed intervals, signed angles, full shot ID,
+release origin, and CRC. C checks also cover clock wrap, ring wrap, long gaps,
+legacy limits, and old RRAM migration. These host checks do not measure sensor
+timing, BLE throughput, RRAM retention, or scheduler interleavings on hardware.
 
 For native IndexedDB regression checks, serve the repository and open
 `http://localhost:4178/test/browser.html` in Chrome or Edge. Click **Run storage

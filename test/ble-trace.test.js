@@ -3,23 +3,84 @@ import assert from "node:assert/strict";
 import { BleAdapter } from "../app/device/adapters.js";
 import { EventBus } from "../app/core/store.js";
 import { decodeBinaryFrame } from "../app/protocol/frame.js";
-import { decodeFirmwareTraceBytes } from "../app/protocol/trace.js";
-import { firmwareTraceFrames } from "./fixtures/firmware-trace.js";
+import { decodeFirmwareTraceBytes, decodeTimedFirmwareTrace, traceCrc32 } from "../app/protocol/trace.js";
+import { firmwareTraceFrames, timedFirmwareTraceFrames } from "./fixtures/firmware-trace.js";
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const notify = (adapter, bytes) => adapter._onValue({ target: {
   value: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
 } });
 
-function adapterForTest(t) {
+test("timed firmware transfers retain measured intervals, release origin, and CRC integrity", () => {
+  assert.equal(traceCrc32(new TextEncoder().encode("123456789")), 0xcbf43926);
+  const { frames, bytes } = timedFirmwareTraceFrames();
+  assert.equal(frames.length, 535);
+  const chunks = frames.map((frame) => decodeBinaryFrame(frame).trace);
+  assert.ok(chunks.every((chunk) => chunk.timed && chunk.pointStride === 8));
+  assert.deepEqual(new Uint8Array(chunks.flatMap((chunk) => chunk.payload)), bytes);
+  const decoded = decodeTimedFirmwareTrace(bytes);
+  assert.equal(decoded.timing, "device-ms");
+  assert.equal(decoded.sampleRateHz, 88);
+  assert.deepEqual(decoded.trace.slice(0, 4).map((point) => point.tUs), [-11000000, -10990000, -10985000, -10966000]);
+  assert.equal(decoded.trace.at(-1).tUs, 322000);
+  for (const index of [4, 16, bytes.length - 1]) {
+    const corrupt = bytes.slice();
+    corrupt[index] ^= 1;
+    assert.throws(() => decodeTimedFirmwareTrace(corrupt), /checksum/);
+  }
+});
+
+test("timed envelopes distinguish migrated untimed records and reject invalid metadata", () => {
+  const { bytes } = timedFirmwareTraceFrames({ flags: 0 });
+  const migrated = decodeTimedFirmwareTrace(bytes);
+  assert.equal(migrated.timing, null);
+  assert.equal(migrated.sampleRateHz, 52);
+  assert.ok(migrated.trace.every((point) => point.tUs === undefined));
+  for (const [offset, value] of [[0, 2], [1, 2], [2, 0], [15, 1]]) {
+    const corrupt = bytes.slice();
+    corrupt[offset] = value;
+    assert.throws(() => decodeTimedFirmwareTrace(corrupt), /metadata/);
+  }
+  assert.throws(() => decodeTimedFirmwareTrace(bytes.subarray(0, -1)), /metadata/);
+  assert.throws(() => decodeTimedFirmwareTrace(new Uint8Array(8013)), /length/);
+  const frame = timedFirmwareTraceFrames().frames[0];
+  new DataView(frame.buffer).setUint16(10, 536, true);
+  assert.equal(decodeBinaryFrame(frame), null);
+});
+
+function adapterForTest(t, protocol = 2) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const bus = new EventBus();
   const adapter = new BleAdapter(bus);
+  adapter.traceProtocol = protocol;
   const commands = [];
   adapter.sendControl = async (command) => { commands.push(command); return true; };
   t.after(() => adapter._stopTraceDownloadTimer());
   return { bus, adapter, commands };
 }
+
+test("BLE requests timed recovery first and falls back without relabeling untimed traces", async (t) => {
+  const { adapter, bus, commands } = adapterForTest(t, 3);
+  const received = [];
+  bus.on("trace-chunk", (chunk) => received.push(chunk));
+  adapter._enqueueTraceDownload(1);
+  await flush();
+  assert.equal(commands[0], "tracetimed:1");
+  for (const frame of timedFirmwareTraceFrames({ shotId: 1, count: 4 }).frames) notify(adapter, frame);
+  assert.ok(received.every((chunk) => chunk.timed));
+  assert.equal(adapter.currentTraceDownloadShotId, null);
+  adapter._enqueueTraceDownload(2);
+  await flush();
+  t.mock.timers.tick(1500);
+  await flush();
+  assert.ok(commands.includes("tracereq2:2"));
+  notify(adapter, firmwareTraceFrames(2, 1).frames[0]);
+  assert.equal(received.at(-1).timed, undefined);
+  assert.equal(adapter.currentTraceDownloadShotId, null);
+  adapter.manualDisconnect = true;
+  adapter._onDrop();
+  assert.equal(adapter.traceProtocol, 3, "Reconnect must probe timing support again");
+});
 
 test("extended traces round trip all 1000 points with a full 32-bit shot ID", () => {
   const { frames, bytes } = firmwareTraceFrames();

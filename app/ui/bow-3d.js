@@ -2,7 +2,7 @@
 // mount-orientation settings card, and the bow shop, plus the mount-orientation
 // presets and model loading/customization helpers they share.
 
-import { replayPosition } from "./replay.js?v=shot-store-148";
+import { replayPosition } from "./replay.js?v=shot-store-155";
 
 const THREE_URL = "../../vendor/three/build/three.module.min.js";
 const GLTF_LOADER_URL = "../../vendor/three/examples/jsm/loaders/GLTFLoader.js";

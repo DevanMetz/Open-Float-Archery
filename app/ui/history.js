@@ -1,7 +1,7 @@
 // Shot history, review, recent shots, and deletion UI module.
 
 import { getAll, get, put, removeSavedShots, saveShotOutcome, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-146";
-import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-153";
+import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-155";
 import { scoreValue, shotFloatScore, averageShotScore } from "../telemetry/score.js?v=shot-store-150";
 import {
   buildScorecard,
@@ -12,7 +12,7 @@ import {
   normalizeImpact,
 } from "../telemetry/outcome.js?v=shot-store-150";
 import { resolveReviewMicSeries } from "../protocol/trace.js?v=shot-store-125";
-import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=shot-store-153";
+import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=shot-store-155";
 import {
   buildSessionFloatPlot,
   buildSessionImpactReview,
@@ -22,7 +22,7 @@ import {
   shotHistoryLabel,
 } from "./session-review.js?v=shot-store-150";
 import { mountImpactTarget } from "./impact-target.js?v=shot-store-138";
-import { tracePhases } from "./trace-phases.js?v=shot-store-153";
+import { tracePhases } from "./trace-phases.js?v=shot-store-155";
 
 export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab }) {
   // Escape user-entered text before injecting into innerHTML.
@@ -650,7 +650,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     return 280; // Fallback default speed
   }
 
-  function estimateShotRange(trace, sampleRateHz, bowSpeedFps, releaseIdx) {
+  function estimateShotRange(trace, sampleRateHz, bowSpeedFps, releaseIdx, recordedReleaseTime) {
     if (!trace || !trace.payload || trace.payload.length === 0) return null;
     const payload = trace.payload;
     const hz = sampleRateHz || 52;
@@ -661,7 +661,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       return (idx * 1000.0) / hz;
     };
 
-    const releaseTime = getTimeMs(releaseIdx);
+    const releaseTime = Number.isFinite(recordedReleaseTime) ? recordedReleaseTime : getTimeMs(releaseIdx);
 
     let searchStartIdx = -1;
     for (let i = releaseIdx; i < payload.length; i++) {
@@ -740,7 +740,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const thresholdG = shot.threshold_g != null ? Number(shot.threshold_g) : 12;
     const captureKind = canRecordArrowOutcome(shot) ? "arrow" : "hold";
     const phases = tracePhases(trace.payload, { thresholdG, captureKind, source: trace.source, sampleRateHz });
-    const range = phases.hasRelease ? estimateShotRange(trace, sampleRateHz, speed, phases.releaseIdx) : null;
+    const range = phases.hasRelease ? estimateShotRange(trace, sampleRateHz, speed, phases.releaseIdx, phases.releaseTimeMs) : null;
     return {
       reviewTrace: trace.payload,
       reviewTraceSource: trace.source || null,

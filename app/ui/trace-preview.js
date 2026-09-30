@@ -1,6 +1,6 @@
 // Mini Pin Float target previews for shot list cards.
 
-import { tracePhases, phaseForIndex } from "./trace-phases.js?v=shot-store-153";
+import { tracePhases, phaseForIndex } from "./trace-phases.js?v=shot-store-155";
 
 const TARGET_COLORS = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
 const PREVIEW_SCALE_FIT = 0.9;

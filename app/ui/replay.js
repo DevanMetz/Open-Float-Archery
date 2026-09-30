@@ -11,8 +11,7 @@ export function traceTimeline(trace, sampleRateHz = 52) {
     const value = point?.tUs;
     return value == null || value === "" ? NaN : Number(value);
   });
-  const timed = times.every((time, index) => Number.isFinite(time) && (!index || time >= times[index - 1])) &&
-    (times.length === 1 || times.at(-1) > times[0]);
+  const timed = times.every((time, index) => Number.isFinite(time) && (!index || time >= times[index - 1]));
   // Old firmware has no timestamps. Incomplete or unordered imported timing
   // also uses a single uniform clock rather than mixing incompatible axes.
   if (!timed) times = trace.map((_, index) => index * 1000000 / rate);

@@ -1,10 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
 import { createStore } from "../app/core/store.js";
 import { createReplayController, replayPosition, traceTimeline, timelineIndexAt } from "../app/ui/replay.js";
 import { drawTraceChart, reviewChartTimeRangeUs } from "../app/ui/trace-chart.js";
 
 const gappedTrace = [0, 10000, 20000, 4000000].map((tUs, index) => ({ tUs, roll: index, pitch: 0, az: 1 }));
+
+test("samples recorded within one clock tick do not acquire an invented duration", () => {
+  for (const tUs of [0, 1000]) {
+    const trace = [{ tUs }, { tUs }, { tUs }];
+    assert.equal(traceTimeline(trace, 52).durationUs, 0);
+    assert.equal(replayPosition(trace, 0.5).timeUs, tUs);
+  }
+});
 
 test("replay uses measured duration and holds the last known point through a gap", () => {
   assert.deepEqual(replayPosition(gappedTrace, 0.5, 52), { timeUs: 2000000, durationUs: 4000000, index: 2 });
@@ -15,10 +24,10 @@ test("replay uses measured duration and holds the last known point through a gap
   assert.deepEqual(replayPosition(centered, 0.5), { timeUs: -1000000, durationUs: 5000000, index: 1 });
 });
 
-test("legacy and unusable imported timing use one uniform sample-rate clock", () => {
+test("legacy, missing, and unordered timing use one uniform sample-rate clock", () => {
   const legacy = Array.from({ length: 105 }, () => ({}));
   assert.deepEqual(replayPosition(legacy, 0.5, 52), { timeUs: 1000000, durationUs: 2000000, index: 52 });
-  for (const times of [[null, 100, 200], [0, undefined, 200], [0, 300, 200], [0, 0, 0]]) {
+  for (const times of [[null, 100, 200], [0, undefined, 200], [0, 300, 200]]) {
     assert.deepEqual(traceTimeline(times.map((tUs) => ({ tUs })), 2).times, [0, 500000, 1000000]);
   }
   assert.equal(traceTimeline([{ tUs: "-5" }, { tUs: "5" }]).durationUs, 10);

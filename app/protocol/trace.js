@@ -3,6 +3,41 @@
 export const FIRMWARE_TRACE_STRIDE_LEGACY = 6;
 export const FIRMWARE_TRACE_STRIDE_WITH_MIC = 7;
 
+export function traceCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (~crc) >>> 0;
+}
+
+// Timed firmware stream: 8-byte metadata, 8-byte points, 4-byte CRC trailer.
+// Old RRAM records can use this envelope with flags=0; they remain untimed.
+export function decodeTimedFirmwareTrace(bytes) {
+  if (bytes.length < 20 || bytes.length > 8012) throw new Error("Invalid timed trace length.");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint16(2, true);
+  const flags = view.getUint8(1);
+  if (view.getUint8(0) !== 1 || flags > 1 || !count || count > 1000 ||
+      bytes.length !== 12 + count * 8 || bytes[15] !== 0) {
+    throw new Error("Invalid timed trace metadata.");
+  }
+  if (traceCrc32(bytes.subarray(0, -4)) !== view.getUint32(bytes.length - 4, true)) {
+    throw new Error("Firmware trace checksum mismatch.");
+  }
+  const { trace } = decodeFirmwareTraceBytes(bytes.subarray(8, -4), 8);
+  if (!flags) return { trace, bytesPerPoint: 8, sampleRateHz: 52, timing: null };
+  let timeMs = view.getInt32(4, true);
+  trace.forEach((point, index) => {
+    timeMs += bytes[8 + index * 8 + 7];
+    point.tUs = timeMs * 1000;
+  });
+  const spanUs = trace.at(-1).tUs - trace[0].tUs;
+  const sampleRateHz = spanUs > 0 ? Math.max(1, Math.round((count - 1) * 1000000 / spanUs)) : 52;
+  return { trace, bytesPerPoint: 8, sampleRateHz, timing: "device-ms" };
+}
+
 // Keep measured elapsed time when bounding a manual replay's point count.
 // Missing timestamps support older in-memory callers; new captures always
 // supply tUs. Preserve endpoints and gaps rather than inventing uniform timing.

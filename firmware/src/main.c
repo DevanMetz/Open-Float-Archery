@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "trace_buffer.h"
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
@@ -266,12 +267,6 @@ static void stop_pdm(void)
 #define OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION 6
 #define OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE \
 	(OPENFLOAT_BLE_LIVE_FRAME_SIZE * OPENFLOAT_BLE_FRAMES_PER_NOTIFICATION)
-/* Reserve frame[28] for the stride byte (set on chunk 0). Payload therefore
- * spans frame[9..27]; using FRAME_SIZE-9 would let the chunk-0 memcpy overwrite
- * the stride byte the decoder relies on. */
-#define TRACE_CHUNK_PAYLOAD_SIZE (OPENFLOAT_BLE_FRAME_SIZE - 10)
-/* v2 keeps full shot IDs and 16-bit chunk indexes/counts; stride is in every frame. */
-#define TRACE_V2_CHUNK_PAYLOAD_SIZE (OPENFLOAT_BLE_FRAME_SIZE - 14)
 #define OPENFLOAT_CONN_INTERVAL_MIN 6  /* 7.5 ms */
 #define OPENFLOAT_CONN_INTERVAL_MAX 6  /* 7.5 ms */
 #define OPENFLOAT_CONN_LATENCY 0
@@ -493,27 +488,17 @@ static struct stored_shot_log stored_shot_log;
  */
 static K_MUTEX_DEFINE(shot_log_mutex);
 
-#define TRACE_CAPACITY 1000
-
-/* __packed so sizeof() is exactly 7 bytes; without it the trailing uint8_t
- * pads the struct to 8 and the raw memcpy upload ships a stride the decoder
- * does not expect, scrambling every trace. */
-struct trace_point {
-	int16_t roll_cdeg;
-	int16_t pitch_cdeg;
-	int16_t yaw_cdeg;
-	uint8_t mic_amp;
-} __packed;
-struct stored_trace {
-	uint32_t shot_id;
-	uint16_t count;
-	struct trace_point points[TRACE_CAPACITY];
-};
-
 static struct stored_trace stored_traces[10];
-static struct trace_point ram_trace_buffer[TRACE_CAPACITY];
-static uint16_t ram_trace_count = 0;
-static uint16_t ram_trace_write_idx = 0;
+static struct trace_ring ram_trace;
+/* Only short RAM operations hold this mutex. Separate snapshots keep RRAM and
+ * BLE I/O outside the IMU's trace lock and prevent mixing two captures. */
+static K_MUTEX_DEFINE(trace_mutex);
+static struct stored_trace trace_upload_snapshot;
+static union {
+	struct stored_trace trace;
+	uint8_t bytes[sizeof(struct stored_trace)];
+} trace_persist_snapshot;
+static K_MUTEX_DEFINE(trace_upload_mutex);
 
 static int buffer_rate_hz = 52;
 static int buffer_nvs_enabled = 1;
@@ -534,11 +519,14 @@ static volatile uint32_t trace_pending_mask;
 static bool trace_freeze_pending;
 static uint32_t trace_freeze_shot_id;
 static int trace_freeze_slot;
+static uint32_t trace_release_ms;
+static int64_t trace_freeze_due_ms;
 
 static bool trace_upload_in_progress;
-static int trace_upload_slot;
-static int trace_upload_chunk_idx;
-static bool trace_upload_v2;
+static uint16_t trace_upload_chunk_idx;
+static unsigned int trace_upload_mode;
+static uint32_t trace_upload_crc;
+static uint32_t trace_upload_generation;
 static bool trace_status_pending;
 static uint32_t trace_status_shot_id;
 static uint8_t trace_status_code;
@@ -563,66 +551,66 @@ static uint8_t trace_mic_amp_byte(void)
 static void ram_trace_push(int16_t roll_cdeg, int16_t pitch_cdeg,
 			   int16_t yaw_cdeg)
 {
-	ram_trace_buffer[ram_trace_write_idx].roll_cdeg = roll_cdeg;
-	ram_trace_buffer[ram_trace_write_idx].pitch_cdeg = pitch_cdeg;
-	ram_trace_buffer[ram_trace_write_idx].yaw_cdeg = yaw_cdeg;
-	ram_trace_buffer[ram_trace_write_idx].mic_amp = trace_mic_amp_byte();
-	ram_trace_write_idx = (ram_trace_write_idx + 1) % TRACE_CAPACITY;
-	if (ram_trace_count < TRACE_CAPACITY) {
-		ram_trace_count++;
-	}
+	struct trace_point point = { .roll_cdeg = roll_cdeg, .pitch_cdeg = pitch_cdeg,
+		.yaw_cdeg = yaw_cdeg, .mic_amp = trace_mic_amp_byte() };
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	trace_ring_push(&ram_trace, point, k_uptime_get_32());
+	k_mutex_unlock(&trace_mutex);
 }
 
-static void ram_trace_freeze(struct stored_trace *dest)
-{
-	dest->count = ram_trace_count;
-	uint16_t read_idx = 0;
-	if (ram_trace_count == TRACE_CAPACITY) {
-		read_idx = ram_trace_write_idx;
-	}
-	for (uint16_t i = 0; i < ram_trace_count; i++) {
-		dest->points[i] = ram_trace_buffer[read_idx];
-		read_idx = (read_idx + 1) % TRACE_CAPACITY;
-	}
-}
-
-static void trace_freeze_pending_slot(void)
+/* Caller holds trace_mutex. */
+static bool trace_freeze_pending_slot(void)
 {
 	if (!trace_freeze_pending) {
-		return;
+		return false;
 	}
 
-	stored_traces[trace_freeze_slot].shot_id = trace_freeze_shot_id;
-	ram_trace_freeze(&stored_traces[trace_freeze_slot]);
+	trace_ring_freeze(&ram_trace, &stored_traces[trace_freeze_slot],
+			  trace_freeze_shot_id, trace_release_ms);
 	if (buffer_nvs_enabled) {
 		trace_pending_mask |= BIT(trace_freeze_slot);
-		k_work_submit(&trace_persist_work);
 	}
 
-	printk("# trace frozen: shot=%u slot=%d count=%u follow_ms=%u\n",
-	       trace_freeze_shot_id, trace_freeze_slot,
-	       stored_traces[trace_freeze_slot].count, follow_through_ms);
 	trace_freeze_pending = false;
+	return true;
 }
 
 static void trace_freeze_work_handler(struct k_work *work)
 {
-	trace_freeze_pending_slot();
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	int64_t remaining = trace_freeze_due_ms - k_uptime_get();
+	/* An older callback may have been waiting for this lock when a new shot
+	 * rescheduled it. Respect the new deadline rather than freezing early. */
+	bool frozen = false;
+	if (trace_freeze_pending && remaining > 0) {
+		k_work_reschedule(&trace_freeze_work, K_MSEC(remaining));
+	} else {
+		frozen = trace_freeze_pending_slot();
+	}
+	k_mutex_unlock(&trace_mutex);
+	if (frozen) k_work_submit(&trace_persist_work);
 }
 
 static void schedule_trace_freeze(uint32_t shot_id_value)
 {
+	uint32_t release_ms = k_uptime_get_32();
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	bool frozen = false;
 	if (trace_freeze_pending) {
 		(void)k_work_cancel_delayable(&trace_freeze_work);
-		trace_freeze_pending_slot();
+		frozen = trace_freeze_pending_slot();
 	}
 
 	trace_freeze_shot_id = shot_id_value;
 	trace_freeze_slot = shot_id_value % 10;
+	trace_release_ms = release_ms;
+	trace_freeze_due_ms = k_uptime_get() + follow_through_ms;
 	trace_freeze_pending = true;
 	stored_traces[trace_freeze_slot].shot_id = shot_id_value;
 	stored_traces[trace_freeze_slot].count = 0;
 	k_work_reschedule(&trace_freeze_work, K_MSEC(follow_through_ms));
+	k_mutex_unlock(&trace_mutex);
+	if (frozen) k_work_submit(&trace_persist_work);
 }
 
 static void stored_shot_append(const struct stored_shot *shot)
@@ -1620,18 +1608,19 @@ static int openfloat_settings_set(const char *name, size_t len,
 
 	if (name[0] == 't' && name[1] >= '0' && name[1] <= '9' && name[2] == '\0') {
 		int slot = name[1] - '0';
-		struct stored_trace value;
 		ssize_t rc;
 
-		if (len != sizeof(value)) {
+		if (len != sizeof(struct stored_trace) && len != 7008) {
 			return -EINVAL;
 		}
-		rc = read_cb(cb_arg, &value, sizeof(value));
+		/* Settings load happens before BLE and the IMU start. Reuse the persist
+		 * snapshot rather than putting an 8 KB migration buffer on the stack. */
+		rc = read_cb(cb_arg, trace_persist_snapshot.bytes, len);
 		if (rc < 0) {
 			return rc;
 		}
-		stored_traces[slot] = value;
-		return 0;
+		return rc == len && trace_restore(&stored_traces[slot], trace_persist_snapshot.bytes, len)
+			? 0 : -EINVAL;
 	}
 
 	return -ENOENT;
@@ -1785,14 +1774,22 @@ static void follow_through_persist_work_handler(struct k_work *work)
 static void trace_persist_work_handler(struct k_work *work)
 {
 	for (int i = 0; i < 10; i++) {
-		if (trace_pending_mask & BIT(i)) {
+		k_mutex_lock(&trace_mutex, K_FOREVER);
+		bool pending = (trace_pending_mask & BIT(i)) != 0;
+		if (pending) {
+			trace_persist_snapshot.trace = stored_traces[i];
+			trace_pending_mask &= ~BIT(i);
+		}
+		k_mutex_unlock(&trace_mutex);
+		if (pending) {
 			char key[32];
 			snprintf(key, sizeof(key), "openfloat/t%d", i);
-			int rc = settings_save_one(key, &stored_traces[i], sizeof(stored_traces[i]));
+			int rc = settings_save_one(key, &trace_persist_snapshot.trace, sizeof(struct stored_trace));
 			if (rc) {
 				printk("# trace save failed for slot %d: %d\n", i, rc);
-			} else {
-				trace_pending_mask &= ~BIT(i);
+				k_mutex_lock(&trace_mutex, K_FOREVER);
+				trace_pending_mask |= BIT(i);
+				k_mutex_unlock(&trace_mutex);
 			}
 		}
 	}
@@ -2358,35 +2355,41 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		printk("# BLE control: follow-through trace window set to %u ms\n",
 		       follow_through_ms);
 	} else if (!strncmp(command, "tracereq:", strlen("tracereq:")) ||
-		   !strncmp(command, "tracereq2:", strlen("tracereq2:"))) {
-		bool use_v2 = !strncmp(command, "tracereq2:", strlen("tracereq2:"));
-		const char *value_str = command + (use_v2 ? strlen("tracereq2:") : strlen("tracereq:"));
+		   !strncmp(command, "tracereq2:", strlen("tracereq2:")) ||
+		   !strncmp(command, "tracetimed:", strlen("tracetimed:"))) {
+		unsigned int mode = !strncmp(command, "tracetimed:", 11) ? 3 :
+			(!strncmp(command, "tracereq2:", 10) ? 2 : 1);
+		const char *value_str = strchr(command, ':') + 1;
 		char *end;
 		errno = 0;
 		unsigned long req_id = strtoul(value_str, &end, 10);
 		if (errno == 0 && end != value_str && *end == '\0' &&
 		    req_id <= UINT32_MAX) {
 			int slot = req_id % 10;
-			if (stored_traces[slot].shot_id == (uint32_t)req_id &&
-			    stored_traces[slot].count > 0 && stored_traces[slot].count <= TRACE_CAPACITY &&
-			    (use_v2 || stored_traces[slot].count * sizeof(struct trace_point) <=
-				       UINT8_MAX * TRACE_CHUNK_PAYLOAD_SIZE)) {
-				trace_upload_slot = slot;
+			k_mutex_lock(&trace_upload_mutex, K_FOREVER);
+			k_mutex_lock(&trace_mutex, K_FOREVER);
+			bool found = stored_traces[slot].shot_id == (uint32_t)req_id &&
+				stored_traces[slot].count > 0;
+			bool available = found && trace_chunk_count(&stored_traces[slot], mode) > 0;
+			if (available) trace_upload_snapshot = stored_traces[slot];
+			k_mutex_unlock(&trace_mutex);
+			trace_upload_generation++;
+			trace_upload_in_progress = available;
+			if (available) {
 				trace_upload_chunk_idx = 0;
-				trace_upload_v2 = use_v2;
-				trace_upload_in_progress = true;
+				trace_upload_mode = mode;
+				trace_upload_crc = mode == 3 ? trace_wire_crc(&trace_upload_snapshot) : 0;
 				k_work_reschedule(&trace_upload_work, K_NO_WAIT);
 				printk("# BLE control: trace upload started for shot=%lu slot=%d len=%d\n",
-				       req_id, slot, stored_traces[slot].count);
+				       req_id, slot, trace_upload_snapshot.count);
 			} else {
 				trace_status_shot_id = (uint32_t)req_id;
 				/* 2: present, but the legacy envelope cannot represent this trace. */
-				trace_status_code = stored_traces[slot].shot_id == (uint32_t)req_id &&
-					stored_traces[slot].count > 0 ? 2 : 0;
+				trace_status_code = found ? 2 : 0;
 				trace_status_pending = true;
-				printk("# BLE control: trace not found for shot=%lu slot=%d (stored shot_id=%u)\n",
-				       req_id, slot, stored_traces[slot].shot_id);
+				printk("# BLE control: trace unavailable for shot=%lu mode=%u\n", req_id, mode);
 			}
+			k_mutex_unlock(&trace_upload_mutex);
 		}
 	} else {
 		printk("# BLE control: unknown command '%s'\n", command);
@@ -2437,60 +2440,32 @@ BT_GATT_SERVICE_DEFINE(openfloat_svc,
 
 static void trace_upload_work_handler(struct k_work *work)
 {
+	k_mutex_lock(&trace_upload_mutex, K_FOREVER);
 	if (!ble_notify_enabled || !trace_upload_in_progress) {
 		trace_upload_in_progress = false;
-		return;
-	}
-
-	struct stored_trace *trace = &stored_traces[trace_upload_slot];
-	uint16_t total_bytes = trace->count * sizeof(struct trace_point);
-	uint8_t payload_size = trace_upload_v2 ? TRACE_V2_CHUNK_PAYLOAD_SIZE : TRACE_CHUNK_PAYLOAD_SIZE;
-	int total_chunks = (total_bytes + payload_size - 1) / payload_size;
-
-	if (trace_upload_chunk_idx >= total_chunks) {
-		trace_upload_in_progress = false;
-		printk("# BLE trace: finished upload for shot=%d\n", trace->shot_id);
+		k_mutex_unlock(&trace_upload_mutex);
 		return;
 	}
 
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE];
-	memset(frame, 0, sizeof(frame));
-	frame[0] = 'O';
-	frame[1] = 'F';
-	frame[2] = trace_upload_v2 ? 2 : 1;
-	frame[3] = 6; // Type 6: Trace chunk
-
-	uint16_t offset = trace_upload_chunk_idx * payload_size;
-	uint16_t rem = total_bytes - offset;
-	uint8_t chunk_len = rem > payload_size ? payload_size : (uint8_t)rem;
-	if (trace_upload_v2) {
-		put_u16_le(frame, 4, (uint16_t)trace->shot_id);
-		put_u16_le(frame, 6, (uint16_t)(trace->shot_id >> 16));
-		put_u16_le(frame, 8, (uint16_t)trace_upload_chunk_idx);
-		put_u16_le(frame, 10, (uint16_t)total_chunks);
-		frame[12] = chunk_len;
-		frame[13] = sizeof(struct trace_point);
-	} else {
-		put_u16_le(frame, 4, trace->shot_id);
-		frame[6] = (uint8_t)trace_upload_chunk_idx;
-		frame[7] = (uint8_t)total_chunks;
-		frame[8] = chunk_len;
-		if (trace_upload_chunk_idx == 0) {
-			frame[28] = sizeof(struct trace_point);
-		}
+	uint32_t generation = trace_upload_generation;
+	if (!trace_build_chunk(&trace_upload_snapshot, trace_upload_mode,
+			       trace_upload_chunk_idx, trace_upload_crc, frame)) {
+		trace_upload_in_progress = false;
+		k_mutex_unlock(&trace_upload_mutex);
+		return;
 	}
-
-	uint8_t *raw_bytes = (uint8_t *)trace->points;
-	memcpy(&frame[trace_upload_v2 ? 14 : 9], raw_bytes + offset, chunk_len);
+	k_mutex_unlock(&trace_upload_mutex);
 
 	int err = bt_gatt_notify(NULL, &openfloat_svc.attrs[2], frame, sizeof(frame));
-	if (err) {
-		printk("# trace chunk upload notify failed: %d, retrying chunk %d...\n", err, trace_upload_chunk_idx);
-		k_work_reschedule(&trace_upload_work, K_MSEC(50));
-	} else {
-		trace_upload_chunk_idx++;
-		k_work_reschedule(&trace_upload_work, K_MSEC(10));
+	k_mutex_lock(&trace_upload_mutex, K_FOREVER);
+	/* The next request can arrive while notify is returning. Never advance
+	 * that new upload past its first chunk or retry an obsolete request. */
+	if (generation == trace_upload_generation && trace_upload_in_progress) {
+		if (!err) trace_upload_chunk_idx++;
+		k_work_reschedule(&trace_upload_work, K_MSEC(err ? 50 : 10));
 	}
+	k_mutex_unlock(&trace_upload_mutex);
 }
 
 static const struct bt_data ad[] = {

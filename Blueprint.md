@@ -433,8 +433,8 @@ is recovered without a reconnect.
 Buffered traces freeze after a configurable post-release follow-through delay
 (default 1.5 s, stored as `openfloat/followms`) so the saved window contains
 both the pre-shot hold and the recovery after the release impulse. Each
-firmware trace point is a 7-byte record (`roll/pitch/yaw` in centi-degrees plus
-`mic_amp` u8). The browser stores the same motion trace in IndexedDB
+firmware trace point is an 8-byte record (`roll/pitch/yaw` in centi-degrees,
+`mic_amp` u8, and elapsed milliseconds u8). The browser stores the same motion trace in IndexedDB
 `shot_traces.payload` and, for connected shots, a full-rate `mic_series`
 window (`[{ tUs, micAmp }]`, microseconds relative to the shot) for acoustic
 timing work in the web app.
@@ -512,7 +512,8 @@ The control characteristic accepts the ASCII commands:
 * `followms:<ms>`: Set the post-release follow-through delay before freezing a shot trace, clamped to 0-3000 ms. Saves to RRAM (`"openfloat/followms"`).
 * `streamrate:<n>`: Set the BLE live stream divider. Values: `1`, `2`, `5`, `10`, or `20` (about 1110, 555, 222, 111, or 55 Hz).
 * `autosleep:<0|1>`: Enable or disable inactivity-triggered deep sleep. Saves to RRAM (`"openfloat/autosleep"`).
-* `tracereq2:<shot_id>`: Request the full buffered trace as protocol-2 Type 6 notifications, with 32-bit shot IDs and 16-bit chunk indexes/counts.
+* `tracetimed:<shot_id>`: Request recorded millisecond timing, the release reference, and a CRC-protected trace through protocol-2 Type 6 notifications.
+* `tracereq2:<shot_id>`: Request an untimed compatibility trace as protocol-2 Type 6 notifications, with 32-bit shot IDs and 16-bit chunk indexes/counts.
 * `tracereq:<shot_id>`: Legacy protocol-1 Type 6 transfer. Limited to 255 chunks (692 current 7-byte points); updated firmware returns status 2 for larger traces instead of wrapping the count.
 * `shotack:<shot_id>`: Acknowledge a saved type-2/type-4 shot so firmware can free the queued copy from RRAM.
 * `shotreset`: Clear the persisted shot count and shot queue.
@@ -537,22 +538,23 @@ offset  size  field
 8       2     chunk_index (uint16, zero-based)
 10      2     total_chunks (uint16)
 12      1     payload_length (1-15 bytes; 15 except the final chunk)
-13      1     point_stride (7 for current roll/pitch/yaw/mic records)
+13      1     format (7 = untimed angle/mic; 0x88 = timed stream below)
 14      15    payload, unused final bytes zero-filled
 ```
 
 Concatenate payloads in chunk-index order before decoding points; point boundaries
-can cross chunks. A full 1,000-point buffer is 7,000 bytes in 467 chunks. The browser
+can cross chunks. An untimed 1,000-point buffer is 7,000 bytes in 467 chunks. The browser
 validates envelope bounds, consistent counts/stride, duplicate contents, and whole
 points before committing. Identical duplicates and out-of-order delivery are
 accepted. Only the actively requested shot/protocol enters reassembly, and stale
-status messages cannot finish a newer request. No application checksum is included
-yet; BLE provides link integrity, but an end-to-end checksum remains future work.
+status messages cannot finish a newer request. Untimed compatibility transfers
+rely on BLE link integrity. Format `0x88` adds an end-to-end CRC.
 
-The browser requests `tracereq2` first. After 1.5 seconds without a response it
-tries `tracereq` and uses legacy requests for the rest of that connection. Both
-timers start after the queued control write completes; a running transfer has an
-8-second inactivity timeout. On reconnect it probes extended support again.
+The browser requests `tracetimed` first, then `tracereq2`, then `tracereq` after
+1.5 seconds without a response at each step. It keeps the supported request mode
+for the rest of that connection. Timers start after the queued control write
+completes; a running transfer has an 8-second inactivity timeout. On reconnect
+it probes timing support again.
 Legacy Type 6 has a 16-bit shot ID, 8-bit index/count, length at byte 8, up to 19
 payload bytes at 9-27, and chunk-zero stride at byte 28. The active request maps
 its truncated ID to the full saved ID. Existing firmware needs this update for
@@ -560,11 +562,53 @@ reliable recovery above 692 points. Type 7 status carries the full shot ID at
 bytes 4-7 and status at byte 8: 0 means unavailable, 2 means a legacy transfer
 cannot represent the trace.
 
-This transfer change preserves the stored point format and RRAM records. It does
-not supply sample timing or release metadata: recovered traces still use the
-legacy 52 Hz replay assumption and do not show an inferred release marker. The
-extended path is covered by browser/Node regression checks and an NCS build;
-on-sensor recovery remains to be verified.
+The `tracetimed` payload has this little-endian structure before chunking:
+
+```text
+version u8 = 1
+flags u8 (bit 0 = timing available; other bits reserved)
+point_count u16
+first_time_ms i32 (relative to recorded release)
+points[point_count]: roll i16, pitch i16, yaw i16, mic u8, dt_ms u8
+crc32 u32 (CRC-32/ISO-HDLC over all preceding payload bytes)
+```
+
+The first point's delta is zero. Subsequent deltas accumulate from
+`first_time_ms`. A full trace is 8,012 bytes in 535 chunks. The browser validates
+the version, flags, count, exact length, first delta, and checksum before saving.
+It preserves timestamps as release-relative `tUs`, estimates a descriptive
+sample rate from the recorded span, and marks the source `firmware-timed`.
+Motion and microphone envelopes share those timestamps; replay and release
+markers use them directly. Angle-only captures still cannot supply a full
+Float Score.
+
+Firmware timestamps are the monotonic device uptime at trace sampling and shot
+detection, rounded down to milliseconds. They describe processing time at FIFO
+drain, not a new per-sample hardware timestamp. Rate changes and ordinary jitter
+remain in the deltas. Gaps above 255 ms start a new trace window instead of
+wrapping into a false short interval. The millisecond clock's 32-bit wrap is
+handled by unsigned subtraction. Release markers stay hidden when the retained
+window does not span the event.
+
+New RRAM trace records are versioned 8,012-byte structs. Boot restores previous
+7,008-byte records into the new in-memory format with timing unavailable;
+`tracetimed` sends these with flags zero, so the browser retains the legacy
+52 Hz assumption and `firmware` source. Existing RRAM records are not rewritten
+until their slot is replaced by a new capture. Older firmware cannot read newly
+written trace records after a downgrade. The settings partition stays 64 KB;
+ten full trace records exceed it. More immediately, the generated configuration
+uses 4,096-byte ZMS sectors, and ZMS rejects values larger than a sector minus
+its metadata. Full old and new trace records exceed that limit. Full-trace RRAM
+persistence therefore needs a chunked-storage repair before power-cycle recovery
+can be relied upon; RAM recovery remains available while the device stays powered.
+
+Capture, persistence, and upload use short protected RAM copies. RRAM writes
+and BLE notifications run against separate immutable snapshots. Request
+generations prevent a finishing notification from advancing a newer upload.
+The C ring, restore, and encoder are tested on the host; an emitted full wire
+transfer is decoded by the real JavaScript parser. Native IndexedDB/review tests
+and an NCS build also pass. On-sensor timing, retention, and throughput remain
+to be verified.
 
 ## 9. USB / Web Serial Path
 
@@ -707,8 +751,8 @@ New device events save null form scores, components, stability, and packet-loss
 counts until their own browser trace is committed. They never copy the current
 live dashboard score. The browser trace supplies the full v1 score and uses
 hold stability for the capture's displayed stability. Current firmware recovery
-traces contain orientation and optional audio, without acceleration, rotation
-rate, or a release sample index; they remain reviewable but cannot supply the
+traces contain orientation and optional audio, without acceleration or rotation
+rate; they remain reviewable but cannot supply the
 full v1 score. Stored events without a recorded yaw also leave yaw unavailable
 instead of borrowing the orientation at upload time. Existing saved records
 are preserved.
@@ -718,14 +762,17 @@ for the same capture. This check runs inside the trace write transaction, so
 browser recordings win regardless of arrival order. Skipped recovery writes
 leave scores, replay, and queued uploads unchanged. If the browser recording
 is missing or empty, the available firmware trace is retained normally.
+Untimed firmware uploads also preserve a nonempty `firmware-timed` recording,
+so compatibility fallback cannot discard previously measured timing.
 
 Review release phases use one shared decision for the target, thumbnail,
 comparison, waveform, and scrubber. Explicit holds (including legacy manual
 labels) have no release phase. Automatic browser arrow traces use the sample
-nearest their recorded event time (`tUs: 0`); other full traces require a measured
-acceleration impulse above the capture threshold. Current firmware traces do
-not carry release timing or acceleration, so their decoder preserves angles
-and audio without adding acceleration placeholders. Their Motion view plots
+nearest their recorded event time (`tUs: 0`), as do `firmware-timed` arrow traces;
+the time-axis marker stays at the exact event time between samples. Other full
+traces require a measured acceleration impulse above the capture threshold.
+Untimed firmware traces carry no release reference. Both firmware decoders
+preserve angles and audio without adding acceleration placeholders. Their Motion view plots
 angles, and old firmware records with decoder placeholders are also treated as
 angle-only data. No percentage-of-trace fallback invents a release. Existing
 saved data is preserved; these changes affect decoding and review.

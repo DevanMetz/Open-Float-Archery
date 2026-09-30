@@ -3,13 +3,14 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-import { getAll, saveCapture, saveShotTrace, generateUUID } from "../core/db.js?v=shot-store-152";
+import { getAll, saveCapture, saveShotTrace, generateUUID } from "../core/db.js?v=shot-store-155";
 import {
   buildShotTraceRecord,
   decodeFirmwareTraceBytes,
+  decodeTimedFirmwareTrace,
   extractMicWindow,
   prepareTimedTrace,
-} from "../protocol/trace.js?v=shot-store-153";
+} from "../protocol/trace.js?v=shot-store-155";
 import {
   computeFloatScoreFromTrace,
   computeLiveFloatScore,
@@ -1205,10 +1206,10 @@ export class TelemetryStore {
     const protocol = chunk.protocol || 1;
     const payloadSize = protocol === 2 ? 15 : 19;
     if (!Number.isInteger(chunk.totalChunks) || chunk.totalChunks <= 0 ||
-        chunk.totalChunks > (protocol === 2 ? 534 : 255) ||
+        chunk.totalChunks > (protocol === 2 ? (chunk.timed ? 535 : 534) : 255) ||
         !Number.isInteger(chunk.shotId) || chunk.shotId < 0 || chunk.shotId > 0xffffffff ||
         !Number.isInteger(chunk.chunkIndex) || chunk.chunkIndex < 0 || chunk.chunkIndex >= chunk.totalChunks ||
-        ![1, 2].includes(protocol) ||
+        ![1, 2].includes(protocol) || (chunk.timed && (protocol !== 2 || chunk.pointStride !== 8)) ||
         !(Array.isArray(chunk.payload) || chunk.payload instanceof Uint8Array) ||
         !chunk.payload.length || chunk.payload.length > payloadSize ||
         !chunk.payload.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255) ||
@@ -1220,12 +1221,12 @@ export class TelemetryStore {
     const epoch = this.connectionEpoch;
     const pendingSaves = this.pendingShotSaves;
     if (!this.pendingTraces.has(chunk.shotId)) {
-      this.pendingTraces.set(chunk.shotId, { chunks: new Map(), totalChunks: chunk.totalChunks, pointStride: 0, protocol });
+      this.pendingTraces.set(chunk.shotId, { chunks: new Map(), totalChunks: chunk.totalChunks, pointStride: 0, protocol, timed: !!chunk.timed });
     }
     const pending = this.pendingTraces.get(chunk.shotId);
     if (pending.saving) return;
     const previous = pending.chunks.get(chunk.chunkIndex);
-    if (pending.totalChunks !== chunk.totalChunks || pending.protocol !== protocol ||
+    if (pending.totalChunks !== chunk.totalChunks || pending.protocol !== protocol || pending.timed !== !!chunk.timed ||
         (pending.pointStride && chunk.pointStride && pending.pointStride !== chunk.pointStride) ||
         (previous && (previous.length !== chunk.payload.length || previous.some((byte, i) => byte !== chunk.payload[i])))) {
       this.pendingTraces.delete(chunk.shotId);
@@ -1265,8 +1266,9 @@ export class TelemetryStore {
       const rawBytes = new Uint8Array(bytesList);
       // 3. Save to database
       try {
-        const { trace, bytesPerPoint } = decodeFirmwareTraceBytes(rawBytes, pending.pointStride);
-        if (rawBytes.length % bytesPerPoint || trace.length === 0 || trace.length > MAX_TRACE_POINTS) {
+        const { trace, bytesPerPoint, sampleRateHz = 52, timing = null } = pending.timed
+          ? decodeTimedFirmwareTrace(rawBytes) : decodeFirmwareTraceBytes(rawBytes, pending.pointStride);
+        if ((!pending.timed && rawBytes.length % bytesPerPoint) || trace.length === 0 || trace.length > MAX_TRACE_POINTS) {
           throw new Error("Firmware trace contains incomplete points or exceeds the 1000-point buffer.");
         }
         // Metadata and chunks may arrive together. Wait for that exact shot's
@@ -1278,14 +1280,14 @@ export class TelemetryStore {
         if (localShotId) {
           const tracePayload = buildShotTraceRecord({
             localShotId,
-            sampleRateHz: 52,
+            sampleRateHz,
             payload: trace,
-            source: "firmware",
+            source: timing === "device-ms" ? "firmware-timed" : "firmware",
           });
 
           const shotRecord = await saveShotTrace(tracePayload);
           if (!shotRecord) {
-            this.bus.emit("log", `Skipped firmware trace for ${localShotId.slice(0, 8)}: capture was deleted or already has a browser recording.`);
+            this.bus.emit("log", `Skipped firmware trace for ${localShotId.slice(0, 8)}: capture was deleted or already has a richer recording.`);
             return;
           }
 
@@ -1303,6 +1305,7 @@ export class TelemetryStore {
             this.store.set({
               reviewTrace: trace,
               reviewTraceSource: tracePayload.source,
+              reviewSampleRateHz: sampleRateHz,
               reviewMicSeries: tracePayload.mic_series || null,
             });
           }

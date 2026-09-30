@@ -39,6 +39,19 @@ test("automatic browser captures use their recorded event time when the impulse 
   assert.equal(tracePhases(points().map(({ tUs, ...point }) => point), { source: "browser", captureKind: "arrow" }).hasRelease, false);
 });
 
+test("timed device captures mark the exact release between samples without inventing acceleration", () => {
+  const trace = points().map(({ ax, ay, az, ...point }) => ({ ...point, tUs: point.tUs + 3000 }));
+  const options = { source: "firmware-timed", captureKind: "arrow" };
+  const phases = tracePhases(trace, options);
+  assert.equal(phases.hasRelease, true);
+  assert.equal(phases.releaseIdx, 20);
+  assert.equal(phases.releaseTimeMs, 0);
+  assert.ok(Math.abs(Object.values(phases.segments).reduce((sum, value) => sum + value, 0) - 100) < 1e-9);
+  assert.equal(tracePhases(trace, { ...options, captureKind: "hold" }).hasRelease, false);
+  assert.equal(tracePhases(trace, { ...options, source: "firmware" }).hasRelease, false);
+  assert.equal(tracePhases(trace.slice(30), options).hasRelease, false, "Release outside the recorded window must stay hidden");
+});
+
 test("phase rail proportions follow sample timestamps and remain bounded at trace edges", () => {
   const trace = points(20, 8).map((point, index) => ({ ...point, tUs: index < 8 ? index * 10000 : 2000000 + index * 10000 }));
   const phases = tracePhases(trace);

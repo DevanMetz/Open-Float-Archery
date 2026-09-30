@@ -1,6 +1,6 @@
 // Shared review phases. A capture's type and source take precedence over
 // motion heuristics; missing release data must not become a guessed shot.
-import { traceTimeline } from "./replay.js?v=shot-store-148";
+import { traceTimeline } from "./replay.js?v=shot-store-155";
 
 export function tracePhases(trace, { captureKind, source, thresholdG = 12, sampleRateHz = 52, live = false } = {}) {
   const none = { hasRelease: false, releaseIdx: 0, releaseTimeMs: null, breakStart: 0, releaseEnd: 0,
@@ -8,9 +8,10 @@ export function tracePhases(trace, { captureKind, source, thresholdG = 12, sampl
   if (!Array.isArray(trace) || trace.length < 2 || captureKind === "hold" || source === "firmware") return none;
 
   let releaseIdx = -1;
-  // Automatic browser captures store timestamps relative to the device event.
+  // Browser captures and explicitly timed firmware captures anchor their clocks
+  // to the recorded device event. Older firmware remains excluded above.
   // Use the nearest recorded sample, even when downsampling misses the impulse.
-  const eventTimed = source === "browser" && captureKind === "arrow" &&
+  const eventTimed = (source === "browser" || source === "firmware-timed") && captureKind === "arrow" &&
     trace.every((point, index) => Number.isFinite(point?.tUs) && (!index || point.tUs >= trace[index - 1].tUs)) &&
     trace[0].tUs <= 0 && trace.at(-1).tUs >= 0 && trace[0].tUs < trace.at(-1).tUs;
   if (eventTimed) {
@@ -34,13 +35,15 @@ export function tracePhases(trace, { captureKind, source, thresholdG = 12, sampl
   const timeline = traceTimeline(trace, sampleRateHz);
   const elapsed = (index) => timeline.times[index] - timeline.start;
   const total = timeline.durationUs;
+  const releaseUs = eventTimed ? 0 : timeline.times[releaseIdx];
+  const releaseElapsed = releaseUs - timeline.start;
   const segments = total > 0 ? {
     hold: elapsed(breakStart) / total * 100,
-    break: (elapsed(releaseIdx) - elapsed(breakStart)) / total * 100,
-    release: (elapsed(releaseEnd) - elapsed(releaseIdx)) / total * 100,
+    break: (releaseElapsed - elapsed(breakStart)) / total * 100,
+    release: (elapsed(releaseEnd) - releaseElapsed) / total * 100,
     follow: (total - elapsed(releaseEnd)) / total * 100,
   } : none.segments;
-  return { hasRelease: true, releaseIdx, releaseTimeMs: timeline.times[releaseIdx] / 1000, breakStart, releaseEnd, segments };
+  return { hasRelease: true, releaseIdx, releaseTimeMs: releaseUs / 1000, breakStart, releaseEnd, segments };
 }
 
 export function phaseForIndex(index, phases) {

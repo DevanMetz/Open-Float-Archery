@@ -498,11 +498,13 @@ runButton.addEventListener("click", async () => {
       assert(await api.removeSavedShots(["already-deleted"]) === 0, "Stale selection reported a deletion");
     });
 
-    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-154");
-    const { BleAdapter } = await import("../app/device/adapters.js?v=shot-store-154");
-    const { firmwareTraceFrames } = await import("./fixtures/firmware-trace.js");
+    const { TelemetryStore } = await import("../app/telemetry/telemetry.js?v=shot-store-155");
+    const { BleAdapter } = await import("../app/device/adapters.js?v=shot-store-155");
+    const { firmwareTraceFrames, timedFirmwareTraceFrames } = await import("./fixtures/firmware-trace.js?v=shot-store-155");
+    const { decodeBinaryFrame } = await import("../app/protocol/frame.js?v=shot-store-155");
+    const { decodeTimedFirmwareTrace } = await import("../app/protocol/trace.js?v=shot-store-155");
     const { EventBus, createStore } = await import("../app/core/store.js");
-    const captureDb = await (await import("../app/core/db.js?v=shot-store-152")).initDb();
+    const captureDb = await (await import("../app/core/db.js?v=shot-store-155")).initDb();
     observeTransactions(captureDb);
 
     function deviceRecorder() {
@@ -520,6 +522,7 @@ runButton.addEventListener("click", async () => {
     await check("extended BLE recovery commits all 1000 points under the full shot ID", async () => {
       const recorder = deviceRecorder();
       const adapter = new BleAdapter(recorder.bus);
+      adapter.traceProtocol = 2;
       const commands = [];
       adapter.sendControl = async (command) => { commands.push(command); return true; };
       const saves = [];
@@ -548,6 +551,31 @@ runButton.addEventListener("click", async () => {
         adapter._stopTraceDownloadTimer();
         adapter.unsubscribeShotSaved();
       }
+    });
+
+    await check("timed firmware recovery saves measured motion and audio without downgrading richer recordings", async () => {
+      const recorder = deviceRecorder();
+      const shotId = 41010;
+      const id = await recorder.onShot(deviceShot(shotId));
+      const { frames } = timedFirmwareTraceFrames({ shotId });
+      for (const frame of frames) await recorder.onTraceChunk(decodeBinaryFrame(frame).trace);
+      const saved = await api.get("shot_traces", id);
+      assert(saved.source === "firmware-timed" && saved.sample_rate_hz === 88, "Timed provenance or measured rate was lost");
+      assert(saved.payload.length === 1000 && saved.payload[0].tUs === -11000000 &&
+        saved.payload.at(-1).tUs === 322000, "Recorded duration or release reference changed");
+      assert(saved.mic_series[0].tUs === saved.payload[0].tUs && saved.mic_series.at(-1).tUs === 322000,
+        "Microphone envelope moved to a different time axis");
+      assert((await api.get("shots", id)).shot_score === null, "Timed angles invented a full Float Score");
+      await recorder.onTraceChunk(traceChunk(shotId));
+      assert((await api.get("shot_traces", id)).source === "firmware-timed", "Legacy recovery discarded recorded timing");
+      frames[10][14] ^= 1;
+      for (const frame of frames) await recorder.onTraceChunk(decodeBinaryFrame(frame).trace);
+      assert((await api.get("shot_traces", id)).payload.at(-1).tUs === 322000, "Checksum failure replaced the saved trace");
+      assert(recorder.pendingTraces.size === 0, "Corrupted transfer kept a pending buffer");
+      const browser = { shot_id: id, source: "browser", sample_rate_hz: 208, payload: [{ tUs: 0, az: 16 }] };
+      await api.saveShotTrace(browser);
+      assert(await api.saveShotTrace(saved) === null, "Timed recovery replaced full browser data");
+      assert((await api.get("shot_traces", id)).source === "browser", "Richer source did not survive");
     });
 
     await check("inconsistent and incomplete firmware points never replace a saved trace", async () => {
@@ -841,7 +869,7 @@ runButton.addEventListener("click", async () => {
       window.confirm = () => true;
       window.alert = (message) => { throw new Error(message); };
       try {
-        const { initHistory } = await import("../app/ui/history.js?v=shot-store-153");
+        const { initHistory } = await import("../app/ui/history.js?v=shot-store-155");
         const store = createStore({ reviewMode: true, reviewShotId: ids[0], compareShotId: ids[1], replayActive: true });
         const ui = initHistory({ bus: new EventBus(), store, el, selectViewTab() {} });
         await Promise.all([ui.loadShotHistoryList(), ui.loadRecentShotsList()]);
@@ -881,7 +909,7 @@ runButton.addEventListener("click", async () => {
       }
     });
     const historyMarkup = new DOMParser().parseFromString(await (await fetch("../index.html", { cache: "no-store" })).text(), "text/html");
-    const { initHistory } = await import("../app/ui/history.js?v=shot-store-153");
+    const { initHistory } = await import("../app/ui/history.js?v=shot-store-155");
     async function withHistoryUI(run) {
       const fixture = document.createElement("div");
       fixture.style.cssText = "position:absolute;left:-10000px;width:1000px";
@@ -998,6 +1026,20 @@ runButton.addEventListener("click", async () => {
       el.reviewCompareSelect.dispatchEvent(new Event("change"));
       await compared;
       assert(store.get().compareCaptureKind === "hold" && store.get().compareTraceSource === "browser", "Comparison lost hold provenance");
+    }));
+
+    await check("timed firmware review uses the recorded release and measured sample rate", () => withHistoryUI(async ({ ui, store }) => {
+      const shot = { id: "timed-firmware-review", capture_kind: "arrow", timestamp: "2100-01-01T12:01:00Z" };
+      const decoded = decodeTimedFirmwareTrace(timedFirmwareTraceFrames().bytes);
+      await api.saveCapture(shot, { shot_id: shot.id, source: "firmware-timed",
+        sample_rate_hz: decoded.sampleRateHz, payload: decoded.trace });
+      await ui.reviewShotTrace(shot);
+      assert(store.get().reviewTraceSource === "firmware-timed" && store.get().reviewSampleRateHz === 88,
+        "Review replaced timing provenance or sample rate");
+      assert(store.get().reviewReleaseTimeMs === 0 && store.get().reviewReleaseIdx > 900,
+        "Review guessed the release from sample count");
+      assert(store.get().reviewMicSeries[0].tUs === -11000000 && store.get().reviewMicSeries.at(-1).tUs === 322000,
+        "Review shifted the audio timing");
     }));
 
     await check("late browser traces update release markers without requiring a new review", () => withHistoryUI(async ({ ui, store, publish }) => {

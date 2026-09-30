@@ -293,10 +293,11 @@ export async function saveShotTrace(trace, metrics = null) {
           tx.objectStore("sync_queue").add({ ...task, action: task.table === "shots" ? "UPDATE" : "CREATE" });
         }
       };
-      if (trace.source === "firmware") {
+      if (trace.source === "firmware" || trace.source === "firmware-timed") {
         const existing = traces.get(trace.shot_id);
         existing.onsuccess = () => {
-          if (existing.result?.source === "browser" && existing.result.payload?.length) return;
+          if (existing.result?.payload?.length && (existing.result.source === "browser" ||
+              (trace.source === "firmware" && existing.result.source === "firmware-timed"))) return;
           save();
         };
       } else {

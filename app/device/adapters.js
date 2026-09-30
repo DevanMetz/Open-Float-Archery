@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-154";
+import { decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-155";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
@@ -134,7 +134,8 @@ export class BleAdapter extends BaseAdapter {
     this.currentTraceDownloadShotId = null;
     this.currentTraceChunkIndexes = new Set();
     this.currentTraceTotalChunks = 0;
-    this.traceProtocol = 2;
+    // Request modes: 3 = timed v2 stream, 2 = untimed v2, 1 = legacy v1.
+    this.traceProtocol = 3;
     this.traceDownloadAttempt = null;
     this.traceTimer = null;
     this.reconnectTimer = null;
@@ -300,7 +301,8 @@ export class BleAdapter extends BaseAdapter {
 
   async requestTrace(shotId, protocol = this.traceProtocol) {
     this.log(`Requesting trace upload for shot ID ${shotId}...`);
-    return this.sendControl(`${protocol === 2 ? "tracereq2" : "tracereq"}:${shotId}`);
+    const command = protocol === 3 ? "tracetimed" : (protocol === 2 ? "tracereq2" : "tracereq");
+    return this.sendControl(`${command}:${shotId}`);
   }
 
   _onValue(event) {
@@ -410,7 +412,7 @@ export class BleAdapter extends BaseAdapter {
     this.currentTraceChunkIndexes.clear();
     this.currentTraceTotalChunks = 0;
     this.traceDownloadAttempt = null;
-    this.traceProtocol = 2;
+    this.traceProtocol = 3;
     this.pendingStoredShots = 0;
     this.live = null;
     this.control = null;
@@ -520,10 +522,11 @@ export class BleAdapter extends BaseAdapter {
       }
       this.traceTimer = setTimeout(() => {
         if (this.traceDownloadAttempt !== attempt) return;
-        if (protocol === 2) {
-          this.log("No extended trace response; trying the legacy firmware command.");
-          this.traceProtocol = 1;
-          this._startTraceDownload(shotId, 1);
+        if (protocol > 1) {
+          this.log(protocol === 3 ? "No timed trace response; trying extended recovery." :
+            "No extended trace response; trying the legacy firmware command.");
+          this.traceProtocol = protocol - 1;
+          this._startTraceDownload(shotId, this.traceProtocol);
         } else {
           this.log(`Trace download timeout for shot ${shotId}.`);
           this._completeTraceDownload(shotId);
@@ -534,7 +537,7 @@ export class BleAdapter extends BaseAdapter {
 
   _onTraceChunkReceived(trace) {
     if (trace.shotId === this.currentTraceDownloadShotId &&
-        (trace.protocol || 1) === this.traceDownloadAttempt?.protocol) {
+        (trace.timed ? 3 : (trace.protocol || 1)) === this.traceDownloadAttempt?.protocol) {
       if (this.currentTraceTotalChunks && this.currentTraceTotalChunks !== trace.totalChunks) {
         this.log(`Trace chunk count changed for shot ${trace.shotId}; discarded transfer.`);
         this._completeTraceDownload(trace.shotId);
