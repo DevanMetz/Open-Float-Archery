@@ -13,6 +13,10 @@ focused so the suite stays useful for a buildless static app.
 Offline checks verify that all precache files exist, the renderer's full module
 graph resolves locally and is precached, and the bow GLB has no external image
 or buffer URLs.
+Replay tests use a controlled animation clock and gapped recordings to verify
+real-time speed, pause/resume, scrubbing, capture switches, and shared motion/
+microphone timing. Canvas checks cover timed pin positions, audio-band bounds,
+and release/hit marker alignment in both chart views.
 
 For native IndexedDB regression checks, serve the repository and open
 `http://localhost:4178/test/browser.html` in Chrome or Edge. Click **Run storage

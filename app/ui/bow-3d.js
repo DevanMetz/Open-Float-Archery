@@ -2,6 +2,8 @@
 // mount-orientation settings card, and the bow shop, plus the mount-orientation
 // presets and model loading/customization helpers they share.
 
+import { replayPosition } from "./replay.js?v=shot-store-148";
+
 const THREE_URL = "../../vendor/three/build/three.module.min.js";
 const GLTF_LOADER_URL = "../../vendor/three/examples/jsm/loaders/GLTFLoader.js";
 const ORBIT_CONTROLS_URL = "../../vendor/three/examples/jsm/controls/OrbitControls.js";
@@ -880,9 +882,8 @@ export async function initOrientationVisualizer(el, store) {
     let sampleQuat = finiteQuaternion(state.qw, state.qx, state.qy, state.qz);
 
     if (state.reviewMode && state.reviewTrace && state.reviewTrace.length > 0) {
-      const progress = Math.max(0, Math.min(1, state.replayProgress ?? 1));
-      const idx = Math.min(state.reviewTrace.length - 1, Math.floor(progress * (state.reviewTrace.length - 1)));
-      const pt = state.reviewTrace[idx];
+      const position = replayPosition(state.reviewTrace, state.replayProgress, state.reviewSampleRateHz);
+      const pt = state.reviewTrace[position.index];
       roll = pt.roll || 0;
       pitch = pt.pitch || 0;
       yaw = pt.yaw || 0;

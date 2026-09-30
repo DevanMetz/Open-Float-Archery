@@ -560,6 +560,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       store.set({
         compareShotId: shotId,
         compareTrace: trace.payload,
+        compareSampleRateHz: trace.sample_rate_hz || 52,
         compareShotLabel: label,
         compareThresholdG: shot.threshold_g != null ? Number(shot.threshold_g) : 12,
       });

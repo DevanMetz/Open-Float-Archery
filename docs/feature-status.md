@@ -160,6 +160,11 @@ architecture, design intent, and forward-looking targets, see
   downsampling to about 52 Hz. Slow streams and delayed callbacks keep their
   true duration; the rolling capture uses a 30-second time window. Demo timing
   follows the browser's actual callback intervals.
+  At 1x, playback follows recorded seconds; pauses and gaps stay visible in the
+  target, bow orientation, and microphone meter. Scrubbing stops playback,
+  pause/resume uses one animation loop, and older untimed traces retain their
+  sample-rate fallback. Audio bands and draggable markers share the motion/audio
+  time range in both Pin Float and Quaternion views.
   Disconnecting stops the recording and leaves a **Save** button available.
   Failed saves retain the capture for retry in the current tab; pending saves
   prevent duplicate clicks or discard, and reconnect waits until it is saved

@@ -892,6 +892,17 @@ the retained data; explicit timestamps control replay duration. Rolling captures
 prune at 30 seconds of elapsed telemetry time. Demo `dtUs` is measured from
 successive timer callbacks, so synthetic recording time follows wall-clock time.
 
+**Replay clock:** 1x playback advances by recorded seconds. The scrubber, target
+pin, orientation readouts, 3D bow, and microphone peak meter select samples on
+that same time axis. A gap holds the last recorded point until the next sample;
+microphone samples outside the current replay time do not appear early. Legacy
+traces without usable monotonic timestamps use their saved sample rate (52 Hz
+fallback). Saved review arrays are immutable snapshots, allowing the UI to cache
+the time axis and use binary search without rescanning a long capture each frame.
+Pause, scrubbing and a replacement replay cancel the previous animation loop.
+Audio drawing and marker dragging use the union of motion and microphone time
+ranges, preserving shorter microphone pre-roll and longer post-release audio.
+
 Manual recordings stop collecting on disconnect and remain in the current tab
 until saved or explicitly discarded. Stopping freezes the capture time and loss
 count; a failed transaction leaves it available for retry. Pending saves block

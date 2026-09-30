@@ -2,12 +2,13 @@
 // Pure view code — it reads from the store and telemetry, never the device.
 
 import { get } from "../core/db.js?v=shot-store-134";
-import { drawTraceChart, reviewTimeRangeUs } from "./trace-chart.js?v=shot-store-142";
+import { drawTraceChart, reviewChartTimeRangeUs } from "./trace-chart.js?v=shot-store-148";
+import { replayPosition, traceTimeline, timelineIndexAt } from "./replay.js?v=shot-store-148";
 import {
   calibratedAngle,
   initOrientationVisualizer,
   wrapAngleDeg,
-} from "./bow-3d.js?v=shot-store-142";
+} from "./bow-3d.js?v=shot-store-148";
 
 async function getActiveArrowSpeed() {
   const activeBowId = localStorage.getItem("openfloat_active_bow_id");
@@ -100,7 +101,7 @@ export function mountDashboard({ store, telemetry, el }) {
 
     if (yClient < bandTopClient) return null;
 
-    const timeRangeUs = reviewTimeRangeUs(state, state.reviewTrace);
+    const timeRangeUs = reviewChartTimeRangeUs(state);
     const maxIdx = state.reviewTrace.length - 1;
     if (maxIdx <= 0) return null;
 
@@ -156,7 +157,7 @@ export function mountDashboard({ store, telemetry, el }) {
     const clientWidth = rect.width;
     const frac = Math.max(0, Math.min(1, xClient / clientWidth));
 
-    const timeRangeUs = reviewTimeRangeUs(state, state.reviewTrace);
+    const timeRangeUs = reviewChartTimeRangeUs(state);
     const maxIdx = state.reviewTrace.length - 1;
     if (maxIdx <= 0) return;
 
@@ -166,7 +167,7 @@ export function mountDashboard({ store, telemetry, el }) {
     if (timeRangeUs && timeRangeUs.end > timeRangeUs.start) {
       const tUs = timeRangeUs.start + frac * (timeRangeUs.end - timeRangeUs.start);
       timeMs = tUs / 1000;
-      idx = Math.max(0, Math.min(maxIdx, Math.round(frac * maxIdx)));
+      idx = Math.max(0, timelineIndexAt(traceTimeline(state.reviewTrace, state.reviewSampleRateHz), tUs));
     } else {
       idx = Math.max(0, Math.min(maxIdx, Math.round(frac * maxIdx)));
       const f = state.reviewTrace[idx];
@@ -285,10 +286,9 @@ export function mountDashboard({ store, telemetry, el }) {
     let accelG = s.accelG || 0;
     let gyroMag = s.gyroMag || 0;
 
-    if (s.reviewMode && s.reviewTrace && s.reviewTrace.length > 0) {
-      const progress = Math.max(0, Math.min(1, s.replayProgress ?? 1));
-      const idx = Math.min(s.reviewTrace.length - 1, Math.floor(progress * (s.reviewTrace.length - 1)));
-      const pt = s.reviewTrace[idx];
+    const position = s.reviewMode ? replayPosition(s.reviewTrace, s.replayProgress, s.reviewSampleRateHz) : null;
+    if (position?.index >= 0) {
+      const pt = s.reviewTrace[position.index];
       roll = pt.roll || 0;
       pitch = pt.pitch || 0;
       yaw = pt.yaw || 0;
@@ -306,17 +306,13 @@ export function mountDashboard({ store, telemetry, el }) {
     let micPct = hasMic ? Math.round((s.sample.micAmp / 255) * 100) : 0;
     if (s.reviewMode && s.reviewMicSeries?.length) {
       hasMic = true;
-      const replayProgress = Math.max(0, Math.min(1, s.replayProgress ?? 1));
-      const endIdx = Math.max(
-        0,
-        Math.min(s.reviewMicSeries.length - 1, Math.floor(replayProgress * (s.reviewMicSeries.length - 1))),
-      );
+      const endIdx = timelineIndexAt(traceTimeline(s.reviewMicSeries, s.reviewSampleRateHz), position.timeUs);
       const peak = s.reviewMicSeries
         .slice(0, endIdx + 1)
         .reduce((max, point) => Math.max(max, point.micAmp || 0), 0);
       micPct = Math.round((peak / 255) * 100);
     } else if (s.reviewMode && s.reviewTrace?.length) {
-      const peak = s.reviewTrace.reduce((max, point) => Math.max(max, point.micAmp || 0), 0);
+      const peak = s.reviewTrace.slice(0, position.index + 1).reduce((max, point) => Math.max(max, point.micAmp || 0), 0);
       if (peak > 0) {
         hasMic = true;
         micPct = Math.round((peak / 255) * 100);

@@ -2,61 +2,35 @@
 // view with phase-colored Pin Float trace, or the line view with accel /
 // quaternion series and the mic band) from store state each frame.
 
-import { micChartPointsFromSeries } from "../protocol/trace.js?v=shot-store-118";
-import { cssVar } from "./bow-3d.js?v=shot-store-142";
+import { cssVar } from "./bow-3d.js?v=shot-store-148";
+import { replayPosition, traceTimeline } from "./replay.js?v=shot-store-148";
 
 function reviewMicChartData(state) {
   if (!state.reviewMode) return null;
   if (state.reviewMicSeries?.length) {
-    return micChartPointsFromSeries(state.reviewMicSeries);
+    return state.reviewMicSeries;
   }
   const payload = state.reviewTrace || [];
   if (payload.some((point) => (point.micAmp || 0) > 0)) {
-    return payload.map((point) => ({
-      tUs: Number.isFinite(Number(point.tUs)) ? Number(point.tUs) : undefined,
-      micAmp: point.micAmp || 0,
-    }));
+    return payload;
   }
   return null;
 }
 
-function reviewTraceTimeRangeUs(state, trace) {
-  if (!Array.isArray(trace) || trace.length < 2) return null;
-  const values = trace
-    .map((point) => Number(point.tUs))
-    .filter((value) => Number.isFinite(value));
-  if (values.length < 2) return null;
-  let start = Math.min(...values);
-  let end = Math.max(...values);
-  if (end <= start) return null;
-  return { start, end };
-}
-
-function fallbackReviewTimeRangeUs(state, trace) {
-  if (!Array.isArray(trace) || trace.length < 2) return null;
-  const sampleRateHz = Number(state.reviewSampleRateHz) > 0 ? Number(state.reviewSampleRateHz) : 52;
-  const dtUs = 1000000 / sampleRateHz;
-  const thresholdG = state.reviewThresholdG != null ? Number(state.reviewThresholdG) : 12;
-  const { releaseIdx } = findReleaseIndex(trace, true, thresholdG);
-  return {
-    start: -releaseIdx * dtUs,
-    end: (trace.length - 1 - releaseIdx) * dtUs,
-  };
-}
-
 export function reviewTimeRangeUs(state, trace) {
-  return reviewTraceTimeRangeUs(state, trace) || fallbackReviewTimeRangeUs(state, trace);
+  if (!Array.isArray(trace) || trace.length < 2) return null;
+  const { start, end } = traceTimeline(trace, state.reviewSampleRateHz);
+  return { start, end };
 }
 
 // Shared x-axis for the review line chart: the union of the motion trace and the
 // mic series real-timestamp ranges. The mic is captured over a different window
 // than the motion (shorter pre-roll, longer post-pad) and at a higher sample
 // rate, so using the motion range alone squished the audio into part of the
-// chart and clipped its tail. Returns null when neither series has real tUs, so
-// both fall back to index mapping and stay aligned.
+// chart and clipped its tail. Legacy traces use elapsed time from sample zero.
 function reviewLineTimeRangeUs(state, motionData, micData) {
-  const motionRange = reviewTraceTimeRangeUs(state, motionData);
-  const micRange = Array.isArray(micData) ? reviewTraceTimeRangeUs(state, micData) : null;
+  const motionRange = reviewTimeRangeUs(state, motionData);
+  const micRange = reviewTimeRangeUs(state, micData);
   if (motionRange && micRange) {
     return {
       start: Math.min(motionRange.start, micRange.start),
@@ -64,6 +38,10 @@ function reviewLineTimeRangeUs(state, motionData, micData) {
     };
   }
   return motionRange || micRange || null;
+}
+
+export function reviewChartTimeRangeUs(state) {
+  return reviewLineTimeRangeUs(state, state.reviewTrace, state.reviewMicSeries);
 }
 
 // Chart draw colors that must flip with the page theme (light marks on the
@@ -215,10 +193,11 @@ function drawCompareReviewTrace(ctx, {
   cx,
   cy,
   replayProgress,
+  sampleRateHz,
 }) {
   if (traceData.length < 2) return;
 
-  const replayCount = Math.max(2, Math.ceil(traceData.length * replayProgress));
+  const replayCount = replayPosition(traceData, replayProgress, sampleRateHz).index + 1;
   const visible = traceData.slice(0, replayCount);
   const mapPoint = (pt) => ({
     x: cx - (((pt.roll || 0) - rollCenter) / normMaxDev) * displayScale,
@@ -378,7 +357,7 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
 
     if (data.length >= 2) {
       const replayProgress = state.reviewMode ? Math.max(0, Math.min(1, state.replayProgress ?? 1)) : 1;
-      const replayCount = Math.max(2, Math.ceil(data.length * replayProgress));
+      const replayCount = state.reviewMode ? replayPosition(data, replayProgress, state.reviewSampleRateHz).index + 1 : data.length;
       const visibleData = state.reviewMode ? data.slice(0, replayCount) : data;
       const targetZoom = state.reviewMode ? state.traceZoom || 1 : 1;
       let rollCenter = 0;
@@ -467,6 +446,7 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
           cx,
           cy,
           replayProgress,
+          sampleRateHz: state.compareSampleRateHz,
         });
       }
 
@@ -582,13 +562,13 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
         reviewMic,
         "micAmp",
         "rgba(53, 199, 232, 0.55)",
-        "rgba(53, 199, 232, 0.22)",
         w,
         h,
         {
           bandHeight: 0.2,
           label: "Audio",
           timeRangeUs,
+          sampleRateHz: state.reviewSampleRateHz,
           releaseTimeMs: state.reviewReleaseTimeMs,
           hitTimeMs: state.reviewHitTimeMs,
           releaseIdx: state.reviewReleaseIdx,
@@ -614,9 +594,8 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
     // both series' real-timestamp ranges. With real tUs (browser captures)
     // both map by time even though the mic samples at ~1110 Hz and the motion
     // trace at 52-208 Hz over a different window; the union keeps the audio
-    // from being squished or clipped. Without real tUs (firmware traces) it
-    // returns null and both fall back to index mapping, still aligned because
-    // the mic series is derived from the same payload.
+    // from being squished or clipped. Legacy firmware uses uniform elapsed
+    // time, aligned with the microphone series derived from the same payload.
     const timeRangeUs = state.reviewMode
       ? reviewLineTimeRangeUs(state, data, micData)
       : null;
@@ -627,13 +606,13 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
       micData,
       "micAmp",
       "rgba(53, 199, 232, 0.45)",
-      "rgba(53, 199, 232, 0.15)",
       w,
       h,
       state.reviewMode ? {
         bandHeight: 0.3,
         label: "Audio",
         timeRangeUs,
+        sampleRateHz: state.reviewSampleRateHz,
         releaseTimeMs: state.reviewReleaseTimeMs,
         hitTimeMs: state.reviewHitTimeMs,
         releaseIdx: state.reviewReleaseIdx,
@@ -642,10 +621,10 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
     );
 
     if (hasQuaternionSeries(data)) {
-      drawSeries(ctx, data, "qw", cssVar("--green"), w, h, timeRangeUs, 1);
-      drawSeries(ctx, data, "qx", cssVar("--cyan"), w, h, timeRangeUs, 1);
-      drawSeries(ctx, data, "qy", cssVar("--amber"), w, h, timeRangeUs, 1);
-      drawSeries(ctx, data, "qz", "#ff5d73", w, h, timeRangeUs, 1);
+      drawSeries(ctx, data, "qw", cssVar("--green"), w, h, timeRangeUs, 1, state.reviewSampleRateHz);
+      drawSeries(ctx, data, "qx", cssVar("--cyan"), w, h, timeRangeUs, 1, state.reviewSampleRateHz);
+      drawSeries(ctx, data, "qy", cssVar("--amber"), w, h, timeRangeUs, 1, state.reviewSampleRateHz);
+      drawSeries(ctx, data, "qz", "#ff5d73", w, h, timeRangeUs, 1, state.reviewSampleRateHz);
       drawChartLegend(ctx, [
         ["qw", cssVar("--green")],
         ["qx", cssVar("--cyan")],
@@ -653,9 +632,9 @@ export function drawTraceChart(ctx, canvas, store, telemetry) {
         ["qz", "#ff5d73"],
       ], w);
     } else {
-      drawSeries(ctx, data, "ax", cssVar("--green"), w, h, timeRangeUs);
-      drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h, timeRangeUs);
-      drawSeries(ctx, data, "az", cssVar("--amber"), w, h, timeRangeUs);
+      drawSeries(ctx, data, "ax", cssVar("--green"), w, h, timeRangeUs, 2, state.reviewSampleRateHz);
+      drawSeries(ctx, data, "ay", cssVar("--cyan"), w, h, timeRangeUs, 2, state.reviewSampleRateHz);
+      drawSeries(ctx, data, "az", cssVar("--amber"), w, h, timeRangeUs, 2, state.reviewSampleRateHz);
       drawChartLegend(ctx, [
         ["ax", cssVar("--green")],
         ["ay", cssVar("--cyan")],
@@ -681,7 +660,7 @@ function drawChartLegend(ctx, items, w) {
   ctx.restore();
 }
 
-function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null, limit = 2) {
+function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null, limit = 2, sampleRateHz = 52) {
   if (data.length < 2) return;
 
   ctx.strokeStyle = color;
@@ -689,6 +668,7 @@ function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null, limit = 2) 
   ctx.beginPath();
   const maxIdx = data.length - 1;
   const useTime = !!(timeRangeUs && timeRangeUs.end > timeRangeUs.start);
+  const timeline = useTime ? traceTimeline(data, sampleRateHz) : null;
 
   // When the dataset is much wider than the canvas, decimate with a min/max
   // bucket strategy that preserves visual peaks while skipping sub-pixel detail.
@@ -698,7 +678,7 @@ function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null, limit = 2) 
   if (step <= 1) {
     // No decimation needed — draw every point
     for (let i = 0; i < data.length; i += 1) {
-      const tUs = Number(data[i].tUs);
+      const tUs = timeline?.times[i];
       const x =
         useTime && Number.isFinite(tUs)
           ? Math.max(
@@ -719,7 +699,7 @@ function drawSeries(ctx, data, key, color, w, h, timeRangeUs = null, limit = 2) 
     // with the minimum and maximum Y value to preserve peaks/troughs.
     const xForIdx = (idx) => {
       if (useTime) {
-        const tUs = Number(data[idx].tUs);
+        const tUs = timeline.times[idx];
         if (Number.isFinite(tUs)) {
           return Math.max(0, Math.min(w, ((tUs - timeRangeUs.start) / (timeRangeUs.end - timeRangeUs.start)) * w));
         }
@@ -782,8 +762,9 @@ function drawMicSeries(ctx, data, key, baseColor, w, h, options = {}) {
 
   const maxIdx = data.length - 1;
   const timeRangeUs = options.timeRangeUs || null;
+  const timeline = timeRangeUs ? traceTimeline(data, options.sampleRateHz) : null;
   const xForPoint = (point, index) => {
-    const tUs = Number(point.tUs);
+    const tUs = timeline?.times[index];
     if (
       timeRangeUs &&
       Number.isFinite(tUs) &&
@@ -828,7 +809,7 @@ function drawMicSeries(ctx, data, key, baseColor, w, h, options = {}) {
       ctx.lineTo(xForPoint(data[bestIdx], bestIdx), bestY);
     }
   }
-  ctx.lineTo(w, bandBottom);
+  ctx.lineTo(xForPoint(data[maxIdx], maxIdx), bandBottom);
   ctx.closePath();
   ctx.fill();
   ctx.restore();

@@ -4,7 +4,8 @@
 import { createStore, EventBus } from "./core/store.js";
 import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-147";
 import { createAdapter } from "./device/adapters.js?v=shot-store-144";
-import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-142";
+import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-148";
+import { createReplayController, traceTimeline } from "./ui/replay.js?v=shot-store-148";
 import {
   MOUNT_ORIENTATIONS,
   cloneMountAxes,
@@ -13,16 +14,16 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/bow-3d.js?v=shot-store-142";
+} from "./ui/bow-3d.js?v=shot-store-148";
 import { initDb, getAll, get, put, remove, removeSavedShots, generateUUID } from "./core/db.js?v=shot-store-146";
 import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-146";
 import { mountTraining } from "./ui/training.js?v=shot-store-137";
 import { mountGuide } from "./ui/guide.js?v=shot-store-120";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
-import { initHistory } from "./ui/history.js?v=shot-store-147";
+import { initHistory } from "./ui/history.js?v=shot-store-148";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-147";
+const APP_BUILD = "shot-store-148";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -478,6 +479,7 @@ store.subscribe((state) => {
     const playing = state.replayActive && !state.replayPaused;
     el.replayTraceBtn.classList.toggle("playing", playing);
     el.replayTraceBtn.title = playing ? "Pause replay" : "Play replay";
+    el.replayTraceBtn.setAttribute("aria-label", el.replayTraceBtn.title);
     el.replayTraceBtn.disabled = !pinReviewActive;
     el.speedValue.textContent = `${formatSpeed(state.replaySpeed || 1)}×`;
     if (el.traceCanvas) {
@@ -491,9 +493,10 @@ store.subscribe((state) => {
       }
       el.traceScrubSlider.disabled = !pinReviewActive;
       el.traceScrubValue.textContent = traceScrubLabel(state);
+      el.traceScrubSlider.setAttribute("aria-valuetext", `${traceScrubLabel(state)} of ${reviewDurationSeconds(state).toFixed(1)}s`);
     }
     if (el.tracePhaseRail) {
-      const segments = tracePhaseSegments(state.reviewTrace);
+      const segments = tracePhaseSegments(state.reviewTrace, state.reviewSampleRateHz);
       const hold = el.tracePhaseRail.querySelector(".phase-hold");
       const brk = el.tracePhaseRail.querySelector(".phase-break");
       const release = el.tracePhaseRail.querySelector(".phase-release");
@@ -745,14 +748,8 @@ function streamRateLabelText(val) {
   return "1110 Hz (Max)";
 }
 
-function reviewSampleRateHz(state) {
-  return Number(state.reviewSampleRateHz || 52);
-}
-
 function reviewDurationSeconds(state) {
-  const traceLength = state.reviewTrace ? state.reviewTrace.length : 0;
-  if (traceLength <= 1) return 0;
-  return (traceLength - 1) / reviewSampleRateHz(state);
+  return traceTimeline(state.reviewTrace, state.reviewSampleRateHz).durationUs / 1000000;
 }
 
 function traceScrubLabel(state) {
@@ -761,7 +758,7 @@ function traceScrubLabel(state) {
   return `${elapsed.toFixed(1)}s`;
 }
 
-function tracePhaseSegments(trace) {
+function tracePhaseSegments(trace, sampleRateHz) {
   if (!trace || trace.length < 2) {
     return { hold: 100, break: 0, release: 0, follow: 0 };
   }
@@ -783,13 +780,16 @@ function tracePhaseSegments(trace) {
 
   const breakStart = Math.max(0, releaseIdx - Math.max(4, Math.round(trace.length * 0.025)));
   const releaseEnd = Math.min(trace.length - 1, releaseIdx + Math.max(8, Math.round(trace.length * 0.055)));
-  const total = Math.max(1, trace.length - 1);
+  const timeline = traceTimeline(trace, sampleRateHz);
+  const elapsed = (index) => timeline.times[index] - timeline.start;
+  const total = timeline.durationUs;
+  if (total <= 0) return { hold: 100, break: 0, release: 0, follow: 0 };
 
   return {
-    hold: (breakStart / total) * 100,
-    break: ((releaseIdx - breakStart) / total) * 100,
-    release: ((releaseEnd - releaseIdx) / total) * 100,
-    follow: ((total - releaseEnd) / total) * 100,
+    hold: (elapsed(breakStart) / total) * 100,
+    break: ((elapsed(releaseIdx) - elapsed(breakStart)) / total) * 100,
+    release: ((elapsed(releaseEnd) - elapsed(releaseIdx)) / total) * 100,
+    follow: ((total - elapsed(releaseEnd)) / total) * 100,
   };
 }
 
@@ -1451,51 +1451,11 @@ el.viewTargetBtn.addEventListener("click", () => {
   store.set({ chartView: "target" });
 });
 
-el.replayTraceBtn.addEventListener("click", () => {
-  const state = store.get();
-  if (!state.reviewMode || state.chartView !== "target") return;
-
-  if (state.replayActive && !state.replayPaused) {
-    store.set({ replayPaused: true });
-    return;
-  }
-
-  // Progress accumulates per-frame scaled by the current replay speed, so the
-  // speed control takes effect live (mid-replay) without restarting playback.
-  const BASE_DURATION_MS = 1800;
-  let lastTs = performance.now();
-  const startProgress = state.replayProgress >= 1 ? 0 : (state.replayProgress || 0);
-  store.set({ replayActive: true, replayPaused: false, replayProgress: startProgress });
-
-  function tick(now) {
-    const current = store.get();
-    if (!current.reviewMode || current.chartView !== "target") return;
-    if (current.replayPaused) return;
-    const dt = now - lastTs;
-    lastTs = now;
-    const speed = current.replaySpeed || 1;
-    const progress = Math.min(
-      1,
-      (current.replayProgress || 0) + (dt / BASE_DURATION_MS) * speed,
-    );
-    store.set({
-      replayProgress: progress,
-      replayActive: progress < 1,
-      replayPaused: false,
-    });
-    if (progress < 1) requestAnimationFrame(tick);
-  }
-
-  requestAnimationFrame(tick);
-});
+const replay = createReplayController(store);
+el.replayTraceBtn.addEventListener("click", replay.toggle);
 
 el.traceScrubSlider.addEventListener("input", () => {
-  const progress = Number(el.traceScrubSlider.value) / 1000;
-  store.set({
-    replayActive: false,
-    replayPaused: false,
-    replayProgress: progress,
-  });
+  replay.seek(Number(el.traceScrubSlider.value) / 1000);
 });
 
 // Replay speed control (replaces the old zoom multiplier; zoom is now a gesture)
