@@ -10,6 +10,9 @@ node --test test/
 
 The tests import the browser app's ES modules directly. Keep fixtures small and
 focused so the suite stays useful for a buildless static app.
+Offline checks verify that all precache files exist, the renderer's full module
+graph resolves locally and is precached, and the bow GLB has no external image
+or buffer URLs.
 
 For native IndexedDB regression checks, serve the repository and open
 `http://localhost:4178/test/browser.html` in Chrome or Edge. Click **Run storage

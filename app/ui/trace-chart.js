@@ -3,7 +3,7 @@
 // quaternion series and the mic band) from store state each frame.
 
 import { micChartPointsFromSeries } from "../protocol/trace.js?v=shot-store-118";
-import { cssVar } from "./bow-3d.js?v=shot-store-126";
+import { cssVar } from "./bow-3d.js?v=shot-store-142";
 
 function reviewMicChartData(state) {
   if (!state.reviewMode) return null;

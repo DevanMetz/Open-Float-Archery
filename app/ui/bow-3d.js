@@ -2,9 +2,9 @@
 // mount-orientation settings card, and the bow shop, plus the mount-orientation
 // presets and model loading/customization helpers they share.
 
-const THREE_URL = "https://esm.sh/three@0.164.1";
-const GLTF_LOADER_URL = "https://esm.sh/three@0.164.1/examples/jsm/loaders/GLTFLoader.js";
-const ORBIT_CONTROLS_URL = "https://esm.sh/three@0.164.1/examples/jsm/controls/OrbitControls.js";
+const THREE_URL = "../../vendor/three/build/three.module.min.js";
+const GLTF_LOADER_URL = "../../vendor/three/examples/jsm/loaders/GLTFLoader.js";
+const ORBIT_CONTROLS_URL = "../../vendor/three/examples/jsm/controls/OrbitControls.js";
 const BOW_MODEL_URL = "Blender/BowModel.glb";
 const BOW_MODEL_TARGET_SIZE = 3.35;
 const MCU_MODEL_NAMES = [

@@ -8,3 +8,4 @@ import "./outcome.test.js";
 import "./impact-target.test.js";
 import "./session-review.test.js";
 import "./sync.test.js";
+import "./offline.test.js";

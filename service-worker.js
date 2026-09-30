@@ -1,4 +1,4 @@
-const CACHE_NAME = "openfloat-v141";
+const CACHE_NAME = "openfloat-v142";
 const ASSETS = [
   "./",
   "./index.html",
@@ -11,6 +11,10 @@ const ASSETS = [
   "./icon-maskable-512.png",
   "./apple-touch-icon.png",
   "./Blender/BowModel.glb",
+  "./vendor/three/build/three.module.min.js",
+  "./vendor/three/examples/jsm/loaders/GLTFLoader.js",
+  "./vendor/three/examples/jsm/controls/OrbitControls.js",
+  "./vendor/three/examples/jsm/utils/BufferGeometryUtils.js",
   "./app/main.js",
   "./app/data/sample-data.js",
   "./app/data/sample-shots-data.js",

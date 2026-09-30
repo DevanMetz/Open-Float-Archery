@@ -4,7 +4,7 @@
 import { createStore, EventBus } from "./core/store.js";
 import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-137";
 import { createAdapter } from "./device/adapters.js?v=shot-store-123";
-import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-134";
+import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-142";
 import {
   MOUNT_ORIENTATIONS,
   cloneMountAxes,
@@ -13,7 +13,7 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/bow-3d.js?v=shot-store-126";
+} from "./ui/bow-3d.js?v=shot-store-142";
 import { initDb, getAll, get, put, remove, generateUUID } from "./core/db.js?v=shot-store-135";
 import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-134";
 import { mountTraining } from "./ui/training.js?v=shot-store-137";
@@ -22,7 +22,7 @@ import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
 import { initHistory } from "./ui/history.js?v=shot-store-141";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-141";
+const APP_BUILD = "shot-store-142";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [

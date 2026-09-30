@@ -622,6 +622,11 @@ service worker (`service-worker.js`) is registered to cache all core markup,
 styling, modules, and the 3D bow model. It uses network-first same-origin
 fetches with cached fallback, keeping offline range use while allowing versioned
 app assets to update promptly.
+The 3D views use a pinned local copy of Three.js 0.164.1 and its GLTF loader,
+orbit controls, and buffer geometry utility in `vendor/three/`. All four modules
+are precached, so an offline reload does not rely on a third-party CDN or the
+browser's HTTP cache. The upstream MIT license and archive integrity are kept
+with the files. This adds static assets only; there is no build or install step.
 
 ### 3D Model Asset Contract
 

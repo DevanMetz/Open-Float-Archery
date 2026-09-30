@@ -179,6 +179,10 @@ architecture, design intent, and forward-looking targets, see
   from the scene and uses as the live XIAO module preview.
 - **Consolidated Settings**: Full-width Power Management and Telemetry & Buffer cards sit at the top, followed by a combined, collapsible **Sensor & 3D Alignment** card that pairs the sensor mount axis mapping (which changes the data) with the 3D model display (visual only) under one shared 3D preview. Connecting and zeroing live on the header badge and dashboard, so a separate connection card is no longer needed.
 - **Offline PWA Support**: Registers a service worker to cache application assets (markup, styling, scripts, and the 3D model GLB), enabling full offline operation at remote archery ranges.
+  Three.js 0.164.1, its model loader, and orbit controls are served locally and
+  precached with the app. Dashboard, Bow Shop, and alignment previews no longer
+  need a CDN connection. Open the app online before range use so its initial
+  offline cache can finish installing; optional cloud sync still needs internet.
 - **Local Data Backup & Restore**: A Settings card exports every locally stored shot, trace, session override, and bow profile to a single JSON file, and imports one back (merging by key). Fully local — no account needed — so field-test data is portable between devices and easy to back up.
   Full backups and single-shot imports commit as one transaction; a malformed
   later record rolls back the entire import. Unsupported export versions and

@@ -101,6 +101,8 @@ gates local use.
 - `app/` contains native ES modules with no build step: protocol parsing,
   device adapters, IndexedDB storage, telemetry scoring/sync, and UI modules
   (dashboard, Steady Aim training, trace preview).
+- `vendor/three/` contains the pinned Three.js renderer and required loaders,
+  with its upstream license and provenance, for offline 3D views.
 - `firmware/` is the Zephyr/NCS app for the Seeed XIAO nRF54L15 Sense. See
   `firmware/BUILDING.md` for build, flash, and verification instructions.
 - `tools/` contains host-side validation utilities, including the BLE client and
