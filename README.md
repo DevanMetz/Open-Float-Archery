@@ -13,7 +13,8 @@ app store, no account, and no cloud required.
 🚀 **[Quick Start](docs/quick-start.md)** ·
 🧩 **[Feature Status](docs/feature-status.md)** ·
 🏗 **[Architecture Blueprint](Blueprint.md)** ·
-🎛 **[BLE Commands](docs/reference/ble-commands.md)**
+🎛 **[BLE Commands](docs/reference/ble-commands.md)** ·
+🤝 **[Contributing](CONTRIBUTING.md)**
 
 <p align="center">
   <img src="docs/images/hero-shot-trace.webp" width="420"
