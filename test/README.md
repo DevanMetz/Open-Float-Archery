@@ -42,6 +42,8 @@ New-Item -ItemType Directory -Force firmware/build-host-test | Out-Null
 clang -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/trace_buffer.c firmware/tests/trace_buffer_test.c -o firmware/build-host-test/trace_buffer_test.exe
 ./firmware/build-host-test/trace_buffer_test.exe firmware/build-host-test/timed-trace.bin
 node tools/verify_trace_timing.mjs firmware/build-host-test/timed-trace.bin
+clang -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/trace_store.c firmware/tests/trace_store_test.c -o firmware/build-host-test/trace_store_test.exe
+./firmware/build-host-test/trace_store_test.exe
 ```
 
 The final command decodes bytes emitted by the actual C encoder with the actual
@@ -50,6 +52,26 @@ It covers 1,000 points, 535 chunks, mixed intervals, signed angles, full shot ID
 release origin, and CRC. C checks also cover clock wrap, ring wrap, long gaps,
 legacy limits, and old RRAM migration. These host checks do not measure sensor
 timing, BLE throughput, RRAM retention, or scheduler interleavings on hardware.
+
+Storage checks inject errors before, after, and partway through all 34 writes
+of a full record, then reload and retry. They verify that previous complete
+records survive, incomplete/corrupt pieces cannot mix captures, short records
+discard stale tails, and reused IDs restore in commit order. The portable C
+checks and C-to-JavaScript fixture run in CI alongside the Node suite.
+
+To exercise capacity and garbage collection with the actual installed SDK ZMS
+source (no SDK files are modified), run:
+
+```powershell
+python tools/verify_trace_storage.py --zephyr C:/ncs/v3.3.0/zephyr --cc clang
+```
+
+This uses a single-threaded 64 KB byte-alterable flash model with 4 KB sectors
+and 16-byte writes. It reserves conservative settings-name/index space and
+retains four complete traces through 100 full saves, 100 maximum-size shot-log
+updates, and 100 remounts. It also demonstrates the original oversized-value
+rejection. The model replaces flash hardware, logging, and mutexes; it does not
+prove physical power-loss behavior or run the full Settings linked-list layer.
 
 For native IndexedDB regression checks, serve the repository and open
 `http://localhost:4178/test/browser.html` in Chrome or Edge. Click **Run storage

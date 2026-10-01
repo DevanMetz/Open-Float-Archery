@@ -43,9 +43,13 @@ architecture, design intent, and forward-looking targets, see
   native IndexedDB/review, and NCS build checks pass; on-sensor timing and RRAM
   retention checks are pending. Full browser recordings take precedence, and
   untimed recovery cannot replace an existing timed recording.
-- Full-trace RRAM persistence currently exceeds the configured 4 KB ZMS
-  per-value limit. Recovery from RAM works while powered; preserving full traces
-  across power cycles needs a chunked-storage repair and hardware verification.
+- Full-trace RRAM persistence uses pieces no larger than 512 bytes and a final
+  CRC-protected manifest, fitting the configured 4 KB ZMS per-value limit. The
+  64 KB partition retains up to four complete traces; powered RAM retains ten.
+  Interrupted writes discard the staging record and preserve the other three.
+  Boot verifies complete records before restoring them in commit order. Bounded
+  retries run off the IMU loop. Host fault and SDK capacity/GC tests pass;
+  physical power-cycle retention still needs hardware verification.
 - The default firmware config is battery-safe and disables the USB UART console
   so the XIAO nRF54L15 can boot from Li-ion battery power. For USB bench logs,
   build with the `firmware/prj_uart.conf` overlay.
@@ -115,8 +119,9 @@ architecture, design intent, and forward-looking targets, see
   rolling buffer is only used as browser-side retention headroom. BLE shot
   events include the live sample sequence from detection, so connected traces
   align motion and microphone envelope data to the device-side release sample
-  instead of browser notification receipt time. The device itself only stores
-  traces for shots taken while disconnected, which then upload on reconnect.
+  instead of browser notification receipt time. Firmware freezes a RAM trace
+  for each shot and persists it when `bufnvs` is enabled, regardless of whether
+  the browser is connected; recovery fills missing browser recordings.
 - **Session Review**: Saved shots are grouped into practice sessions and each
   session summarizes average Float Score, best and worst shot, consistency
   trend, shots by drill label, and the biggest recurring issue. A compact plot

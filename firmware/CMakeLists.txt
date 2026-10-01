@@ -7,5 +7,5 @@ set(DTC_OVERLAY_FILE ${CMAKE_CURRENT_SOURCE_DIR}/app.overlay CACHE STRING "" FOR
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(openfloat-serial)
 
-target_sources(app PRIVATE src/main.c src/trace_buffer.c)
+target_sources(app PRIVATE src/main.c src/trace_buffer.c src/trace_store.c)
 target_link_libraries(app PRIVATE m)

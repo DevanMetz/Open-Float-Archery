@@ -16,6 +16,13 @@ jobs:
           node-version: 22
       - name: Run unit tests
         run: node --test test/
+      - name: Firmware trace host checks
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/trace_buffer.c firmware/tests/trace_buffer_test.c -o "$RUNNER_TEMP/trace_buffer_test"
+          "$RUNNER_TEMP/trace_buffer_test" "$RUNNER_TEMP/timed-trace.bin"
+          node tools/verify_trace_timing.mjs "$RUNNER_TEMP/timed-trace.bin"
+          cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/trace_store.c firmware/tests/trace_store_test.c -o "$RUNNER_TEMP/trace_store_test"
+          "$RUNNER_TEMP/trace_store_test"
 
   python-tools:
     name: Python tool checks

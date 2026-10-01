@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "trace_buffer.h"
+#include "trace_store.h"
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
@@ -498,6 +499,7 @@ static union {
 	struct stored_trace trace;
 	uint8_t bytes[sizeof(struct stored_trace)];
 } trace_persist_snapshot;
+static struct trace_store trace_storage;
 static K_MUTEX_DEFINE(trace_upload_mutex);
 
 static int buffer_rate_hz = 52;
@@ -511,10 +513,13 @@ static struct k_work buffer_nvs_persist_work;
 static struct k_work streamrate_persist_work;
 static struct k_work follow_through_persist_work;
 
-static struct k_work trace_persist_work;
+static struct k_work_delayable trace_persist_work;
 static struct k_work_delayable trace_freeze_work;
 static struct k_work_delayable trace_upload_work;
 static volatile uint32_t trace_pending_mask;
+static uint32_t trace_capture_order[10];
+static uint32_t trace_capture_generation;
+static uint8_t trace_persist_attempts[10];
 
 static bool trace_freeze_pending;
 static uint32_t trace_freeze_shot_id;
@@ -569,6 +574,8 @@ static bool trace_freeze_pending_slot(void)
 			  trace_freeze_shot_id, trace_release_ms);
 	if (buffer_nvs_enabled) {
 		trace_pending_mask |= BIT(trace_freeze_slot);
+		trace_capture_order[trace_freeze_slot] = ++trace_capture_generation;
+		trace_persist_attempts[trace_freeze_slot] = 0;
 	}
 
 	trace_freeze_pending = false;
@@ -588,7 +595,7 @@ static void trace_freeze_work_handler(struct k_work *work)
 		frozen = trace_freeze_pending_slot();
 	}
 	k_mutex_unlock(&trace_mutex);
-	if (frozen) k_work_submit(&trace_persist_work);
+	if (frozen) k_work_reschedule(&trace_persist_work, K_NO_WAIT);
 }
 
 static void schedule_trace_freeze(uint32_t shot_id_value)
@@ -608,9 +615,10 @@ static void schedule_trace_freeze(uint32_t shot_id_value)
 	trace_freeze_pending = true;
 	stored_traces[trace_freeze_slot].shot_id = shot_id_value;
 	stored_traces[trace_freeze_slot].count = 0;
+	trace_pending_mask &= ~BIT(trace_freeze_slot);
 	k_work_reschedule(&trace_freeze_work, K_MSEC(follow_through_ms));
 	k_mutex_unlock(&trace_mutex);
-	if (frozen) k_work_submit(&trace_persist_work);
+	if (frozen) k_work_reschedule(&trace_persist_work, K_NO_WAIT);
 }
 
 static void stored_shot_append(const struct stored_shot *shot)
@@ -1606,6 +1614,10 @@ static int openfloat_settings_set(const char *name, size_t len,
 		return 0;
 	}
 
+	/* Chunked traces load after ordinary settings, in commit order. The normal
+	 * callback order is arbitrary and cannot assemble a multi-key record. */
+	if (name[0] == 't' && name[1] == 's' && name[2] >= '0' &&
+	    name[2] < '0' + TRACE_STORE_SLOTS && name[3] == '/') return 0;
 	if (name[0] == 't' && name[1] >= '0' && name[1] <= '9' && name[2] == '\0') {
 		int slot = name[1] - '0';
 		ssize_t rc;
@@ -1771,28 +1783,67 @@ static void follow_through_persist_work_handler(struct k_work *work)
 }
 
 
+static int trace_settings_read(void *context, unsigned int slot, unsigned int part,
+			       void *data, size_t size)
+{
+	ARG_UNUSED(context);
+	char key[32];
+	snprintf(key, sizeof(key), "openfloat/ts%u/%u", slot, part);
+	ssize_t length = settings_get_val_len(key);
+	if (length < 0) return (int)length;
+	if (!length) return -ENOENT;
+	if ((size_t)length != size) return -EBADMSG;
+	ssize_t rc = settings_load_one(key, data, size);
+	return rc < 0 ? (int)rc : ((size_t)rc == size ? 0 : -EBADMSG);
+}
+
+static int trace_settings_write(void *context, unsigned int slot, unsigned int part,
+				const void *data, size_t size)
+{
+	ARG_UNUSED(context);
+	char key[32];
+	snprintf(key, sizeof(key), "openfloat/ts%u/%u", slot, part);
+	return settings_save_one(key, data, size);
+}
+
+static const struct trace_store_io trace_settings_io = {
+	.read = trace_settings_read, .write = trace_settings_write,
+};
+
+static void trace_restored(void *context, const struct stored_trace *trace)
+{
+	ARG_UNUSED(context);
+	stored_traces[trace->shot_id % 10] = *trace;
+}
+
 static void trace_persist_work_handler(struct k_work *work)
 {
+	/* Persist one capture per invocation, oldest pending first. Yield between
+	 * captures so freeze/upload work can run; reuse the existing 8 KB snapshot. */
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	int slot = -1;
 	for (int i = 0; i < 10; i++) {
-		k_mutex_lock(&trace_mutex, K_FOREVER);
-		bool pending = (trace_pending_mask & BIT(i)) != 0;
-		if (pending) {
-			trace_persist_snapshot.trace = stored_traces[i];
-			trace_pending_mask &= ~BIT(i);
-		}
-		k_mutex_unlock(&trace_mutex);
-		if (pending) {
-			char key[32];
-			snprintf(key, sizeof(key), "openfloat/t%d", i);
-			int rc = settings_save_one(key, &trace_persist_snapshot.trace, sizeof(struct stored_trace));
-			if (rc) {
-				printk("# trace save failed for slot %d: %d\n", i, rc);
-				k_mutex_lock(&trace_mutex, K_FOREVER);
-				trace_pending_mask |= BIT(i);
-				k_mutex_unlock(&trace_mutex);
-			}
-		}
+		if (!(trace_pending_mask & BIT(i))) continue;
+		if (slot < 0 || (int32_t)(trace_capture_order[i] - trace_capture_order[slot]) < 0) slot = i;
 	}
+	if (slot >= 0) {
+		trace_persist_snapshot.trace = stored_traces[slot];
+		trace_pending_mask &= ~BIT(slot);
+		trace_persist_attempts[slot]++;
+	}
+	k_mutex_unlock(&trace_mutex);
+	if (slot < 0) return;
+	int rc = trace_store_save(&trace_storage, &trace_settings_io, &trace_persist_snapshot.trace);
+	if (rc) printk("# trace save failed for shot %u: %d\n", trace_persist_snapshot.trace.shot_id, rc);
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	bool retry = rc && stored_traces[slot].shot_id == trace_persist_snapshot.trace.shot_id &&
+		stored_traces[slot].count > 0 && trace_persist_attempts[slot] < 3;
+	if (retry) trace_pending_mask |= BIT(slot);
+	bool pending = trace_pending_mask != 0;
+	k_mutex_unlock(&trace_mutex);
+	/* Bounded delayed retries avoid spinning on a full or failing backend. New
+	 * captures get their own attempts; all ten remain available in powered RAM. */
+	if (pending) k_work_reschedule(&trace_persist_work, retry ? K_SECONDS(1) : K_NO_WAIT);
 }
 
 
@@ -2853,7 +2904,7 @@ int main(void)
 	k_work_init(&auto_sleep_persist_work, auto_sleep_persist_work_handler);
 	k_work_init(&streamrate_persist_work, streamrate_persist_work_handler);
 	k_work_init(&follow_through_persist_work, follow_through_persist_work_handler);
-	k_work_init(&trace_persist_work, trace_persist_work_handler);
+	k_work_init_delayable(&trace_persist_work, trace_persist_work_handler);
 	k_work_init_delayable(&trace_freeze_work, trace_freeze_work_handler);
 	k_work_init_delayable(&trace_upload_work, trace_upload_work_handler);
 	k_work_init_delayable(&adv_start_work, adv_start_work_handler);
@@ -2863,6 +2914,9 @@ int main(void)
 		       err);
 	} else {
 		(void)settings_load();
+		err = trace_store_load(&trace_storage, &trace_settings_io, &trace_persist_snapshot.trace,
+				       trace_restored, NULL);
+		if (err) printk("# trace storage load failed: %d\n", err);
 	}
 	printk("# shot_count restored: %d\n", shot_count);
 	printk("# stored_shots restored: %u/%u\n", stored_shot_log.count,

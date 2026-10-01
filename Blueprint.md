@@ -427,7 +427,7 @@ shots too, so on the happy path the shot leaves the queue almost immediately. To
 avoid an RRAM write on every shot while connected, the log persist is deferred
 ~3 s: if the shot is still unacked when the timer fires, the firmware persists
 the log and sends a storage-status frame, prompting the browser to drain the
-backlog via `shotdump`. Net result: RRAM is written only when a live frame was
+backlog via `shotdump`. Net result: the compact shot log is written only when a live frame was
 actually lost, while the in-RAM queue plus the ack/retry path guarantee the shot
 is recovered without a reconnect.
 Buffered traces freeze after a configurable post-release follow-through delay
@@ -590,22 +590,41 @@ wrapping into a false short interval. The millisecond clock's 32-bit wrap is
 handled by unsigned subtraction. Release markers stay hidden when the retained
 window does not span the event.
 
-New RRAM trace records are versioned 8,012-byte structs. Boot restores previous
-7,008-byte records into the new in-memory format with timing unavailable;
-`tracetimed` sends these with flags zero, so the browser retains the legacy
-52 Hz assumption and `firmware` source. Existing RRAM records are not rewritten
-until their slot is replaced by a new capture. Older firmware cannot read newly
-written trace records after a downgrade. The settings partition stays 64 KB;
-ten full trace records exceed it. More immediately, the generated configuration
-uses 4,096-byte ZMS sectors, and ZMS rejects values larger than a sector minus
-its metadata. Full old and new trace records exceed that limit. Full-trace RRAM
-persistence therefore needs a chunked-storage repair before power-cycle recovery
-can be relied upon; RAM recovery remains available while the device stays powered.
+The in-memory trace is a versioned 8,012-byte struct at full capacity. Boot can
+restore previous 7,008-byte single-value records into this format with timing
+unavailable; `tracetimed` sends these with flags zero, so the browser retains the
+legacy 52 Hz assumption and `firmware` source. The default 4,096-byte ZMS sector
+limit rejected those old oversized single-value writes; the new writer stores
+only the 12-byte header and populated points in pieces of at most 512 bytes.
+
+The 64 KB settings partition retains up to **four complete traces**, while
+powered RAM retains ten. Four slots leave room for ZMS garbage collection, the
+maximum 100-shot compact log, and ordinary settings. A conservative host model
+running the actual SDK ZMS code passes 100 full-trace saves, shot-log updates,
+and remounts. Five trace slots caused fragmented-space failures for the compact
+shot log in that model, despite its reported free-byte count.
+
+Storage keys are bounded: `openfloat/ts0/0` through `openfloat/ts3/15` hold trace
+pieces; part `16` holds each slot's 20-byte little-endian manifest. The manifest
+is `OFT1`, generation u32, shot ID u32, used byte count u32, and CRC-32/ISO-HDLC
+over its first 16 bytes followed by the used trace bytes. Replacing the oldest
+slot first invalidates its manifest and clears its pieces, preserving the other
+three complete slots. All replacement pieces must succeed before publishing the
+new manifest. Interrupted, missing, truncated, and checksum-invalid records are
+ignored at boot. Generations are integrity checked before restoration in commit
+order, so newer captures win when a shot ID or RAM slot is reused.
+
+New traces persist one at a time off the IMU loop, with at most three attempts
+per capture and a one-second delay after failure. Persistent buffering defaults
+on for fresh firmware (`bufnvs:0` disables future trace writes); stored user
+preferences still apply. The partition size and sector layout are unchanged,
+and legacy records are read without rewriting them on boot. Older firmware
+cannot read the new chunked keys after a downgrade.
 
 Capture, persistence, and upload use short protected RAM copies. RRAM writes
 and BLE notifications run against separate immutable snapshots. Request
 generations prevent a finishing notification from advancing a newer upload.
-The C ring, restore, and encoder are tested on the host; an emitted full wire
+The C ring, restore, encoder, and interrupted-write storage are tested on the host; an emitted full wire
 transfer is decoded by the real JavaScript parser. Native IndexedDB/review tests
 and an NCS build also pass. On-sensor timing, retention, and throughput remain
 to be verified.
@@ -734,7 +753,7 @@ procedural XIAO module.
 ### Real-time UI & Database Updates
 The Recent Shots list is reactive. When a connection is active (serial or BLE) and the device detects a shot, the adapter parses and relays the event onto the global `EventBus` as a `"shot"` event. The `TelemetryStore` listens to this event, deduplicates against the set of device shot IDs already handled **this connection** (the device's `shot_id` restarts at 0 after a `shotreset`/reflash, so all-time deduplication by ID is unsafe), writes the shot to IndexedDB with `session_id: null`, and emits a `"shot-saved"` event. The dashboard UI listens to `"shot-saved"` and instantly updates the Recent Shots grid. Practice sessions are no longer tracked live — they are derived from shot timestamps when the Saved Shots history is rendered (any gap over 30 minutes starts a new session), and the user can rename a session and assign its bow, stored as a per-group override.
 
-While the device is connected it does **not** persist a trace for each shot; the browser captures the trace from the live stream and saves it to IndexedDB shortly after the configurable follow-through window, then emits `"shot-trace-saved"`. Connected browser captures keep about 3.5 seconds of pre-shot hold plus the configured follow-through window; the 20-second live trace buffer is retention headroom, not the saved shot duration. (Shots taken while disconnected are stored on-device and their traces upload on reconnect.) Trace payload points carry `tUs` relative to release so motion and audio envelopes share the same review time axis. For BLE, the browser aligns that release time with the `shot_sequence` embedded in the type-2 frame; for serial it aligns with `OFSHOT.uptime_us`; older firmware falls back to the closest matching buffered release sample. Because a just-detected shot becomes clickable before its browser trace is persisted, opening a recent shot polls briefly for the trace before reporting it unavailable. Manual captures also trigger `"shot-saved"` upon save.
+While connected, the browser captures the trace from the live stream and saves it to IndexedDB shortly after the configurable follow-through window, then emits `"shot-trace-saved"`. Firmware also freezes a RAM trace for every detected shot and persists it when `bufnvs` is enabled, regardless of connection state. Connected browser captures keep about 3.5 seconds of pre-shot hold plus the configured follow-through window; the 20-second live trace buffer is retention headroom, not the saved shot duration. (Shots taken while disconnected are stored on-device and their traces upload on reconnect.) Trace payload points carry `tUs` relative to release so motion and audio envelopes share the same review time axis. For BLE, the browser aligns that release time with the `shot_sequence` embedded in the type-2 frame; for serial it aligns with `OFSHOT.uptime_us`; older firmware falls back to the closest matching buffered release sample. Because a just-detected shot becomes clickable before its browser trace is persisted, opening a recent shot polls briefly for the trace before reporting it unavailable. Manual captures also trigger `"shot-saved"` upon save.
 
 Saved-shot history derives practice sessions from timestamp gaps. Each session renders a review summary: average Float Score, best shot, worst shot, consistency trend, shots by drill label, biggest recurring issue, and a compact Float Score plot across the session. The score is an OpenFloat-specific v1 metric (`openfloat-float-score-v1`) derived from hold stability, release quality, follow-through control, and level consistency; it is not modeled on a commercial scoring system.
 
