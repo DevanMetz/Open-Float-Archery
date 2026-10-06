@@ -31,6 +31,10 @@ replay, scoring, and session analysis before building anything. Click **▶ Demo
 in the header to watch the dashboard stream live synthetic motion. It runs fully
 offline once loaded (PWA).
 
+Live sensor connections need a browser with Web Bluetooth. See the
+[browser compatibility guide](docs/quick-start.md#browser-compatibility) for
+supported platforms, iPhone/iPad limits, and secure local serving.
+
 **Already have a sensor?** Serve the repo root over localhost so native ES
 modules and Web Bluetooth are available, then open it in Chrome or Edge:
 
@@ -140,9 +144,15 @@ matches before connecting, which is more reliable than reconnecting by address
 alone. If an older persisted sleep timeout is still short, reset the module and
 use a short scan timeout immediately after reset.
 
-Verify delayed trace freeze behavior without hardware:
+The client assembles 20-byte and 29-byte binary records and newline-delimited
+text across notifications, including split headers and mixed record batches.
+Incomplete text is bounded to 4 KiB; oversized lines are skipped, and a binary
+header can resume decoding without waiting for their newline.
+
+Verify the parser and delayed trace freeze behavior without hardware or Bleak:
 
 ```powershell
+python -m unittest discover -s test -p "*_test.py"
 python tools\verify_follow_through_trace.py
 ```
 
@@ -184,12 +194,22 @@ python tools\openfloat_ble_client.py --nus --name-prefix OpenFloat --every
 
 Cloud sync is optional and self-hosted; the app is fully usable local-only. To
 enable it, supply a Supabase URL and anon key in the app's Cloud modal. The
-authoritative, idempotent database schema (tables, columns, dedup index, and
+authoritative, idempotent database schema (tables, columns, capture keys, and
 row-level security policies) lives in
 [`supabase/schema.sql`](supabase/schema.sql) — run that file in the Supabase SQL
 editor. It matches exactly what `app/telemetry/sync.js` uploads, so keep it as
 the single source of truth rather than copying SQL elsewhere; drift causes the
 sync adapter to silently drop unknown columns.
+
+Existing projects should rerun the schema when updating firmware or the app.
+It widens capture IDs to cover the full unsigned 32-bit range and removes the
+older all-time device/shot uniqueness index, preserving existing captures and
+replays. Cloud retries update the saved capture UUID; later captures can reuse
+a device number, and different users can upload the same sensor independently.
+New and updated cloud replays require ownership of their saved capture as well
+as the replay itself.
+The schema also retains the `arrow`/`hold` capture type independently of custom
+labels; older untyped records keep a null type.
 
 ## Support the Project
 

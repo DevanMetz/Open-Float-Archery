@@ -3,7 +3,7 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-import { getAll, saveCapture, saveShotTrace, generateUUID } from "../core/db.js?v=shot-store-155";
+import { get, getAll, saveCapture, saveShotTrace, generateUUID } from "../core/db.js?v=shot-store-176";
 import {
   buildShotTraceRecord,
   decodeFirmwareTraceBytes,
@@ -35,6 +35,10 @@ const MIC_RING_CAPACITY = 4000;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function captureDeviceId(deviceId) {
+  return typeof deviceId === "string" && deviceId ? deviceId : "OpenFloat-Sensor";
 }
 
 export function coachForScore({ formScore, holdStability, releaseQuality, followThrough, roll }) {
@@ -185,15 +189,26 @@ export class TelemetryStore {
     bus.on("sample", (sample) => this.ingest(sample));
     bus.on("shot", (shot) => this.onShot(shot));
     bus.on("trace-chunk", (chunk) => this.onTraceChunk(chunk));
+    // Same-link retries and protocol fallback also start a fresh assembly.
+    bus.on("trace-start", ({ shotId }) => this.pendingTraces.delete(shotId));
+    bus.on("trace-resume", (capture) => this.resumeFirmwareTrace(capture));
     // Device-reported lifetime count (e.g. restored from NVS on connect).
     // Updates the displayed counter only; not logged as a new shot.
-    bus.on("shotcount", (count) => this.store.set({ shotCount: count }));
+    bus.on("shotcount", (count) => {
+      this.deviceCountSynced = true;
+      this.store.set({ shotCount: count });
+    });
     // Device-reported backlog of shots saved before connecting, uploaded on
     // reconnect. Drives the inline "Uploading" status indicator.
-    bus.on("upload-status", ({ pending }) =>
-      this.store.set({ uploadPending: Math.max(0, pending | 0) }),
-    );
-    bus.on("status", ({ mode, text }) => {
+    bus.on("upload-status", ({ pending, shotCount }) => {
+      const patch = { uploadPending: Math.max(0, pending | 0) };
+      if (Number.isInteger(shotCount) && shotCount >= 0 && shotCount <= 0xffffffff) {
+        this.deviceCountSynced = true;
+        patch.shotCount = shotCount;
+      }
+      this.store.set(patch);
+    });
+    bus.on("status", ({ mode, text, deviceId }) => {
       const connected = mode === "live" || mode === "demo";
       if (!connected && this.isRecordingManual) {
         this.isRecordingManual = false;
@@ -208,6 +223,7 @@ export class TelemetryStore {
       }
       if (!connected) {
         this.connectionEpoch += 1;
+        this.deviceCountSynced = false;
         this.connectionShotIds.clear();
         this.pendingTraces.clear();
         this.pendingShotSaves = new Map();
@@ -224,6 +240,7 @@ export class TelemetryStore {
         statusMode: mode,
         statusText: text,
         connected,
+        deviceId: connected ? (mode === "demo" ? "OpenFloat-Demo" : captureDeviceId(deviceId)) : null,
       });
     });
 
@@ -236,8 +253,9 @@ export class TelemetryStore {
 
   reset() {
     // Switching transports must never erase an unsaved or pending capture.
-    if (this.store.get().manualRecordingActive) return false;
+    if (this.store.get().manualRecordingActive || this.isSavingManual) return false;
     this.connectionEpoch = (this.connectionEpoch || 0) + 1;
+    this.deviceCountSynced = false;
     this.lastSeq = null;
     this.frameCount = 0;
     this.lost = 0;
@@ -268,9 +286,9 @@ export class TelemetryStore {
 
     // device_shot_id values already saved during the current connection. Used
     // to dedup the device re-uploading the same shot (watchdog re-send of
-    // shotdump, or a lost ack). Scoped per-connection because the device's
-    // shot_id restarts at 0 after a firmware `shotreset`/reflash, which would
-    // otherwise collide with older shots in IndexedDB and wrongly drop new ones.
+    // shotdump, or a lost ack). Scoped per-connection because older firmware
+    // and erased settings can reuse IDs, which would otherwise collide with
+    // older shots in IndexedDB and wrongly drop new ones.
     // Keep the exact local id even if the record is deleted before its trace.
     this.connectionShotIds = new Map();
     this.pendingShotSaves = new Map();
@@ -280,6 +298,7 @@ export class TelemetryStore {
     this.manualRecordingBuffer = [];
     this.manualRecordingDurationUs = 0;
     this.manualRecordingLabel = "";
+    this.manualRecordingDeviceId = null;
 
     this.store.set({
       frameCount: 0,
@@ -301,6 +320,7 @@ export class TelemetryStore {
       levelConsistency: null,
       scoreVersion: FLOAT_SCORE_VERSION,
       lastShotSummary: null,
+      deviceId: null,
       manualRecordingActive: false,
       manualRecordingPaused: false,
       manualRecordingSaving: false,
@@ -520,18 +540,19 @@ export class TelemetryStore {
     });
   }
 
-  // Newest shot record with this device_shot_id saved within the dedup
+  // Newest shot record with this sensor key and device_shot_id within the dedup
   // window, or null. The 24 h window bounds how long a re-uploaded shot is
   // treated as a duplicate, so a same-id shot after a firmware reset on a
   // later day is still saved as new.
-  async findRecentShotByDeviceId(deviceShotId) {
+  async findRecentShotByDeviceId(deviceShotId, deviceId = this.store.get().deviceId) {
     const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+    deviceId = captureDeviceId(deviceId);
     try {
       const shots = await getAll("shots");
       const cutoff = Date.now() - DEDUP_WINDOW_MS;
       let newest = null;
       for (const record of shots) {
-        if (record.device_id !== "OpenFloat-Sensor") continue;
+        if (record.device_id !== deviceId) continue;
         if (record.device_shot_id !== deviceShotId) continue;
         const savedAt = Date.parse(record.timestamp);
         if (!Number.isFinite(savedAt) || savedAt < cutoff) continue;
@@ -545,6 +566,39 @@ export class TelemetryStore {
       // matching the pre-dedup behavior.
       return null;
     }
+  }
+
+  async needsFirmwareTrace(localShotId) {
+    try {
+      // A deleted capture stays deleted; otherwise an absent or empty replay
+      // still needs recovery even when its metadata was already committed.
+      if (!await get("shots", localShotId)) return false;
+      const trace = await get("shot_traces", localShotId);
+      return !Array.isArray(trace?.payload) || trace.payload.length === 0;
+    } catch (error) {
+      // Metadata remains committed. A read failure can still try the device's
+      // retained trace without rewriting metadata or losing acknowledgement.
+      this.bus.emitAsync("log", `Saved trace check failed: ${error?.message || "Storage unavailable"}. Requesting firmware recovery.`);
+      return true;
+    }
+  }
+
+  async resumeFirmwareTrace({ shotId, localShotId } = {}) {
+    if (!Number.isInteger(shotId) || shotId < 0 || shotId > 0xffffffff ||
+        typeof localShotId !== "string" || !localShotId || !this.store.get().connected) return false;
+    const epoch = this.connectionEpoch;
+    const deviceId = captureDeviceId(this.store.get().deviceId);
+    const shot = await get("shots", localShotId);
+    // Restore this capture's exact mapping, never a recent reused counter.
+    if (!shot || shot.device_id !== deviceId || shot.device_shot_id !== shotId) return false;
+    const needed = await this.needsFirmwareTrace(localShotId);
+    if (!needed || epoch !== this.connectionEpoch || !this.store.get().connected ||
+        captureDeviceId(this.store.get().deviceId) !== deviceId) return false;
+    const current = this.connectionShotIds.get(shotId);
+    if (current && current !== localShotId) return false;
+    this.connectionShotIds.set(shotId, localShotId);
+    this.pendingTraces.delete(shotId);
+    return true;
   }
 
   async onShot(shot) {
@@ -564,61 +618,54 @@ export class TelemetryStore {
     const shotTimeUs = this.elapsedUs;
     const capturedAt = new Date().toISOString();
     const activeState = this.store.get();
+    // Notifications can precede the live status; the receiving adapter supplies
+    // their identity. Snapshot it before storage waits or a transport switch.
+    const deviceId = captureDeviceId(shot.sourceConnection?.deviceId ?? activeState.deviceId);
     const startLost = this.lost;
     const captureContext = { epoch: this.connectionEpoch, motion: this.shotTraceBuffer, mic: this.micRingBuffer };
     const followThroughMs = configuredFollowThroughMs();
     const browserTraceRateHz = configuredBrowserShotTraceRateHz();
-    this.store.set({ shotCount: shot.shotCount, lastShot: shot });
+    const displayedCount = shot.stored && this.deviceCountSynced ? activeState.shotCount : shot.shotCount;
+    if (!shot.stored) this.deviceCountSynced = true;
+    this.store.set({ shotCount: displayedCount, lastShot: shot });
 
+    // Repeated frames re-acknowledge their committed capture without waiting
+    // for view callbacks or creating another write.
+    if (shot.shotId != null && this.connectionShotIds.has(shot.shotId)) {
+      const localShotId = this.connectionShotIds.get(shot.shotId);
+      const traceNeeded = !!shot.stored && await this.needsFirmwareTrace(localShotId);
+      this.bus.emitAsync("log", `Shot id ${shot.shotId} already handled this connection; re-acknowledging.`);
+      this.notifySavedShot({ shotId: captureContext.epoch === this.connectionEpoch ? shot.shotId : null,
+        stored: !!shot.stored, duplicate: true, traceNeeded,
+        localShotId, sourceConnection: shot.sourceConnection });
+      return localShotId;
+    }
+
+    // Stored re-uploads can recover a lost acknowledgement across connections.
+    // Older firmware and erased settings can reuse IDs; match only recent records.
+    if (shot.stored && shot.shotId != null) {
+      const recentMatch = await this.findRecentShotByDeviceId(shot.shotId, deviceId);
+      if (recentMatch) {
+        const traceNeeded = await this.needsFirmwareTrace(recentMatch.id);
+        this.bus.emitAsync("log", `Stored shot id ${shot.shotId} already saved at ${recentMatch.timestamp}; re-acknowledging.`);
+        if (captureContext.epoch !== this.connectionEpoch) return recentMatch.id;
+        this.connectionShotIds.set(shot.shotId, recentMatch.id);
+        this.notifySavedShot({ shotId: shot.shotId, stored: true, duplicate: true, traceNeeded,
+          localShotId: recentMatch.id, sourceConnection: shot.sourceConnection });
+        return recentMatch.id;
+      }
+    }
+
+    this.bus.emitAsync(
+      "log",
+      `Shot #${shot.shotCount} (id ${shot.shotId}) peak ~${peakG.toFixed(1)} g`,
+    );
+
+    let localShotId;
+    let shotRecord;
     try {
-      // 1. Skip a shot the device re-uploaded within this connection (watchdog
-      //    re-send of shotdump, or a lost ack). Still re-emit shot-saved so the
-      //    device gets acknowledged again and frees the stored slot.
-      if (shot.shotId != null && this.connectionShotIds.has(shot.shotId)) {
-        this.bus.emit(
-          "log",
-          `Shot id ${shot.shotId} already handled this connection; re-acknowledging.`,
-        );
-        this.bus.emit("shot-saved", {
-          shotId: shot.shotId,
-          stored: !!shot.stored,
-          duplicate: true,
-        });
-        return;
-      }
-
-      // 1b. Cross-connection dedup for stored re-uploads. If the live frame
-      //     was saved but the ack never reached the device (or the link
-      //     dropped first), the device re-uploads the shot on the next
-      //     connection, where connectionShotIds is empty. Match on
-      //     device_shot_id against recently saved shots only: shot_id restarts
-      //     after a firmware shotreset/reflash, so old records with the same
-      //     id must not swallow genuinely new shots.
-      if (shot.stored && shot.shotId != null) {
-        const recentMatch = await this.findRecentShotByDeviceId(shot.shotId);
-        if (recentMatch) {
-          this.bus.emit(
-            "log",
-            `Stored shot id ${shot.shotId} already saved at ${recentMatch.timestamp}; re-acknowledging.`,
-          );
-          if (captureContext.epoch !== this.connectionEpoch) return recentMatch.id;
-          this.connectionShotIds.set(shot.shotId, recentMatch.id);
-          this.bus.emit("shot-saved", {
-            shotId: shot.shotId,
-            stored: true,
-            duplicate: true,
-          });
-          return;
-        }
-      }
-
-      this.bus.emit(
-        "log",
-        `Shot #${shot.shotCount} (id ${shot.shotId}) peak ~${peakG.toFixed(1)} g`,
-      );
-
-      // 2. Save Shot Metadata
-      const localShotId = generateUUID();
+      // Save metadata and its upload task as one transaction.
+      localShotId = generateUUID();
       const ax = (shot.axMg || 0) / 1000;
       const ay = (shot.ayMg || 0) / 1000;
       const az = (shot.azMg ?? 1000) / 1000;
@@ -627,10 +674,10 @@ export class TelemetryStore {
 
       const yaw = Number.isFinite(shot.yawDeg) ? shot.yawDeg
         : !shot.stored && Number.isFinite(activeState.yaw) ? activeState.yaw : null;
-      const shotRecord = {
+      shotRecord = {
         id: localShotId,
         session_id: null,
-        device_id: "OpenFloat-Sensor",
+        device_id: deviceId,
         capture_kind: "arrow",
         device_shot_id: shot.shotId,
         stored_upload: !!shot.stored,
@@ -654,59 +701,69 @@ export class TelemetryStore {
       };
 
       await saveCapture(shotRecord);
-      // Mark handled only after a successful save, so a failed write can still
-      // be retried when the device re-sends the shot.
-      const sameConnection = captureContext.epoch === this.connectionEpoch;
-      if (shot.shotId != null && sameConnection) {
-        this.connectionShotIds.set(shot.shotId, localShotId);
-      }
-
-      if (!shot.stored && browserTraceRateHz > 0) {
-        this.scheduleBrowserShotTraceCapture(
-          localShotId,
-          shot.shotId,
-          shotTimeUs,
-          shot,
-          followThroughMs,
-          browserTraceRateHz,
-          startLost,
-          captureContext,
-        );
-      }
-
-      this.bus.emit(
-        "log",
-        shot.stored
-          ? `Stored shot metadata saved; waiting for firmware trace upload.`
-          : browserTraceRateHz > 0
-            ? `Shot metadata saved; browser ${browserTraceRateHz} Hz trace will freeze after ${(followThroughMs / 1000).toFixed(1)} s.`
-            : `Shot metadata saved; browser trace capture is off.`,
-      );
-      if (sameConnection) this.store.set({
-        lastShotSummary: {
-          timestamp: shotRecord.timestamp,
-          score: shotRecord.shot_score,
-          peakG: shotRecord.peak_g,
-          cant: shotRecord.cant_angle_deg,
-          pitch: shotRecord.pitch_angle_deg,
-          yaw: shotRecord.yaw_angle_deg,
-        },
-      });
-      this.bus.emit("shot-saved", {
-        shotId: sameConnection ? shot.shotId : null,
-        stored: !!shot.stored,
-        localShotId,
-      });
-
-      // 4. Trigger cloud sync manager if wired
-      if (this.syncAdapter) {
-        this.syncAdapter.triggerSync();
-      }
-      return localShotId;
     } catch (error) {
       console.error("Local storage / sync queuing failed for shot:", error);
-      this.bus.emit("log", `Offline save error: ${error.message}`);
+      this.bus.emitAsync("log", `Offline save error: ${error.message}`);
+      return null;
     }
+    // Mark handled only after a successful save, so a failed write can still
+    // be retried when the device re-sends the shot.
+    const sameConnection = captureContext.epoch === this.connectionEpoch;
+    if (shot.shotId != null && sameConnection) {
+      this.connectionShotIds.set(shot.shotId, localShotId);
+    }
+
+    if (!shot.stored && browserTraceRateHz > 0) {
+      this.scheduleBrowserShotTraceCapture(
+        localShotId,
+        shot.shotId,
+        shotTimeUs,
+        shot,
+        followThroughMs,
+        browserTraceRateHz,
+        startLost,
+        captureContext,
+      );
+    }
+
+    this.bus.emitAsync(
+      "log",
+      shot.stored
+        ? `Stored shot metadata saved; waiting for firmware trace upload.`
+        : browserTraceRateHz > 0
+          ? `Shot metadata saved; browser ${browserTraceRateHz} Hz trace will freeze after ${(followThroughMs / 1000).toFixed(1)} s.`
+          : `Shot metadata saved; browser trace capture is off.`,
+    );
+    if (sameConnection) this.store.set({
+      lastShotSummary: {
+        timestamp: shotRecord.timestamp,
+        score: shotRecord.shot_score,
+        peakG: shotRecord.peak_g,
+        cant: shotRecord.cant_angle_deg,
+        pitch: shotRecord.pitch_angle_deg,
+        yaw: shotRecord.yaw_angle_deg,
+      },
+    });
+    this.notifySavedShot({
+      shotId: sameConnection ? shot.shotId : null,
+      stored: !!shot.stored,
+      localShotId,
+      sourceConnection: shot.sourceConnection,
+    });
+
+    // Dispatch the queued upload without delaying the committed capture.
+    this.triggerCaptureSync("Shot");
+    return localShotId;
+  }
+
+  notifySavedShot(payload) {
+    // Metadata's pending promise represents its write, not an asynchronous
+    // view refresh. Firmware chunks can proceed while a saved view is busy.
+    this.bus.emitAsync("shot-saved", payload).then((results) => {
+      if (results.some((result) => result.status === "rejected" || result.value === false)) {
+        this.bus.emitAsync("log", "Shot saved locally. Some saved views or device callbacks could not finish. Reopen Saved Shots or reconnect to retry.");
+      }
+    });
   }
 
   resolveShotTimeUs(shot, fallbackUs = this.elapsedUs, traceBuffer = this.shotTraceBuffer) {
@@ -831,7 +888,7 @@ export class TelemetryStore {
     }));
 
     if (frozen.length === 0) {
-      this.bus.emit("log", `No browser trace samples available for shot ID ${deviceShotId}.`);
+      this.bus.emitAsync("log", `No browser trace samples available for shot ID ${deviceShotId}.`);
       return;
     }
 
@@ -850,14 +907,16 @@ export class TelemetryStore {
       source: "browser",
     });
 
+    let updatedShot;
+    let traceScore;
     try {
       const releaseIndex = frozenWithTime.findIndex((point) => point.tUs >= resolvedShotTimeUs);
-      const traceScore = computeFloatScoreFromTrace(frozen, {
+      traceScore = computeFloatScoreFromTrace(frozen, {
         sampleRateHz,
         releaseIndex: releaseIndex >= 0 ? releaseIndex : undefined,
       });
       const endLost = frozenWithTime.at(-1)?.lost ?? startLost;
-      const updatedShot = await saveShotTrace(tracePayload, {
+      updatedShot = await saveShotTrace(tracePayload, {
         stability_score: traceScore.holdStability,
         shot_score: traceScore.formScore,
         hold_stability: traceScore.holdStability,
@@ -867,42 +926,68 @@ export class TelemetryStore {
         score_version: traceScore.scoreVersion,
         packet_loss_count: Math.max(0, endLost - startLost),
       });
-      if (!updatedShot) {
-        this.bus.emit("log", `Capture ${localShotId.slice(0, 8)} was deleted; skipped its delayed trace.`);
-        return null;
-      }
-      const active = this.store.get();
-      if (captureContext.epoch === this.connectionEpoch &&
-          (active.reviewMode ? active.reviewShotId === localShotId : active.lastShot?.shotId === deviceShotId)) {
-        this.store.set({
-          formScore: traceScore.formScore,
-          holdStability: traceScore.holdStability,
-          releaseQuality: traceScore.releaseQuality,
-          followThrough: traceScore.followThrough,
-          levelConsistency: traceScore.levelConsistency,
-          scoreVersion: traceScore.scoreVersion,
-          lastShotSummary: {
-            timestamp: updatedShot.timestamp,
-            score: updatedShot.shot_score,
-            peakG: updatedShot.peak_g,
-            cant: updatedShot.cant_angle_deg,
-            pitch: updatedShot.pitch_angle_deg,
-            yaw: updatedShot.yaw_angle_deg,
-          },
-        });
-      }
-      this.bus.emit(
-        "log",
-        `Browser trace saved for shot ID ${deviceShotId} (${frozen.length} motion samples, ${(BROWSER_SHOT_PRE_MS / 1000).toFixed(1)} s pre + ${(followThroughMs / 1000).toFixed(1)} s follow @ ${sampleRateHz} Hz` +
-          `${micSeries.length ? `, ${micSeries.length} mic samples` : ""}).`,
-      );
-      this.bus.emit("shot-trace-saved", { localShotId, deviceShotId });
-      if (this.syncAdapter) {
-        this.syncAdapter.triggerSync();
-      }
     } catch (error) {
       console.error("Delayed browser trace save failed:", error);
-      this.bus.emit("log", `Browser trace save error: ${error.message}`);
+      this.bus.emitAsync("log", `Browser trace save error: ${error.message}`);
+      return null;
+    }
+    if (!updatedShot) {
+      this.bus.emitAsync("log", `Capture ${localShotId.slice(0, 8)} was deleted; skipped its delayed trace.`);
+      return null;
+    }
+    const active = this.store.get();
+    // History refreshes an active review from its current committed snapshot.
+    // A delayed writer must not put older metrics or samples back into it.
+    if (captureContext.epoch === this.connectionEpoch && !active.reviewMode &&
+        active.lastShot?.shotId === deviceShotId) {
+      this.store.set({
+        formScore: traceScore.formScore,
+        holdStability: traceScore.holdStability,
+        releaseQuality: traceScore.releaseQuality,
+        followThrough: traceScore.followThrough,
+        levelConsistency: traceScore.levelConsistency,
+        scoreVersion: traceScore.scoreVersion,
+        lastShotSummary: {
+          timestamp: updatedShot.timestamp,
+          score: updatedShot.shot_score,
+          peakG: updatedShot.peak_g,
+          cant: updatedShot.cant_angle_deg,
+          pitch: updatedShot.pitch_angle_deg,
+          yaw: updatedShot.yaw_angle_deg,
+        },
+      });
+    }
+    this.bus.emitAsync(
+      "log",
+      `Browser trace saved for shot ID ${deviceShotId} (${frozen.length} motion samples, ${(BROWSER_SHOT_PRE_MS / 1000).toFixed(1)} s pre + ${(followThroughMs / 1000).toFixed(1)} s follow @ ${sampleRateHz} Hz` +
+        `${micSeries.length ? `, ${micSeries.length} mic samples` : ""}).`,
+    );
+    await this.notifySavedTrace(localShotId, deviceShotId);
+    return localShotId;
+  }
+
+  triggerCaptureSync(capture) {
+    const syncAdapter = this.syncAdapter;
+    if (!syncAdapter) return;
+    // Uploads stay queued locally. Their dispatch cannot reject a committed
+    // capture, delay view refresh, or change a newer recording's status.
+    Promise.resolve().then(() => syncAdapter.triggerSync()).catch((error) => {
+      console.warn(`${capture} saved locally; cloud sync could not start:`, error);
+      this.bus.emitAsync("log", `${capture} saved locally; cloud sync will retry: ${error?.message || "Sync unavailable"}`);
+    });
+  }
+
+  async notifySavedTrace(localShotId, deviceShotId) {
+    this.triggerCaptureSync("Trace");
+    let refreshed = false;
+    try {
+      const notifications = await this.bus.emitAsync("shot-trace-saved", { localShotId, deviceShotId });
+      refreshed = notifications.every((result) => result.status === "fulfilled" && result.value !== false);
+    } catch (error) {
+      console.warn("Trace saved locally; saved views could not refresh:", error);
+    }
+    if (!refreshed) {
+      this.bus.emitAsync("log", `Trace saved locally for ${localShotId.slice(0, 8)}. Some views could not refresh. Reopen Saved Shots or Training to retry the views.`);
     }
   }
 
@@ -912,6 +997,7 @@ export class TelemetryStore {
       return;
     }
 
+    const deviceId = captureDeviceId(this.store.get().deviceId);
     const { payload: timedBuffer, sampleRateHz: hz } = prepareTimedTrace(
       this.history30s, this.shotTraceRateHz > 0 ? this.shotTraceRateHz : 52,
     );
@@ -959,7 +1045,7 @@ export class TelemetryStore {
       const shotRecord = {
         id: manualShotId,
         session_id: null,
-        device_id: isDemo ? "OpenFloat-Demo" : "OpenFloat-Sensor",
+        device_id: isDemo ? "OpenFloat-Demo" : deviceId,
         capture_kind: "hold",
         sample: isDemo,
         timestamp: new Date().toISOString(),
@@ -1025,6 +1111,7 @@ export class TelemetryStore {
     this.manualRecordingBuffer = [];
     this.manualRecordingDurationUs = 0;
     this.manualRecordingLabel = String(label || "");
+    this.manualRecordingDeviceId = captureDeviceId(this.store.get().deviceId);
     this.manualRecordingStartLost = this.lost;
     this.manualRecordingEndLost = null;
     this.manualRecordingStoppedAt = null;
@@ -1037,7 +1124,7 @@ export class TelemetryStore {
       manualRecordSamples: 0,
       manualRecordElapsedSec: 0
     });
-    this.bus.emit("log", `Manual recording started: "${label || 'Untitled'}"`);
+    this.bus.emitAsync("log", `Manual recording started: "${label || 'Untitled'}"`);
     return true;
   }
 
@@ -1047,6 +1134,7 @@ export class TelemetryStore {
     this.manualRecordingBuffer = [];
     this.manualRecordingDurationUs = 0;
     this.manualRecordingLabel = "";
+    this.manualRecordingDeviceId = null;
     
     this.store.set({
       manualRecordingActive: false,
@@ -1055,15 +1143,15 @@ export class TelemetryStore {
       manualRecordSamples: 0,
       manualRecordElapsedSec: 0
     });
-    this.bus.emit("log", "Manual recording discarded.");
+    this.bus.emitAsync("log", "Manual recording discarded.");
     return true;
   }
 
   async saveManualRecording() {
     if (this.isSavingManual) return null;
     if (this.manualRecordingBuffer.length === 0) {
-      this.bus.emit("log", "No telemetry data recorded yet to save.");
       this.store.set({ manualRecordMessage: "No samples to save yet. Wait for telemetry or discard this recording." });
+      this.bus.emitAsync("log", "No telemetry data recorded yet to save.");
       return null;
     }
 
@@ -1072,17 +1160,17 @@ export class TelemetryStore {
     this.manualRecordingEndLost ??= this.lost;
     this.manualRecordingStoppedAt ??= new Date().toISOString();
     this.store.set({ manualRecordingPaused: true, manualRecordingSaving: true, manualRecordMessage: "Saving recording..." });
-    const isDemo = this.manualRecordingBuffer.some((point) => point.sample);
-    const durationSec = this.manualRecordingDurationUs / 1000000;
-    const rawSampleRateHz = durationSec > 0 ? this.manualRecordingBuffer.length / durationSec : 52;
-    const { payload: decimatedBuffer, sampleRateHz } = prepareTimedTrace(this.manualRecordingBuffer, 52, rawSampleRateHz);
-    const label = this.manualRecordingLabel.trim() || "Manual Recording";
-
-    this.bus.emit("log", `Saving manual recording: "${label}" (${durationSec.toFixed(1)}s, ${decimatedBuffer.length} replay points at about ${sampleRateHz} Hz)...`);
-
+    let label;
     let manualShotId;
     let shotRecord;
     try {
+      const isDemo = this.manualRecordingBuffer.some((point) => point.sample);
+      const durationSec = this.manualRecordingDurationUs / 1000000;
+      const rawSampleRateHz = durationSec > 0 ? this.manualRecordingBuffer.length / durationSec : 52;
+      const { payload: decimatedBuffer, sampleRateHz } = prepareTimedTrace(this.manualRecordingBuffer, 52, rawSampleRateHz);
+      label = this.manualRecordingLabel.trim() || "Manual Recording";
+      this.bus.emitAsync("log", `Saving manual recording: "${label}" (${durationSec.toFixed(1)}s, ${decimatedBuffer.length} replay points at about ${sampleRateHz} Hz)...`);
+
       // 1. Compute metrics
       let maxG = 0;
       let sumStability = 0;
@@ -1123,7 +1211,7 @@ export class TelemetryStore {
       shotRecord = {
         id: manualShotId,
         session_id: null,
-        device_id: isDemo ? "OpenFloat-Demo" : "OpenFloat-Sensor",
+        device_id: isDemo ? "OpenFloat-Demo" : captureDeviceId(this.manualRecordingDeviceId ?? this.store.get().deviceId),
         capture_kind: "hold",
         sample: isDemo,
         timestamp: this.manualRecordingStoppedAt,
@@ -1158,21 +1246,24 @@ export class TelemetryStore {
       await saveCapture(shotRecord, tracePayload);
     } catch (error) {
       console.error("Failed to save manual recording:", error);
-      this.bus.emit("log", `Manual recording save failed: ${error.message}`);
-      this.store.set({ manualRecordMessage: "Could not save. Your recording is still in this tab; press Save to retry." });
-      return null;
-    } finally {
       this.isSavingManual = false;
-      this.store.set({ manualRecordingSaving: false });
+      this.store.set({
+        manualRecordingSaving: false,
+        manualRecordMessage: "Could not save. Your recording is still in this tab; press Save to retry.",
+      });
+      this.bus.emitAsync("log", `Manual recording save failed: ${error.message}`);
+      return null;
     }
 
+    // The transaction committed. Clear the unsaved draft before notifying
+    // views, and keep controls locked until those notifications settle.
     this.manualRecordingBuffer = [];
     this.manualRecordingDurationUs = 0;
     this.manualRecordingLabel = "";
     this.store.set({
       manualRecordingActive: false,
       manualRecordingPaused: false,
-      manualRecordMessage: "Recording saved.",
+      manualRecordMessage: "Recording saved locally. Refreshing saved views...",
       manualRecordSamples: 0,
       manualRecordElapsedSec: 0,
       lastShotSummary: {
@@ -1185,16 +1276,26 @@ export class TelemetryStore {
       }
     });
 
-    this.bus.emit("log", `Manual recording saved successfully: "${label}" (ID: ${manualShotId.slice(0, 8)}).`);
-    this.bus.emit("shot-saved", {
-      shotId: null,
-      stored: false,
-      localShotId: manualShotId,
-    });
-
-    if (this.syncAdapter) {
-      this.syncAdapter.triggerSync();
+    this.bus.emitAsync("log", `Manual recording saved successfully: "${label}" (ID: ${manualShotId.slice(0, 8)}).`);
+    this.triggerCaptureSync("Recording");
+    let refreshed = false;
+    try {
+      const notifications = await this.bus.emitAsync("shot-saved", {
+        shotId: null,
+        stored: false,
+        localShotId: manualShotId,
+      });
+      refreshed = notifications.every((result) => result.status === "fulfilled" && result.value !== false);
+    } catch (error) {
+      console.warn("Manual recording saved locally; saved views could not refresh:", error);
     }
+    this.isSavingManual = false;
+    this.store.set({
+      manualRecordingSaving: false,
+      manualRecordMessage: refreshed
+        ? "Recording saved locally."
+        : "Recording saved locally. Some views could not refresh. Reopen Saved Shots or Training to retry the views.",
+    });
     return manualShotId;
   }
 
@@ -1215,7 +1316,7 @@ export class TelemetryStore {
         !chunk.payload.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255) ||
         (protocol === 2 && (![4, 6, 7, 8].includes(chunk.pointStride) ||
           (chunk.chunkIndex < chunk.totalChunks - 1 && chunk.payload.length !== payloadSize)))) {
-      this.bus.emit("log", `Ignoring invalid trace chunk ${chunk.chunkIndex}/${chunk.totalChunks} for shot ID ${chunk.shotId}.`);
+      this.bus.emitAsync("log", `Ignoring invalid trace chunk ${chunk.chunkIndex}/${chunk.totalChunks} for shot ID ${chunk.shotId}.`);
       return;
     }
     const epoch = this.connectionEpoch;
@@ -1230,7 +1331,7 @@ export class TelemetryStore {
         (pending.pointStride && chunk.pointStride && pending.pointStride !== chunk.pointStride) ||
         (previous && (previous.length !== chunk.payload.length || previous.some((byte, i) => byte !== chunk.payload[i])))) {
       this.pendingTraces.delete(chunk.shotId);
-      this.bus.emit("log", `Discarded inconsistent trace transfer for shot ID ${chunk.shotId}.`);
+      this.bus.emitAsync("log", `Discarded inconsistent trace transfer for shot ID ${chunk.shotId}.`);
       return;
     }
     pending.chunks.set(chunk.chunkIndex, chunk.payload);
@@ -1239,7 +1340,7 @@ export class TelemetryStore {
     }
 
     if (pending.chunks.size === 1 || pending.chunks.size % 50 === 0) {
-      this.bus.emit("log", `Received trace chunk ${pending.chunks.size}/${pending.totalChunks} for shot ID ${chunk.shotId}.`);
+      this.bus.emitAsync("log", `Received trace chunk ${pending.chunks.size}/${pending.totalChunks} for shot ID ${chunk.shotId}.`);
     }
 
     let complete = pending.totalChunks > 0;
@@ -1252,7 +1353,7 @@ export class TelemetryStore {
 
     if (complete) {
       pending.saving = true;
-      this.bus.emit("log", `All trace chunks received for shot ID ${chunk.shotId}. Reassembling...`);
+      this.bus.emitAsync("log", `All trace chunks received for shot ID ${chunk.shotId}. Reassembling...`);
 
       // 1. Flatten all chunks in order
       const bytesList = [];
@@ -1275,7 +1376,7 @@ export class TelemetryStore {
         // pending commit, then use its connection-scoped local id. Never fall
         // back to an older capture that happened to reuse the device counter.
         await pendingSaves.get(chunk.shotId);
-        if (epoch !== this.connectionEpoch) return;
+        if (epoch !== this.connectionEpoch || this.pendingTraces.get(chunk.shotId) !== pending) return;
         const localShotId = this.connectionShotIds.get(chunk.shotId);
         if (localShotId) {
           const tracePayload = buildShotTraceRecord({
@@ -1287,34 +1388,24 @@ export class TelemetryStore {
 
           const shotRecord = await saveShotTrace(tracePayload);
           if (!shotRecord) {
-            this.bus.emit("log", `Skipped firmware trace for ${localShotId.slice(0, 8)}: capture was deleted or already has a richer recording.`);
+            this.bus.emitAsync("log", `Skipped firmware trace for ${localShotId.slice(0, 8)}: capture was deleted or already has a richer recording.`);
             return;
           }
 
           const micCount = trace.filter((point) => (point.micAmp || 0) > 0).length;
-          this.bus.emit(
+          this.bus.emitAsync(
             "log",
             `Trace for shot ID ${chunk.shotId} saved (${trace.length} samples` +
               `${micCount ? `, ${micCount} with mic` : ""}).`,
           );
-          this.bus.emit("shot-trace-saved", { localShotId: shotRecord.id, deviceShotId: chunk.shotId });
-
-          // Trigger a UI redraw if this is the currently selected shot in review mode
-          const activeState = this.store.get();
-          if (activeState.reviewMode && activeState.reviewShotId === shotRecord.id) {
-            this.store.set({
-              reviewTrace: trace,
-              reviewTraceSource: tracePayload.source,
-              reviewSampleRateHz: sampleRateHz,
-              reviewMicSeries: tracePayload.mic_series || null,
-            });
-          }
+          await this.notifySavedTrace(shotRecord.id, chunk.shotId);
+          return shotRecord.id;
         } else {
-          this.bus.emit("log", `No saved capture for shot ID ${chunk.shotId} in this connection; skipped the firmware trace.`);
+          this.bus.emitAsync("log", `No saved capture for shot ID ${chunk.shotId} in this connection; skipped the firmware trace.`);
         }
       } catch (error) {
         console.error("Failed to save reassembled trace:", error);
-        this.bus.emit("log", `Firmware trace save failed for shot ID ${chunk.shotId}: ${error.message}`);
+        this.bus.emitAsync("log", `Firmware trace save failed for shot ID ${chunk.shotId}: ${error.message}`);
       } finally {
         if (this.pendingTraces.get(chunk.shotId) === pending) this.pendingTraces.delete(chunk.shotId);
       }

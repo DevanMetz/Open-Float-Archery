@@ -26,14 +26,24 @@ bring-up and debugging.
 - `thresh:<g>` — Release detection threshold in g, clamped to `2.0`–`30.0`.
 - `shottrigger` — Generate a synthetic shot event for bench testing the
   detection, stored-shot upload, trace freeze, and ack path.
-- `shotreset` — Reset the persisted lifetime shot count and 32-bit shot ID to 0;
-  also clears the stored-shot backlog.
-- `shotset:<n>` — Set the persisted shot count and 32-bit shot ID to `n` (e.g.
-  correct a miscount).
+- `shotreset` - Reset the persisted lifetime shot count to 0 and clear the
+  stored-shot backlog. Capture IDs keep advancing, so the next release has a
+  different ID from earlier saved shots.
+- `shotset:<n>` - Correct the persisted lifetime count without changing the
+  capture ID. Use decimal digits from `0` through `4294967295`.
 - `shotack:<n>` — Confirm shot ID `n` was saved by the browser; frees its stored
   slot. The ID is the 32-bit device shot ID from the stored-shot frame.
 - `shotdump` — Request upload of any stored-shot backlog plus a storage-status
   frame.
+
+Shot values (`shotset`, `shotack`, and the three trace request commands) must be
+unsigned decimal digits. Empty values, signs, whitespace, suffixes, and values
+above `4294967295` are rejected without changing a count or starting a transfer.
+Embedded NUL bytes are rejected in all control commands. Valid count corrections
+and resets preserve capture IDs across reboot. The lifetime count stops increasing
+at its maximum; the independent 32-bit capture ID continues its normal wrap.
+Use the device shot ID from event metadata for acknowledgments and trace requests,
+which can differ from the displayed lifetime count.
 
 ## Power management
 
@@ -42,6 +52,14 @@ bring-up and debugging.
   Fresh firmware defaults to 300 s.
 - `sleepsens:<g>` — Idle movement threshold to stay awake, `0.05`–`0.50` g.
 - `autosleep:<0|1>` — Enable or disable inactivity-triggered deep sleep.
+
+Before automatic sleep, firmware finishes follow-through and saves pending
+settings, queued shots, and requested traces. During this brief final save,
+the control callback rejects new commands with ATT Write Request Rejected
+(`0xfc`) when a response is requested. Failed saves get up to three passes;
+continued errors keep the sensor awake and retry sleep after thirty seconds.
+Controls reopen when sleep is deferred. Physical sleep/wake and callback timing
+still need hardware verification.
 
 ## Trace buffer
 
@@ -56,6 +74,18 @@ bring-up and debugging.
 - `bufrate:<hz>` — Trace buffer rate: `0`, `52`, `104`, or `208` Hz.
 - `bufnvs:<0|1>` — Toggle RRAM persistence for buffered traces.
 - `followms:<ms>` — Post-release trace freeze delay, clamped to `0`–`3000` ms.
+
+Tuning commands require complete values. Toggles and rates use unsigned decimal
+digits and must match the listed options. `sleeptime` and `followms` accept signed
+32-bit decimal integers; valid numbers outside their stated limits are clamped.
+`thresh`, `wakesens`, and `sleepsens` accept finite decimal numbers, including
+exponents, and keep their stated clamps. Empty values, whitespace, suffixes,
+hexadecimal notation, NaN, infinity, and conversion overflow are rejected with
+ATT "Value Not Allowed" (`0x13`), leaving device settings unchanged.
+
+On boot, persisted tuning values must have a complete four-byte record and fit
+their supported limits. Invalid values retain the firmware defaults, including
+a valid, nonzero stream divider.
 
 ---
 

@@ -46,6 +46,94 @@ A successful build produces the flashable image at:
 firmware/build-v3.3.0/merged.hex
 ```
 
+Before flashing, check the actual GATT objects and advertised service UUID in
+the unstripped ARM32 ELF. Run from the repository root:
+
+```sh
+python tools/verify_ble_uuids.py firmware/build-v3.3.0/firmware/zephyr/zephyr.elf
+```
+
+The check uses Python's standard library and compares compiled bytes with the
+browser adapter and both Python BLE clients. It requires no connected sensor
+and runs in firmware CI before the image is uploaded. The application build
+also rejects shifts outside their operand width; the 48-bit UUID fields use
+64-bit literals so Zephyr's encoding shifts are defined. This preserves the
+published UUIDs. Physical advertising and connection tests still require a
+flashed device.
+
+Counter settings now save the lifetime count and last capture ID together in
+eight bytes. Four-byte settings from older firmware still load, and count
+corrections/resets preserve IDs through subsequent reboots. Older firmware
+cannot load the new eight-byte record. Before downgrading, record the displayed
+count so you can restore it with that version's `shotset` command; its original
+range limits and ID-reset behavior apply. See the counter section in
+[`Blueprint.md`](../Blueprint.md) for the layout and migration details.
+
+Numeric tuning commands now reject incomplete values, overflow, NaN, and infinity
+before changing settings. Valid inputs retain their documented clamps. Persisted
+tuning values must have complete four-byte reads and supported values, including
+a nonzero stream divider; invalid records retain defaults. Portable parser and
+range checks run from `tests/control_values_test.c` (commands in
+[`test/README.md`](../test/README.md)). On-device GATT errors and reboot behavior
+still need hardware verification.
+
+Queued-shot restore preserves the current 2,804-byte Settings layout and accepts
+the older 2,202/1,802-byte layouts. Declared sizes and actual read counts must
+match; invalid counts and incomplete reads leave the RAM queue unchanged. The
+portable restore and stored-frame checks run from `tests/shot_log_test.c`, with
+browser/Python verification commands in `test/README.md`. See `Blueprint.md` for
+the layouts and boot-stack notes. Physical Settings and power-cycle verification
+remain pending.
+
+The queue writer clears unused slots and padding, and `prj.conf` enables
+`CONFIG_ZMS_NO_DOUBLE_WRITE=y`. An acknowledgment that drains an already empty
+stored log no longer rewrites it. Initial empty values, changed backlogs, and
+backlog removal still write; counter and enabled trace storage are separate.
+The comparison adds reads on the system workqueue. Firmware CI runs the actual
+SDK ZMS host capacity and flash-call checks through `tools/verify_trace_storage.py`;
+the model proves write suppression and remount recovery, not physical RRAM
+timing or the complete Settings backend.
+
+Automatic System OFF now waits for follow-through, blocks new control updates,
+drains prior writers, and saves all twelve Settings values plus requested
+unsaved traces. `src/sleep_flush.c` allows three passes with one-second delays;
+continued errors keep the sensor awake and retry sleep after thirty seconds.
+Hardware shutdown and its reboot fallback follow only a successful flush.
+Ordinary saves share one worker with independent per-key budgets: three attempts,
+one second after each failed write. New updates coalesce and supersede older
+write results; exhausted failures remain eligible for an update or final sleep
+save. Ready settings continue during another key's backoff. Host tests inject
+faults at every value and trace write, and the
+SDK storage model verifies final snapshots after GC/remount. Physical sleep,
+workqueue/control timing, wake-up, and battery behavior remain unverified.
+See `Blueprint.md` for sealing, trace failure retention, and recovery details.
+The real SDK Settings backend also passes 108 callback write-fault cases,
+remounts, recovery after exhausted retries by update/sleep, and newer counters
+during old I/O. These single-threaded checks exclude physical flash failures
+and actual Zephyr worker scheduling.
+
+Startup waits for storage restoration before BLE, acquisition, or application
+save jobs start. It tries three times with one-second delays; continued errors
+cause a double-pulsing user LED and another batch after thirty seconds. Malformed
+counters/shot queues also keep startup closed, preventing unread IDs/backlog from
+being overwritten with defaults. Missing fresh-device keys and malformed tunings
+use defaults. The reader uses the pinned SDK's internal Settings/ZMS definitions
+because ordinary Settings lookup can hide read errors. Existing layouts and
+write APIs are unchanged; SDK metadata repair can still write. Portable tests,
+SDK backend/hash fault checks, and the NCS build pass. Physical startup delay
+and LED/error behavior are pending.
+
+Startup also reconciles the capture ID against complete saved shots/traces,
+preventing an older counter from reusing a retained full ID. The saved count
+stays unchanged. After every read succeeds, a changed ID must save before BLE or
+acquisition starts, so replay cannot remove its only durable evidence. Failed
+repair uses the same bounded startup retries. Fresh defaults and unchanged IDs
+need no application save. Wrap-aware
+ordering assumes retained IDs span less than half the unsigned range, and an
+exact half-range ambiguity keeps startup closed. Legacy 16-bit shot logs cannot
+infer high bits. Portable/cross-client and real SDK remount checks pass; physical
+power-cycle behavior remains unverified. This adds no storage-schema changes.
+
 These two warnings are expected and harmless:
 
 ```text

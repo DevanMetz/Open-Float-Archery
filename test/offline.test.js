@@ -14,6 +14,25 @@ test("every precached asset exists in the shipped static site", () => {
   }
 });
 
+test("the app's static module graph stays local and precached", () => {
+  const pending = [new URL("app/main.js", root)];
+  const visited = new Set();
+  while (pending.length) {
+    const url = pending.pop();
+    url.search = url.hash = "";
+    if (visited.has(url.href)) continue;
+    visited.add(url.href);
+    assert.ok(url.href.startsWith(root.href), `External app dependency: ${url}`);
+    assert.ok(cached.has(url.href), `App module is not precached: ${url}`);
+    const source = readFileSync(url, "utf8");
+    for (const match of source.matchAll(/(?:^|\n)\s*import\s*(?:[\w$*{},\s]+\bfrom\s*)?['"]([^'"]+)['"]/g)) {
+      assert.ok(match[1].startsWith("."), `Unresolved app import: ${match[1]}`);
+      pending.push(new URL(match[1], url));
+    }
+  }
+  assert.ok(visited.has(new URL("app/core/saved-data.js", root).href), "Saved-data notification dependency was not followed");
+});
+
 test("the complete 3D renderer module graph stays local and precached", async () => {
   const bowModule = new URL("app/ui/bow-3d.js", root);
   const bowSource = readFileSync(bowModule, "utf8");

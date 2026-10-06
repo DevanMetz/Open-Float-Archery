@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { BleAdapter } from "../app/device/adapters.js";
-import { EventBus } from "../app/core/store.js";
+import { EventBus, createStore } from "../app/core/store.js";
+import { TelemetryStore } from "../app/telemetry/telemetry.js";
 import { decodeBinaryFrame } from "../app/protocol/frame.js";
 import { decodeFirmwareTraceBytes, decodeTimedFirmwareTrace, traceCrc32 } from "../app/protocol/trace.js";
 import { firmwareTraceFrames, timedFirmwareTraceFrames } from "./fixtures/firmware-trace.js";
@@ -58,6 +59,42 @@ function adapterForTest(t, protocol = 2) {
   t.after(() => adapter._stopTraceDownloadTimer());
   return { bus, adapter, commands };
 }
+
+test("unsupported frames cannot change live metrics or complete a replay for ID zero", async (t) => {
+  const { adapter, bus, commands } = adapterForTest(t, 3);
+  const samples = [], chunks = [], logs = [];
+  adapter.sampleCount = 0;
+  t.after(() => adapter._stopStoredShotWatchdog());
+  bus.on("sample", (sample) => samples.push(sample));
+  bus.on("trace-chunk", (chunk) => chunks.push(chunk));
+  bus.on("log", (message) => logs.push(message));
+  adapter._enqueueTraceDownload(0, "saved-zero");
+  adapter._enqueueTraceDownload(1, "saved-one");
+  await flush();
+  for (const [protocol, type] of [[3, 7], [0, 7], [255, 1], [1, 99]]) {
+    const frame = new Uint8Array(29); frame.set([0x4f, 0x46, protocol, type]);
+    notify(adapter, frame);
+    assert.equal(adapter.currentTraceDownloadShotId, 0);
+    assert.equal(adapter.traceLocalShotIds.get(0), "saved-zero");
+    assert.equal(commands.filter((command) => command === "shotack:0").length, 0);
+  }
+  assert.equal(samples.length, 0);
+  assert.equal(adapter.sampleCount, 0);
+  const storage = new Uint8Array(29); storage.set([0x4f, 0x46, 2, 5]);
+  const status = new DataView(storage.buffer);
+  status.setUint16(6, 1, true); status.setUint16(16, 2, true);
+  notify(adapter, storage);
+  await flush();
+  assert.ok(logs.at(-1).includes("retry 2 for 0"));
+  status.setUint16(6, 0, true); notify(adapter, storage);
+  await flush();
+  assert.ok(!logs.at(-1).includes("retry 2 for 0"));
+  for (const frame of timedFirmwareTraceFrames({ shotId: 0, count: 3 }).frames) notify(adapter, frame);
+  await flush();
+  assert.ok(chunks.length > 0 && chunks.every((chunk) => chunk.shotId === 0));
+  assert.equal(adapter.currentTraceDownloadShotId, 1);
+  assert.ok(commands.includes("shotack:0") && commands.includes("tracetimed:1"));
+});
 
 test("BLE requests timed recovery first and falls back without relabeling untimed traces", async (t) => {
   const { adapter, bus, commands } = adapterForTest(t, 3);
@@ -181,4 +218,29 @@ test("trace timeout starts after its queued write and a disconnect cancels delay
   t.mock.timers.tick(10000);
   assert.equal(commands.length, 1, "Disconnected request scheduled a fallback");
   assert.equal(adapter.currentTraceDownloadShotId, null);
+});
+
+test("retrying a stalled trace on the same link starts with fresh chunks and retains metadata associations", async (t) => {
+  const { adapter, bus, commands } = adapterForTest(t, 3);
+  t.mock.method(globalThis, "setInterval", () => 1);
+  const recorder = new TelemetryStore(bus, createStore({ connected: true }));
+  t.after(() => adapter.disconnect());
+  recorder.connectionShotIds.set(42, "saved-42");
+  const unrelated = { chunks: new Map(), totalChunks: 2 };
+  recorder.pendingTraces.set(43, unrelated);
+  adapter._enqueueTraceDownload(42, "saved-42");
+  await flush();
+  notify(adapter, timedFirmwareTraceFrames({ shotId: 42, count: 4 }).frames[0]);
+  assert.equal(recorder.pendingTraces.get(42).chunks.size, 1);
+  t.mock.timers.tick(8000); await flush();
+  assert.equal(adapter.currentTraceDownloadShotId, null);
+  adapter._enqueueTraceDownload(42, "saved-42");
+  const fresh = timedFirmwareTraceFrames({ shotId: 42, count: 4, firstTimeMs: -2000 }).frames[0];
+  notify(adapter, fresh);
+  await flush();
+  assert.deepEqual(recorder.pendingTraces.get(42)?.chunks.get(0), decodeBinaryFrame(fresh).trace.payload,
+    "Retry discarded its first chunk after conflicting with the abandoned transfer");
+  assert.equal(recorder.pendingTraces.get(43), unrelated);
+  assert.equal(recorder.connectionShotIds.get(42), "saved-42");
+  assert.equal(commands.filter((command) => command === "tracetimed:42").length, 2);
 });

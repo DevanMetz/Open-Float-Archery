@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-145">
-  <link rel="stylesheet" href="theme-graph-paper.css?v=proto-1" id="graphThemeLink">
+  <link rel="stylesheet" href="styles.css?v=shot-store-178">
+  <link rel="stylesheet" href="theme-graph-paper.css?v=proto-2" id="graphThemeLink">
   <meta name="theme-color" content="#061014" id="themeMetaColor">
   <script>
     (function () {
@@ -85,28 +85,32 @@
           <span aria-hidden="true">▶</span>
           <span id="demoBtnText">Demo</span>
         </button>
-        <div id="syncBadge" class="status sync-local clickable" title="Configure Cloud Sync">
-          <span class="dot"></span>
+        <button id="syncBadge" class="status sync-local clickable" type="button"
+                title="Configure Cloud Sync" aria-label="Configure cloud sync: Local-Only"
+                aria-haspopup="dialog" aria-controls="cloudModal">
+          <span class="dot" aria-hidden="true"></span>
           <span id="syncText">Local-Only</span>
-        </div>
-        <div id="statusBadge" class="status clickable" title="Connect Sensor">
-          <span class="dot"></span>
+        </button>
+        <button id="statusBadge" class="status clickable" type="button"
+                title="Connect Sensor" aria-label="Connect sensor: Disconnected">
+          <span class="dot" aria-hidden="true"></span>
           <span id="statusText">Disconnected</span>
           <span id="batteryBadge" class="battery-status hidden" title="Battery Level">
             <span id="batteryText">--%</span>
           </span>
-        </div>
+        </button>
       </div>
     </header>
 
-    <!-- Mobile Compatibility Banner -->
+    <!-- Browser sensor compatibility notice -->
     <div id="mobileAlertBanner" class="mobile-alert-banner hidden">
-      <span class="warning-icon">⚠️</span>
+      <span class="warning-icon" aria-hidden="true">!</span>
       <div class="alert-content">
-        <strong>Browser Notice</strong>
-        <p id="mobileAlertText">Web Bluetooth is not supported in this browser.</p>
+        <strong>Sensor connection unavailable</strong>
+        <p id="mobileAlertText" role="status"></p>
+        <a id="browserSupportHelpLink" href="#/guide/quick-start#browser-compatibility">Browser help</a>
       </div>
-      <button id="closeMobileAlertBtn" class="close-alert-btn">&times;</button>
+      <button id="closeMobileAlertBtn" type="button" class="close-alert-btn" aria-label="Dismiss browser notice">&times;</button>
     </div>
 
     <main class="main-workspace">
@@ -232,6 +236,7 @@
                 <strong>Trace Review Mode</strong>
                 <span id="reviewInfo">--</span>
                 <span id="reviewRangeEst" class="note" style="margin-left: 8px; font-weight: 600; color: var(--cyan);"></span>
+                <span id="reviewExportStatus" class="note review-export-status" role="status"></span>
               </div>
               <div id="reviewCompareField" class="review-compare-field">
                 <label for="reviewCompareSelect">Compare with</label>
@@ -374,7 +379,7 @@
 
             <div class="training-status-box" style="margin-top: 16px; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); display: flex; flex-direction: column; gap: 4px; align-items: center; text-align: center;">
               <div id="trainingStatusText" class="training-status-text" style="font-weight: 800; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--red);">Disconnected</div>
-              <p id="trainingStatusDesc" class="note" style="margin: 0; font-size: 11px;">Connect a sensor or start demo mode to train.</p>
+              <p id="trainingStatusDesc" class="note" role="status" style="margin: 0; font-size: 11px;">Connect a sensor or start demo mode to train.</p>
             </div>
 
             <div class="training-actions" style="margin-top: 18px; display: flex; flex-direction: column; gap: 8px;">
@@ -739,7 +744,7 @@
             </div>
             <div class="field" style="margin-top: 10px;">
               <label for="bowModelInput">Bow Name / Model</label>
-              <input type="text" id="bowModelInput" placeholder="e.g. Hoyt Formula Xi" value="">
+              <input type="text" id="bowModelInput" placeholder="e.g. Hoyt Formula Xi" value="" required>
             </div>
             <div class="field" style="margin-top: 10px;">
               <label for="drawWeightInput">Draw Weight (lbs)</label>
@@ -764,6 +769,7 @@
             <div style="margin-top: 8px;">
               <button id="newBowProfileBtn" class="accent" style="width: 100%;">Create New Profile</button>
             </div>
+            <p id="bowProfileStatus" class="note" role="status" style="margin-top: 8px; min-height: 14px;"></p>
           </div>
 
           <!-- Card Data: Local Backup & Restore -->
@@ -776,7 +782,7 @@
               <button id="exportDataBtn" class="primary">Export Data</button>
               <button id="importDataBtn" class="accent">Import Data</button>
             </div>
-            <p id="dataBackupStatus" class="note" style="margin-top: 8px; min-height: 14px;"></p>
+            <p id="dataBackupStatus" class="note" role="status" style="margin-top: 8px; min-height: 14px;"></p>
             <input type="file" id="importDataInput" accept="application/json,.json" hidden>
           </div>
 
@@ -829,31 +835,29 @@
   </div>
 
   <!-- Cloud Settings Modal -->
-  <div id="cloudModal" class="modal-overlay hidden">
-    <div class="modal-content panel">
-      <div class="modal-header">
-        <h3>Cloud Sync Settings</h3>
-        <button id="closeCloudModalBtn" class="close-btn">&times;</button>
+  <dialog id="cloudModal" class="modal-content panel" aria-labelledby="cloudModalTitle">
+    <div class="modal-header">
+      <h3 id="cloudModalTitle">Cloud Sync Settings</h3>
+      <button id="closeCloudModalBtn" class="close-btn" type="button" aria-label="Close cloud settings">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p class="note" style="margin-bottom: 14px;">
+        Connect to your Supabase project to back up your bow profiles, sessions, shots, and telemetry traces.
+      </p>
+      <div class="field" style="margin-bottom: 12px;">
+        <label for="sbUrlInput">Supabase URL</label>
+        <input type="text" id="sbUrlInput" placeholder="https://your-project.supabase.co" autofocus>
       </div>
-      <div class="modal-body">
-        <p class="note" style="margin-bottom: 14px;">
-          Connect to your Supabase project to back up your bow profiles, sessions, shots, and telemetry traces.
-        </p>
-        <div class="field" style="margin-bottom: 12px;">
-          <label for="sbUrlInput">Supabase URL</label>
-          <input type="text" id="sbUrlInput" placeholder="https://your-project.supabase.co">
-        </div>
-        <div class="field" style="margin-bottom: 16px;">
-          <label for="sbKeyInput">Supabase Anon Key</label>
-          <input type="password" id="sbKeyInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
-        </div>
-        <div class="modal-actions">
-          <button id="saveCloudSettingsBtn" class="primary">Connect & Sync</button>
-          <button id="clearCloudSettingsBtn" class="danger">Disconnect Cloud</button>
-        </div>
+      <div class="field" style="margin-bottom: 16px;">
+        <label for="sbKeyInput">Supabase Anon Key</label>
+        <input type="password" id="sbKeyInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
+      </div>
+      <div class="modal-actions">
+        <button id="saveCloudSettingsBtn" class="primary">Connect & Sync</button>
+        <button id="clearCloudSettingsBtn" class="danger">Disconnect Cloud</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Style prototype toggle: cycles paper -> dark -> classic for comparison -->
   <button id="themeProtoToggle" title="Cycle style prototype theme">THEME: PAPER</button>
@@ -914,6 +918,6 @@
     })();
   </script>
 
-  <script type="module" src="app/main.js?v=shot-store-155"></script>
+  <script type="module" src="app/main.js?v=shot-store-200"></script>
 </body>
 </html>

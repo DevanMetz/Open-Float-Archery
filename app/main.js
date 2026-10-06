@@ -1,10 +1,11 @@
 // App entry point: build the shared bus + store, wire telemetry and UI, and
 // own the transport lifecycle (connect / disconnect).
 
-import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-155";
-import { createAdapter } from "./device/adapters.js?v=shot-store-155";
-import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-155";
+import { createStore, EventBus } from "./core/store.js?v=shot-store-180";
+import { watchSavedData } from "./core/saved-data.js?v=shot-store-174";
+import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-200";
+import { createAdapter } from "./device/adapters.js?v=shot-store-200";
+import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-163";
 import { createReplayController, traceTimeline } from "./ui/replay.js?v=shot-store-155";
 import { tracePhases } from "./ui/trace-phases.js?v=shot-store-155";
 import {
@@ -16,15 +17,17 @@ import {
   mountOrientationState,
   rotateMountAxes,
 } from "./ui/bow-3d.js?v=shot-store-155";
-import { initDb, getAll, get, put, remove, removeSavedShots, generateUUID } from "./core/db.js?v=shot-store-146";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-146";
-import { mountTraining } from "./ui/training.js?v=shot-store-150";
-import { mountGuide } from "./ui/guide.js?v=shot-store-120";
-import { initDataBackup } from "./ui/data-backup.js?v=shot-store-134";
-import { initHistory } from "./ui/history.js?v=shot-store-155";
+import { initDb, getAll, put, removeSavedShots } from "./core/db.js?v=shot-store-176";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-176";
+import { mountTraining } from "./ui/training.js?v=shot-store-200";
+import { mountGuide } from "./ui/guide.js?v=shot-store-161";
+import { initDataBackup } from "./ui/data-backup.js?v=shot-store-176";
+import { initHistory } from "./ui/history.js?v=shot-store-183";
+import { mountBowProfiles } from "./ui/bow-profiles.js?v=shot-store-176";
+import { mountBrowserSupport } from "./ui/browser-support.js?v=shot-store-178";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-155";
+const APP_BUILD = "shot-store-200";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -36,7 +39,7 @@ const ELEMENT_IDS = [
   "syncBadge", "syncText", "cloudModal", "closeCloudModalBtn",
   "sbUrlInput", "sbKeyInput", "saveCloudSettingsBtn", "clearCloudSettingsBtn",
   "chartTitle", "reviewBanner", "reviewInfo", "reviewRangeEst", "reviewCompareSelect",
-  "reviewCompareField", "reviewCompareLegend", "exportShotBtn", "exitReviewBtn",
+  "reviewCompareField", "reviewCompareLegend", "exportShotBtn", "exitReviewBtn", "reviewExportStatus",
   "reviewOutcomePanel", "reviewOutcomeStatus", "outcomeScoreButtons", "outcomeDistanceInput",
   "outcomeDistanceUnit", "outcomeFaceInput", "saveOutcomeBtn", "clearOutcomeBtn",
   "saveNextOutcomeBtn", "reviewArrowProgress",
@@ -81,8 +84,8 @@ const ELEMENT_IDS = [
   "bufferRateSlider", "bufferRateValue", "bufferNVSToggle",
   "followThroughSlider", "followThroughValueMs",
   "streamRateSlider", "streamRateValue",
-  "mobileAlertBanner", "mobileAlertText", "closeMobileAlertBtn",
-  "bowProfileSelect", "bowModelInput", "drawWeightInput", "bowSpeedInput", "stabilizerSetupInput", "bowNotesInput",
+  "mobileAlertBanner", "mobileAlertText", "closeMobileAlertBtn", "browserSupportHelpLink",
+  "bowProfileStatus", "bowProfileSelect", "bowModelInput", "drawWeightInput", "bowSpeedInput", "stabilizerSetupInput", "bowNotesInput",
   "saveBowProfileBtn", "deleteBowProfileBtn", "newBowProfileBtn",
   "recentShotsPanel", "recentShotsList",
   "exportDataBtn", "importDataBtn", "importDataInput", "dataBackupStatus",
@@ -173,6 +176,7 @@ const store = createStore({
   reviewThresholdG: 12,
   reviewInfo: "",
   reviewRangeEst: "",
+  reviewRangeSpeed: null,
   reviewReleaseIdx: null,
   reviewReleaseTimeMs: null,
   reviewHitIdx: null,
@@ -409,10 +413,13 @@ async function clearSampleData({ refresh = true } = {}) {
 }
 
 // Initialize database
-initDb().then(async () => {
+initDb().then(async (database) => {
   bus.emit("log", "Local IndexedDB initialized successfully.");
+  watchSavedData(database.name, async (stores) => {
+    if (!await refreshSavedData(stores)) throw new Error("Some saved views could not refresh. Reopen Saved Shots or Settings to retry.");
+  }, { onError: (error) => bus.emit("log", `Saved data remains local: ${error.message}`) });
   await seedSampleDataIfEmpty();
-  await loadBowProfiles();
+  await bowProfilesUi.load();
   await historyUi?.loadRecentShotsList();
   await updateSampleControls();
 }).catch((err) => {
@@ -422,6 +429,7 @@ initDb().then(async () => {
 const telemetry = new TelemetryStore(bus, store);
 const syncAdapter = new CloudSyncAdapter(bus, store);
 telemetry.syncAdapter = syncAdapter; // Register sync on telemetry store
+const bowProfilesUi = mountBowProfiles({ el, bus, syncAdapter });
 
 mountDashboard({ store, telemetry, el });
 mountTraining({ store, el, bus });
@@ -440,6 +448,7 @@ if (modelAttitudeMigrated) {
 store.subscribe((state) => {
   if (el.syncBadge && el.syncText) {
     el.syncText.textContent = state.syncText;
+    el.syncBadge.setAttribute("aria-label", `Configure cloud sync: ${state.syncText}`);
     el.syncBadge.className = "status clickable";
     if (state.syncStatus) {
       el.syncBadge.classList.add(`sync-${state.syncStatus}`);
@@ -573,11 +582,11 @@ store.subscribe((state) => {
 el.syncBadge.addEventListener("click", () => {
   el.sbUrlInput.value = localStorage.getItem("openfloat_supabase_url") || "";
   el.sbKeyInput.value = localStorage.getItem("openfloat_supabase_key") || "";
-  el.cloudModal.classList.remove("hidden");
+  el.cloudModal.showModal();
 });
 
 el.closeCloudModalBtn.addEventListener("click", () => {
-  el.cloudModal.classList.add("hidden");
+  el.cloudModal.close();
 });
 
 el.saveCloudSettingsBtn.addEventListener("click", async () => {
@@ -588,7 +597,7 @@ el.saveCloudSettingsBtn.addEventListener("click", async () => {
     localStorage.setItem("openfloat_supabase_url", url);
     localStorage.setItem("openfloat_supabase_key", key);
     bus.emit("log", "Saved cloud configuration. Connecting to Supabase...");
-    el.cloudModal.classList.add("hidden");
+    el.cloudModal.close();
     await syncAdapter.resetConfig();
   } else {
     alert("Please enter both your Supabase URL and Anon Key.");
@@ -601,11 +610,12 @@ el.clearCloudSettingsBtn.addEventListener("click", async () => {
   el.sbUrlInput.value = "";
   el.sbKeyInput.value = "";
   bus.emit("log", "Cleared cloud configuration. Local-only mode active.");
-  el.cloudModal.classList.add("hidden");
+  el.cloudModal.close();
   await syncAdapter.resetConfig();
 });
 
 let adapter = null;
+let connectionAttempt = 0;
 
 function transport() {
   // Only Bluetooth (BLE) transport is supported.
@@ -613,45 +623,57 @@ function transport() {
 }
 
 async function disconnect() {
-  if (!adapter) return;
-  try {
-    await adapter.disconnect();
-  } catch (_) {}
+  connectionAttempt += 1;
+  const previous = adapter;
   adapter = null;
+  if (!previous) return;
+  try {
+    await previous.disconnect();
+  } catch (_) {}
 }
 
 async function connect(kind = transport()) {
-  if (store.get().manualRecordingActive) {
+  // Explain unavailable sensor access before stopping a working demo or capture.
+  if (kind === "ble" && !browserSupportUi.check({ focus: true })) return;
+  if (store.get().manualRecordingActive || store.get().manualRecordingSaving) {
     store.set({ manualRecordMessage: store.get().manualRecordingSaving
-      ? "Wait for the recording to finish saving before connecting."
+      ? "Wait for the recording to finish saving and refreshing before connecting."
       : "Save or discard the current recording before connecting." });
     selectViewTab("tabDashboard");
     el.recordToggleBtn.focus();
     return;
   }
-  await disconnect();
+  const stopping = disconnect();
+  const attempt = connectionAttempt;
+  await stopping;
+  if (attempt !== connectionAttempt) return;
   if (!telemetry.reset()) return;
-  adapter = createAdapter(kind, bus);
+  const next = createAdapter(kind, bus);
+  adapter = next;
   try {
-    await adapter.connect();
+    await next.connect();
+    if (attempt !== connectionAttempt) return;
     if (kind === "ble") {
-      await adapter.sendControl(`thresh:${thresholdGrams().toFixed(1)}`);
-      await adapter.sendControl(`wakesens:${wakeSensitivityGrams().toFixed(1)}`);
-      await adapter.sendControl(`sleeptime:${sleepTimeoutSeconds()}`);
-      await adapter.sendControl(`sleepsens:${sleepSensitivityG().toFixed(2)}`);
-      await adapter.sendControl(`bufrate:${bufferRateHz()}`);
-      await adapter.sendControl(`bufnvs:${bufferNvsEnabled()}`);
-      await adapter.sendControl(`followms:${followThroughMs()}`);
-      await adapter.sendControl(`streamrate:${streamRateDivider()}`);
-      await adapter.sendControl(`autosleep:${autoSleepEnabled()}`);
+      for (const command of [
+        `thresh:${thresholdGrams().toFixed(1)}`,
+        `wakesens:${wakeSensitivityGrams().toFixed(1)}`,
+        `sleeptime:${sleepTimeoutSeconds()}`,
+        `sleepsens:${sleepSensitivityG().toFixed(2)}`,
+        `bufrate:${bufferRateHz()}`,
+        `bufnvs:${bufferNvsEnabled()}`,
+        `followms:${followThroughMs()}`,
+        `streamrate:${streamRateDivider()}`,
+        `autosleep:${autoSleepEnabled()}`,
+      ]) {
+        if (attempt !== connectionAttempt) return;
+        await next.sendControl(command);
+      }
     }
 
   } catch (error) {
+    if (attempt !== connectionAttempt) return;
     bus.emit("log", `Connect failed: ${error.message}`);
-    try {
-      await adapter?.disconnect?.();
-    } catch (_) {}
-    adapter = null;
+    await disconnect();
   }
 }
 
@@ -659,36 +681,10 @@ function thresholdGrams() {
   return Number(el.thresholdSlider.value);
 }
 
-// Mobile checks and alerts setup
-function checkMobileCompatibility() {
-  const userAgent = navigator.userAgent || "";
-  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent);
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-  if (isMobile) {
-    if (!navigator.bluetooth) {
-      if (isIOS) {
-        el.mobileAlertText.innerHTML = `iOS Safari and Chrome do not support Web Bluetooth. To connect to your bow sensor, please open this page in a Bluetooth-capable app like <strong>Bluefy</strong> or <strong>WebBLE</strong>.`;
-      } else {
-        el.mobileAlertText.textContent = `Your mobile browser does not support Web Bluetooth. To connect to your bow sensor, please use Google Chrome on Android.`;
-      }
-      el.mobileAlertBanner.classList.remove("hidden");
-    }
-  } else {
-    if (!navigator.bluetooth) {
-      el.mobileAlertText.textContent = `Your browser does not support Web Bluetooth. For the full experience, please use Chrome, Edge, or Opera.`;
-      el.mobileAlertBanner.classList.remove("hidden");
-    }
-  }
-}
-
-if (el.mobileAlertBanner && el.mobileAlertText && el.closeMobileAlertBtn) {
-  el.closeMobileAlertBtn.addEventListener("click", () => {
-    el.mobileAlertBanner.classList.add("hidden");
-  });
-  checkMobileCompatibility();
-}
+const browserSupportUi = mountBrowserSupport({ el, onHelp() {
+  window.location.hash = "/guide/quick-start#browser-compatibility";
+  selectViewTab("tabGuide");
+} });
 
 function wakeSensitivityGrams() {
   return Number(el.wakeSlider.value);
@@ -784,9 +780,16 @@ store.subscribe((s) => {
   el.demoBtn.classList.toggle("hidden", s.connected && !demoActive);
 });
 el.recordToggleBtn.addEventListener("click", async () => {
+  if (store.get().manualRecordingSaving) return;
   if (store.get().manualRecordingActive) {
     // Currently recording -> stop and save. Stay on the dashboard.
+    const hadFocus = document.activeElement === el.recordToggleBtn;
     await telemetry.saveManualRecording();
+    const focusTarget = el.recordToggleBtn.disabled ? el.statusBadge : el.recordToggleBtn;
+    if (hadFocus && document.activeElement === document.body && !document.hidden &&
+        el.recordToggleBtn.getClientRects().length) {
+      focusTarget.focus();
+    }
   } else {
     // Not recording -> start with a timestamped default label.
     const label = `Manual Capture ${new Date().toLocaleTimeString()}`;
@@ -1366,14 +1369,19 @@ if (el.navDashboardBtn && el.navTrainingBtn && el.navHistoryBtn && el.navBowShop
   el.navTrainingBtn.addEventListener("click", () => selectViewTab("tabTraining"));
   el.navHistoryBtn.addEventListener("click", () => selectViewTab("tabHistory"));
   el.navBowShopBtn.addEventListener("click", () => selectViewTab("tabBowShop"));
-  el.navSettingsBtn.addEventListener("click", () => selectViewTab("tabSettings"));
+  el.navSettingsBtn.addEventListener("click", () => {
+    selectViewTab("tabSettings");
+    bowProfilesUi.load();
+  });
 }
 if (el.navGuideBtn) {
   el.navGuideBtn.addEventListener("click", () => selectViewTab("tabGuide"));
 }
 
 // In-app Guide (docs / wiki) tab.
-const guide = mountGuide({ sidebar: el.guideSidebar, content: el.guideContent });
+const guide = mountGuide({
+  sidebar: el.guideSidebar, content: el.guideContent, header: document.querySelector("header"),
+});
 // Deep-link: open the Guide tab directly when the URL targets a guide page.
 if (guide && guide.hasHashTarget()) {
   selectViewTab("tabGuide");
@@ -1384,15 +1392,21 @@ window.addEventListener("hashchange", () => {
   }
 });
 
+async function refreshSavedData(stores = ["shots", "bow_profiles"]) {
+  if (stores.includes("shots")) bus.emit("saved-data-changed");
+  const refreshes = await Promise.allSettled([
+    historyUi?.refreshSavedData(),
+    ...(stores.includes("bow_profiles") ? [bowProfilesUi.load()] : []),
+    ...(stores.includes("shots") ? [updateSampleControls()] : []),
+  ]);
+  return refreshes.every((result) => result.status === "fulfilled" && result.value !== false);
+}
+
 initDataBackup({
   bus,
   syncAdapter,
   el,
-  onImportComplete: async () => {
-    await loadBowProfiles();
-    await historyUi?.loadShotHistoryList();
-    await historyUi?.loadRecentShotsList();
-  },
+  onImportComplete: () => refreshSavedData(),
 });
 
 if (el.clearSamplesBtn) {
@@ -1492,156 +1506,6 @@ if (el.traceCanvas) {
     if (e.touches.length < 2) pinchStartDist = 0;
   });
 }
-
-// Bow Profile & Session Management Functions
-async function loadBowProfiles() {
-  try {
-    const profiles = await getAll("bow_profiles");
-    
-    // Clear and reset dynamic options
-    el.bowProfileSelect.innerHTML = '<option value="">Default Bow</option>';
-
-    profiles.forEach((profile) => {
-      const option = document.createElement("option");
-      option.value = profile.id;
-      option.textContent = profile.model + (profile.draw_weight ? ` (${profile.draw_weight} lbs)` : "");
-
-      el.bowProfileSelect.appendChild(option);
-    });
-
-    // Restore selected active bow
-    const activeBowId = localStorage.getItem("openfloat_active_bow_id") || "";
-    el.bowProfileSelect.value = activeBowId;
-
-    populateBowForm();
-  } catch (error) {
-    console.error("Error loading bow profiles:", error);
-    bus.emit("log", `Error loading bow profiles: ${error.message}`);
-  }
-}
-
-async function populateBowForm() {
-  const selectedId = el.bowProfileSelect.value;
-  if (!selectedId) {
-    el.bowModelInput.value = "";
-    el.drawWeightInput.value = "";
-    el.bowSpeedInput.value = "";
-    el.stabilizerSetupInput.value = "";
-    el.bowNotesInput.value = "";
-    el.deleteBowProfileBtn.disabled = true;
-  } else {
-    try {
-      const profile = await get("bow_profiles", selectedId);
-      if (profile) {
-        el.bowModelInput.value = profile.model || "";
-        el.drawWeightInput.value = profile.draw_weight != null ? profile.draw_weight : "";
-        el.bowSpeedInput.value = profile.arrow_speed != null ? profile.arrow_speed : "";
-        el.stabilizerSetupInput.value = profile.stabilizer_setup || "";
-        el.bowNotesInput.value = profile.notes || "";
-        el.deleteBowProfileBtn.disabled = false;
-      }
-    } catch (error) {
-      console.error("Error loading bow details:", error);
-    }
-  }
-}
-
-// Bind Bow Profile Event Listeners
-el.bowProfileSelect.addEventListener("change", () => {
-  const activeBowId = el.bowProfileSelect.value;
-  localStorage.setItem("openfloat_active_bow_id", activeBowId);
-  populateBowForm();
-});
-
-el.newBowProfileBtn.addEventListener("click", () => {
-  el.bowProfileSelect.value = "";
-  localStorage.setItem("openfloat_active_bow_id", "");
-  populateBowForm();
-  el.bowModelInput.focus();
-  bus.emit("log", "Ready to define a new bow profile.");
-});
-
-el.saveBowProfileBtn.addEventListener("click", async () => {
-  const modelName = el.bowModelInput.value.trim();
-  if (!modelName) {
-    alert("Please enter a Bow Name / Model.");
-    return;
-  }
-
-  const drawWeight = parseFloat(el.drawWeightInput.value) || null;
-  const arrowSpeed = parseInt(el.bowSpeedInput.value, 10) || null;
-  const stabilizerSetup = el.stabilizerSetupInput.value.trim();
-  const notes = el.bowNotesInput.value.trim();
-
-  let id = el.bowProfileSelect.value;
-  const isNew = !id;
-  
-  if (isNew) {
-    id = generateUUID();
-  }
-
-  const profile = {
-    id,
-    model: modelName,
-    draw_weight: drawWeight,
-    arrow_speed: arrowSpeed,
-    stabilizer_setup: stabilizerSetup,
-    notes
-  };
-
-  try {
-    await put("bow_profiles", profile);
-    await put("sync_queue", {
-      table: "bow_profiles",
-      action: isNew ? "CREATE" : "UPDATE",
-      targetId: id,
-      payload: profile,
-      status: "pending"
-    });
-
-    localStorage.setItem("openfloat_active_bow_id", id);
-    bus.emit("log", `Saved bow profile: "${modelName}"`);
-    await loadBowProfiles();
-    
-    if (syncAdapter) syncAdapter.triggerSync();
-  } catch (error) {
-    console.error("Error saving bow profile:", error);
-    bus.emit("log", `Error saving bow profile: ${error.message}`);
-  }
-});
-
-el.deleteBowProfileBtn.addEventListener("click", async () => {
-  const id = el.bowProfileSelect.value;
-  if (!id) return;
-
-  const confirmDelete = confirm("Are you sure you want to delete this bow profile? This will not delete historical shots associated with it.");
-  if (!confirmDelete) return;
-
-  try {
-    const profile = await get("bow_profiles", id);
-    const name = profile ? profile.model : id;
-
-    await remove("bow_profiles", id);
-    await put("sync_queue", {
-      table: "bow_profiles",
-      action: "DELETE",
-      targetId: id,
-      status: "pending"
-    });
-
-    if (localStorage.getItem("openfloat_active_bow_id") === id) {
-      localStorage.setItem("openfloat_active_bow_id", "");
-    }
-
-    bus.emit("log", `Deleted bow profile: "${name}"`);
-    await loadBowProfiles();
-
-    if (syncAdapter) syncAdapter.triggerSync();
-  } catch (error) {
-    console.error("Error deleting bow profile:", error);
-    bus.emit("log", `Error deleting bow profile: ${error.message}`);
-  }
-});
 
 let historyUi = null;
 

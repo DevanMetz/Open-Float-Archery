@@ -1,7 +1,7 @@
 // Steady Aim Training Game UI Module
 // Manages the prep countdown, audio tones, live target tracing, scoring, and DB persistence.
 
-import { getAll, saveCapture, generateUUID } from "../core/db.js?v=shot-store-135";
+import { getAll, saveCapture, generateUUID } from "../core/db.js?v=shot-store-176";
 import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=shot-store-150";
 import {
   TRAINING_DRILLS,
@@ -12,6 +12,8 @@ import {
 } from "./training-coach.js?v=shot-store-150";
 
 const TARGET_COLORS = ["#FFFFFF", "#1E1E1E", "#00B5E2", "#EE383E", "#FFE000"];
+// A browser continuity guard, not a validated sensor sampling requirement.
+const MAX_SAMPLE_GAP_MS = 1000;
 
 // Marker colors that must flip with the page theme (white on the classic dark
 // canvas, ink on light themes). Falls back to the classic palette when the
@@ -62,20 +64,31 @@ export function mountTraining({ store, el, bus }) {
 
   const ctx = el.trainingTargetCanvas.getContext("2d");
   
-  // Game states: 'idle', 'countdown', 'holding', 'finished', 'saving'
+  // Game states: 'idle', 'countdown', 'holding', 'finished', 'saving', 'refreshing'
   let gameState = "idle";
   let countdownVal = 5;
   let remainingHoldTime = 10;
   let timerInterval = null;
+  let phaseDeadline = 0;
+  let holdStartedAt = 0;
+  let holdTimestamp = null;
+  let renderFrame = null;
+  let finishTone = null;
+  let trainingVisible = !el.tabTraining || el.tabTraining.classList.contains("active-view");
+  let pageActive = true;
+  let disposed = false;
   
   let refRoll = 0;
   let refPitch = 0;
   let trainingSamples = [];
   let currentHoldDuration = 10;
   let sessionIsDemo = false;
+  let sessionDeviceId = "OpenFloat-Sensor";
   let sessionConnectionMode = "";
-  let interrupted = false;
+  let interruption = "";
+  let saveMessage = "";
   let recommendation = analyzeTrainingHistory([]);
+  let recommendationRequest = 0;
   let activeDrill = TRAINING_DRILLS[recommendation.drillId];
   let currentTarget = recommendation.target;
 
@@ -119,78 +132,117 @@ export function mountTraining({ store, el, bus }) {
   }
 
   async function refreshRecommendation() {
+    const request = ++recommendationRequest;
     try {
-      recommendation = analyzeTrainingHistory(await getAll("shots"));
+      const shots = await getAll("shots");
+      if (disposed || request !== recommendationRequest) return;
+      recommendation = analyzeTrainingHistory(shots);
       renderRecommendation();
       if (gameState === "idle") updateDrillUi();
+      return true;
     } catch (error) {
+      if (disposed || request !== recommendationRequest) return;
       console.warn("Failed to refresh adaptive training recommendation:", error);
+      return false;
     }
   }
 
-  // React to connection states in the reactive store
-  store.subscribe((state) => {
+  function visible() {
+    return !disposed && pageActive && trainingVisible && !document.hidden;
+  }
+
+  function active() {
+    return gameState === "countdown" || gameState === "holding";
+  }
+
+  function updateStatus(state = store.get()) {
     const connected = state.connected;
-    if ((gameState === "countdown" || gameState === "holding") &&
-        (!connected || state.statusMode !== sessionConnectionMode)) {
-      interrupted = true;
-      resetToIdle();
-      bus.emit("log", "Training stopped because the telemetry connection changed. Start a new hold to retry.");
-    }
-    
     if (el.startTrainingBtn) {
-      el.startTrainingBtn.disabled = !connected || gameState !== "idle";
+      el.startTrainingBtn.disabled = !connected || gameState !== "idle" || !visible();
     }
 
     if (el.trainingStatusText && el.trainingStatusDesc) {
       if (connected) {
         el.trainingStatusText.textContent = state.statusMode === "demo" ? "Demo Mode" : "Connected";
         el.trainingStatusText.style.color = "var(--green)";
-        el.trainingStatusDesc.textContent = interrupted
-          ? "The previous hold stopped when the connection changed. Press start to retry."
-          : state.statusMode === "demo"
+        el.trainingStatusDesc.textContent = saveMessage || interruption || (state.statusMode === "demo"
           ? "Synthetic movement. Saved demo holds stay local and do not affect your baseline."
-          : "Bow sensor is streaming. Press start to train.";
+          : "Bow sensor is streaming. Press start to train.");
       } else {
         el.trainingStatusText.textContent = "Disconnected";
         el.trainingStatusText.style.color = "var(--red)";
-        el.trainingStatusDesc.textContent = interrupted
-          ? "Hold stopped: connection lost. Reconnect your sensor or start demo mode to retry."
-          : "Connect a sensor or start demo mode to train.";
+        el.trainingStatusDesc.textContent = saveMessage || interruption || "Connect a sensor or start demo mode to train.";
       }
     }
+  }
+
+  function interrupt(message) {
+    if (!active()) return;
+    interruption = message;
+    resetToIdle();
+    bus.emit("log", message);
+  }
+
+  // React to connection states in the reactive store.
+  const stopStore = store.subscribe((state) => {
+    if (active() && (!state.connected || state.statusMode !== sessionConnectionMode)) {
+      interrupt(state.connected
+        ? "Hold stopped: the connection changed. Press start to retry."
+        : "Hold stopped: connection lost. Reconnect your sensor or start demo mode to retry.");
+    }
+    updateStatus(state);
 
     // Live display updates during hold
     if (gameState === "holding" && state.sample) {
-      liveDotRoll = state.roll - (state.cantOffset || 0);
-      liveDotPitch = state.pitch - (state.pitchOffset || 0);
+      const roll = state.roll - (state.cantOffset || 0);
+      const pitch = state.pitch - (state.pitchOffset || 0);
+      if (!Number.isFinite(roll) || !Number.isFinite(pitch)) return;
+      liveDotRoll = roll;
+      liveDotPitch = pitch;
       if (el.trainingCantBadge) {
         // Calculate calibrated cant
-        const calRoll = state.roll - (state.cantOffset || 0);
-        el.trainingCantBadge.textContent = `Cant: ${calRoll.toFixed(1)}°`;
-        el.trainingCantBadge.style.color = Math.abs(calRoll) <= (state.levelTolerance || 2.0) ? "var(--green)" : "var(--amber)";
+        el.trainingCantBadge.textContent = `Cant: ${roll.toFixed(1)} deg`;
+        el.trainingCantBadge.style.color = Math.abs(roll) <= (state.levelTolerance || 2.0) ? "var(--green)" : "var(--amber)";
       }
     }
   });
 
   // Listen to raw samples from event bus to collect high-res trace data
-  bus.on("sample", (sample) => {
+  const stopSamples = bus.on("sample", (sample) => {
     if (gameState !== "holding") return;
+    if (!visible()) {
+      interrupt("Hold stopped: the training page was hidden. Press start to retry.");
+      return;
+    }
+    const now = performance.now();
+    // A delayed timer must not collect movement after the selected window.
+    if (now > phaseDeadline) {
+      finishHoldingPhase();
+      return;
+    }
+    if (!continuousAt(now)) return;
     if (sample.source === "demo") sessionIsDemo = true;
     
     const state = store.get();
-    const now = performance.now();
+    const roll = state.roll - (state.cantOffset || 0);
+    const pitch = state.pitch - (state.pitchOffset || 0);
+    if (!Number.isFinite(roll) || !Number.isFinite(pitch)) return;
+    if (trainingSamples.length === 0) {
+      // Anchor the target to the first usable frame in this hold.
+      refRoll = liveDotRoll = roll;
+      refPitch = liveDotPitch = pitch;
+    }
     
     trainingSamples.push({
-      roll: state.roll - (state.cantOffset || 0),
-      pitch: state.pitch - (state.pitchOffset || 0),
+      roll,
+      pitch,
       yaw: state.yaw || 0,
       gx: sample.gxDps || 0,
       gy: sample.gyDps || 0,
       gz: sample.gzDps || 0,
       ax: (sample.axMg || 0) / 1000,
       ay: (sample.ayMg || 0) / 1000,
-      az: (sample.azMg || 1000) / 1000,
+      az: (sample.azMg ?? 1000) / 1000,
       timestamp: now,
       micAmp: sample.micAmp || 0
     });
@@ -201,13 +253,44 @@ export function mountTraining({ store, el, bus }) {
   el.cancelTrainingBtn.addEventListener("click", cancelSession);
   el.saveTrainingShotBtn.addEventListener("click", saveSession);
   el.discardTrainingShotBtn.addEventListener("click", discardSession);
-  el.trainingDrillSelect?.addEventListener("change", () => updateDrillUi({ applyDuration: true }));
-  bus.on("view-changed", (viewId) => {
-    if (viewId === "tabTraining") refreshRecommendation();
+  const changeDrill = () => updateDrillUi({ applyDuration: true });
+  el.trainingDrillSelect?.addEventListener("change", changeDrill);
+  const stopViews = bus.on("view-changed", (viewId) => {
+    trainingVisible = viewId === "tabTraining";
+    if (!trainingVisible) {
+      interrupt("Hold stopped: you left the Training tab. Press start to retry.");
+      stopRendering();
+      clearFinishTone();
+    } else {
+      refreshRecommendation();
+      requestRender();
+    }
+    updateStatus();
   });
-  bus.on("shot-saved", () => {
-    window.setTimeout(refreshRecommendation, 0);
-  });
+  const stopSaved = bus.on("shot-saved", refreshRecommendation);
+  const stopTraceSaved = bus.on("shot-trace-saved", refreshRecommendation);
+  const stopChanged = bus.on("saved-data-changed", refreshRecommendation);
+
+  function visibilityChanged() {
+    if (!visible()) {
+      interrupt("Hold stopped: the training page was hidden. Press start to retry.");
+      stopRendering();
+      clearFinishTone();
+    } else requestRender();
+    updateStatus();
+  }
+  function pageHidden() { pageActive = false; visibilityChanged(); }
+  function pageShown() { pageActive = true; visibilityChanged(); }
+  function beforeUnload(event) {
+    if (gameState !== "finished" && gameState !== "saving") return;
+    event.preventDefault();
+    event.returnValue = "";
+  }
+  document.addEventListener("visibilitychange", visibilityChanged);
+  window.addEventListener("pagehide", pageHidden);
+  window.addEventListener("pageshow", pageShown);
+  window.addEventListener("beforeunload", beforeUnload);
+  window.addEventListener("themechange", requestRender);
   renderRecommendation();
   updateDrillUi({ applyDuration: true });
   refreshRecommendation();
@@ -222,7 +305,29 @@ export function mountTraining({ store, el, bus }) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  window.addEventListener("resize", resizeCanvas);
+  function resized() { resizeCanvas(); requestRender(); }
+  window.addEventListener("resize", resized);
+
+  function stopRendering() {
+    if (renderFrame !== null) cancelAnimationFrame(renderFrame);
+    renderFrame = null;
+  }
+
+  function requestRender() {
+    if (!visible() || renderFrame !== null ||
+        !["holding", "finished", "saving", "refreshing"].includes(gameState)) return;
+    const frame = requestAnimationFrame(() => {
+      if (renderFrame !== frame) return;
+      renderFrame = null;
+      renderLoop();
+    });
+    renderFrame = frame;
+  }
+
+  function clearFinishTone() {
+    if (finishTone !== null) clearTimeout(finishTone);
+    finishTone = null;
+  }
 
   function drawTargetRings(cx, cy, maxRadius) {
     const radii = [maxRadius, maxRadius * 0.8, maxRadius * 0.6, maxRadius * 0.4, maxRadius * 0.2];
@@ -243,7 +348,7 @@ export function mountTraining({ store, el, bus }) {
   }
 
   function renderLoop() {
-    if (gameState === "idle") return;
+    if (!visible() || !["holding", "finished", "saving", "refreshing"].includes(gameState)) return;
 
     const canvas = el.trainingTargetCanvas;
     const rect = canvas.getBoundingClientRect();
@@ -321,7 +426,7 @@ export function mountTraining({ store, el, bus }) {
         ctx.lineTo(lx, ly + 10);
         ctx.stroke();
       }
-    } else if (gameState === "finished" && trainingSamples.length >= 2) {
+    } else if (gameState !== "holding" && trainingSamples.length >= 2) {
       // Finished view: auto-scale to review trajectory shape, center on average float point
       const rolls = trainingSamples.map((pt) => pt.roll);
       const pitches = trainingSamples.map((pt) => pt.pitch);
@@ -389,9 +494,7 @@ export function mountTraining({ store, el, bus }) {
       ctx.stroke();
     }
 
-    if (gameState === "holding" || gameState === "finished") {
-      requestAnimationFrame(renderLoop);
-    }
+    if (gameState === "holding") requestRender();
   }
 
   function calculateSigmaEllipse(points, scale) {
@@ -437,14 +540,20 @@ export function mountTraining({ store, el, bus }) {
   }
 
   function startSession() {
-    if (gameState !== "idle" || !store.get().connected) return;
+    if (gameState !== "idle" || !store.get().connected || !visible()) return;
+    const focusStart = document.activeElement === el.startTrainingBtn;
 
     updateDrillUi();
-    interrupted = false;
+    interruption = "";
+    saveMessage = "";
+    clearFinishTone();
     gameState = "countdown";
     countdownVal = 5;
-    currentHoldDuration = Number(el.trainingDurationSelect.value);
+    const duration = Number(el.trainingDurationSelect.value);
+    currentHoldDuration = Number.isFinite(duration) && duration >= 5 && duration <= 30 ? duration : 10;
+    phaseDeadline = performance.now() + 5000;
     sessionIsDemo = store.get().statusMode === "demo";
+    sessionDeviceId = store.get().deviceId || "OpenFloat-Sensor";
     sessionConnectionMode = store.get().statusMode;
     
     trainingSamples = [];
@@ -470,27 +579,56 @@ export function mountTraining({ store, el, bus }) {
     progressCircle.style.strokeDashoffset = "0";
     
     playTone(440, 100); // initial beep
-    
-    timerInterval = setInterval(() => {
-      countdownVal--;
-      if (countdownVal > 0) {
-        el.trainingCountdownVal.textContent = countdownVal;
-        
-        // Progress circle shrink
-        const offset = 339.3 * (1 - countdownVal / 5);
-        progressCircle.style.strokeDashoffset = offset;
-        
-        playTone(440, 100);
-      } else {
-        clearInterval(timerInterval);
+    timerInterval = setInterval(tick, 100);
+    updateStatus();
+    if (focusStart) el.cancelTrainingBtn.focus();
+  }
+
+  function tick() {
+    if (!active()) return;
+    if (!visible()) {
+      interrupt("Hold stopped: the training page was hidden. Press start to retry.");
+      return;
+    }
+    const now = performance.now();
+    if (gameState === "countdown") {
+      const remaining = Math.max(0, phaseDeadline - now);
+      if (remaining === 0) {
+        // A delayed preparation callback still gives the archer a full hold
+        // starting at the actual cue, rather than a shortened catch-up hold.
         startHoldingPhase();
+        return;
       }
-    }, 1000);
+      const seconds = Math.ceil(remaining / 1000);
+      if (seconds !== countdownVal) {
+        countdownVal = seconds;
+        el.trainingCountdownVal.textContent = seconds;
+        playTone(440, 100);
+      }
+      el.timerProgress.style.strokeDashoffset = 339.3 * (1 - remaining / 5000);
+    } else if (now >= phaseDeadline) {
+      finishHoldingPhase();
+    } else if (continuousAt(now)) {
+      remainingHoldTime = Math.max(0, (phaseDeadline - now) / 1000);
+      el.trainingHoldTimerBadge.textContent = `${remainingHoldTime.toFixed(1)}s`;
+    }
+  }
+
+  function continuousAt(now) {
+    const previous = trainingSamples.at(-1)?.timestamp ?? holdStartedAt;
+    if (now - previous <= MAX_SAMPLE_GAP_MS) return true;
+    interrupt("Hold stopped: sensor data paused for over a second. Press start to retry.");
+    return false;
   }
 
   function startHoldingPhase() {
     gameState = "holding";
     remainingHoldTime = currentHoldDuration;
+    holdStartedAt = performance.now();
+    phaseDeadline = holdStartedAt + currentHoldDuration * 1000;
+    // Match the scored window's end, even if completion or Save runs later.
+    // Sample the wall clock at the cue; elapsed hold time stays monotonic.
+    holdTimestamp = new Date(Date.now() + currentHoldDuration * 1000).toISOString();
     
     // Play loud hold tone
     playTone(880, 350);
@@ -512,38 +650,34 @@ export function mountTraining({ store, el, bus }) {
     
     // Start drawing
     resizeCanvas();
-    requestAnimationFrame(renderLoop);
-    
-    const startTime = performance.now();
-    timerInterval = setInterval(() => {
-      const elapsed = (performance.now() - startTime) / 1000;
-      remainingHoldTime = Math.max(0, currentHoldDuration - elapsed);
-      el.trainingHoldTimerBadge.textContent = `${remainingHoldTime.toFixed(1)}s`;
-      
-      if (remainingHoldTime <= 0) {
-        clearInterval(timerInterval);
-        finishHoldingPhase();
-      }
-    }, 100);
+    requestRender();
   }
 
   function finishHoldingPhase() {
+    if (gameState !== "holding" || !continuousAt(phaseDeadline)) return;
+    if (trainingSamples.length < 5) {
+      interrupt("Hold stopped: too little usable sensor data. Press start to retry.");
+      return;
+    }
+    const focusCancel = document.activeElement === el.cancelTrainingBtn;
     gameState = "finished";
+    clearInterval(timerInterval);
+    timerInterval = null;
+    el.trainingHoldTimerBadge.textContent = "0.0s";
+    stopRendering();
+    requestRender();
     
     // Play happy double-beep
     playTone(660, 150);
-    setTimeout(() => playTone(880, 250), 180);
+    finishTone = setTimeout(() => {
+      finishTone = null;
+      if (visible() && (gameState === "finished" || gameState === "saving")) playTone(880, 250);
+    }, 180);
     
     // Switch cancel button back to start button
     el.cancelTrainingBtn.classList.add("hidden");
     el.startTrainingBtn.classList.remove("hidden");
     el.startTrainingBtn.disabled = true;
-    
-    if (trainingSamples.length < 5) {
-      alert("Hold sequence ended prematurely or no telemetry frames were received.");
-      resetToIdle();
-      return;
-    }
     
     const result = scoreTrainingHold(trainingSamples, {
       drillId: activeDrill.id,
@@ -562,15 +696,20 @@ export function mountTraining({ store, el, bus }) {
     
     // Open results card
     el.trainingResultsCard.classList.remove("hidden");
+    if (focusCancel) el.saveTrainingShotBtn.focus();
   }
 
   async function saveSession() {
     if (gameState !== "finished" || trainingSamples.length === 0) return;
+    const hadFocus = document.activeElement === el.saveTrainingShotBtn;
     gameState = "saving";
     
     el.saveTrainingShotBtn.disabled = true;
     el.discardTrainingShotBtn.disabled = true;
     el.saveTrainingShotBtn.textContent = "Saving...";
+    saveMessage = "Saving training hold...";
+    updateStatus();
+    let sessionShotId;
     
     try {
       const rolls = trainingSamples.map((s) => s.roll);
@@ -585,8 +724,8 @@ export function mountTraining({ store, el, bus }) {
         if (g > maxG) maxG = g;
       }
       
-      const sessionShotId = generateUUID();
-      const timestamp = new Date().toISOString();
+      sessionShotId = generateUUID();
+      const timestamp = holdTimestamp;
       const label = `${activeDrill.label} (${currentHoldDuration}s)`;
       const savedSamples = downsampleTrainingTrace(trainingSamples, 52);
       const traceStartTime = Number(savedSamples[0]?.timestamp) || 0;
@@ -611,7 +750,7 @@ export function mountTraining({ store, el, bus }) {
       const shotRecord = {
         id: sessionShotId,
         session_id: null,
-        device_id: sessionIsDemo ? "OpenFloat-Demo" : "OpenFloat-Sensor",
+        device_id: sessionIsDemo ? "OpenFloat-Demo" : sessionDeviceId,
         capture_kind: "hold",
         sample: sessionIsDemo,
         timestamp,
@@ -640,34 +779,50 @@ export function mountTraining({ store, el, bus }) {
       };
       
       await saveCapture(shotRecord, tracePayload);
-      
-      bus.emit("log", `${activeDrill.name} training session saved successfully (ID: ${sessionShotId.slice(0, 8)}).`);
-      
-      // Notify main app to refresh history list & recent shots
-      bus.emit("shot-saved", {
-        shotId: null,
-        stored: false,
-        localShotId: sessionShotId
-      });
-      
-      bus.emit("shot-trace-saved", {
-        localShotId: sessionShotId,
-        deviceShotId: null
-      });
-      
-      // Clear results and go back to default screen
-      resetToIdle();
-      alert("Training session shot saved successfully!");
     } catch (err) {
+      if (disposed) return;
       gameState = "finished";
       console.error("Failed to save training shot:", err);
-      bus.emit("log", `Failed to save training shot: ${err.message}`);
-      alert(`Error saving training shot: ${err.message}`);
-    } finally {
-      el.saveTrainingShotBtn.disabled = false;
-      el.saveTrainingShotBtn.textContent = sessionIsDemo ? "Save Demo Hold" : "Save Session Shot";
-      el.discardTrainingShotBtn.disabled = false;
+      saveMessage = `Could not save the hold locally: ${err?.message || "Storage unavailable"}. Your result is still here. Press Save to retry.`;
+      finishSaveControls();
+      updateStatus();
+      if (hadFocus && visible() && document.activeElement === document.body) el.saveTrainingShotBtn.focus();
+      // Logging cannot turn a retained, retryable result into another failure.
+      bus.emitAsync("log", saveMessage);
+      return;
     }
+    if (disposed) return;
+
+    // Storage has committed. Only notification outcomes remain; these cannot
+    // return the same hold to a retryable state or trigger an unsaved warning.
+    gameState = "refreshing";
+    clearFinishTone();
+    saveMessage = "Training hold saved locally. Refreshing saved views...";
+    updateStatus();
+    let refreshed = false;
+    try {
+      const [, ...notifications] = await Promise.all([
+        bus.emitAsync("log", `${activeDrill.name} training session saved successfully (ID: ${sessionShotId.slice(0, 8)}).`),
+        bus.emitAsync("shot-saved", { shotId: null, stored: false, localShotId: sessionShotId }),
+        bus.emitAsync("shot-trace-saved", { localShotId: sessionShotId, deviceShotId: null }),
+      ]);
+      refreshed = notifications.flat().every((result) => result.status === "fulfilled" && result.value !== false);
+    } catch (error) {
+      console.warn("Training hold saved locally; notifications could not finish:", error);
+    }
+    if (disposed) return;
+    saveMessage = refreshed
+      ? "Training hold saved locally."
+      : "Training hold saved locally. Some views could not refresh. Reopen Saved Shots or Training to retry the views.";
+    resetToIdle({ focus: true, hadFocus });
+    finishSaveControls();
+    return sessionShotId;
+  }
+
+  function finishSaveControls() {
+    el.saveTrainingShotBtn.disabled = false;
+    el.saveTrainingShotBtn.textContent = sessionIsDemo ? "Save Demo Hold" : "Save Session Shot";
+    el.discardTrainingShotBtn.disabled = false;
   }
 
   function cancelSession() {
@@ -675,22 +830,26 @@ export function mountTraining({ store, el, bus }) {
     
     clearInterval(timerInterval);
     bus.emit("log", `${activeDrill.name} training session cancelled.`);
-    resetToIdle();
+    resetToIdle({ focus: true });
   }
 
   function discardSession() {
-    if (gameState === "saving") return;
-    resetToIdle();
+    if (gameState === "saving" || gameState === "refreshing") return;
+    saveMessage = "";
+    resetToIdle({ focus: true });
   }
 
-  function resetToIdle() {
+  function resetToIdle({ focus = false, hadFocus = false } = {}) {
+    const focused = document.activeElement;
     gameState = "idle";
     clearInterval(timerInterval);
+    timerInterval = null;
+    stopRendering();
+    clearFinishTone();
     
     // Reset buttons and controls
     el.cancelTrainingBtn.classList.add("hidden");
     el.startTrainingBtn.classList.remove("hidden");
-    el.startTrainingBtn.disabled = !store.get().connected;
     el.trainingDurationSelect.disabled = false;
     if (el.trainingDrillSelect) el.trainingDrillSelect.disabled = false;
     
@@ -701,6 +860,32 @@ export function mountTraining({ store, el, bus }) {
     el.trainingDisplayDefault.classList.remove("hidden");
     
     trainingSamples = [];
+    holdTimestamp = null;
     updateDrillUi();
+    updateStatus();
+    if (focus && visible() && ([el.cancelTrainingBtn, el.saveTrainingShotBtn, el.discardTrainingShotBtn].includes(focused)
+        || hadFocus && focused === document.body)) {
+      (el.startTrainingBtn.disabled ? el.trainingDrillSelect : el.startTrainingBtn)?.focus();
+    }
   }
+
+  return { destroy() {
+    disposed = true;
+    ++recommendationRequest;
+    clearInterval(timerInterval);
+    stopRendering();
+    clearFinishTone();
+    stopStore(); stopSamples(); stopViews(); stopSaved(); stopTraceSaved(); stopChanged();
+    el.startTrainingBtn.removeEventListener("click", startSession);
+    el.cancelTrainingBtn.removeEventListener("click", cancelSession);
+    el.saveTrainingShotBtn.removeEventListener("click", saveSession);
+    el.discardTrainingShotBtn.removeEventListener("click", discardSession);
+    el.trainingDrillSelect?.removeEventListener("change", changeDrill);
+    document.removeEventListener("visibilitychange", visibilityChanged);
+    window.removeEventListener("pagehide", pageHidden);
+    window.removeEventListener("pageshow", pageShown);
+    window.removeEventListener("beforeunload", beforeUnload);
+    window.removeEventListener("themechange", requestRender);
+    window.removeEventListener("resize", resized);
+  } };
 }

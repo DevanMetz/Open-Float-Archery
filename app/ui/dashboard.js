@@ -1,7 +1,7 @@
 // UI layer: renders the dashboard from store state and paints the live trace.
 // Pure view code — it reads from the store and telemetry, never the device.
 
-import { get } from "../core/db.js?v=shot-store-134";
+import { calculateRangeFromTimes, formatRangeEstimate } from "../telemetry/range.js?v=shot-store-163";
 import { drawTraceChart, reviewChartTimeRangeUs } from "./trace-chart.js?v=shot-store-155";
 import { replayPosition, traceTimeline, timelineIndexAt } from "./replay.js?v=shot-store-155";
 import {
@@ -9,44 +9,6 @@ import {
   initOrientationVisualizer,
   wrapAngleDeg,
 } from "./bow-3d.js?v=shot-store-155";
-
-async function getActiveArrowSpeed() {
-  const activeBowId = localStorage.getItem("openfloat_active_bow_id");
-  if (activeBowId) {
-    try {
-      const profile = await get("bow_profiles", activeBowId);
-      if (profile && profile.arrow_speed != null) {
-        return Number(profile.arrow_speed);
-      }
-    } catch (error) {
-      console.error("Error getting active bow speed:", error);
-    }
-  }
-  return 280; // Fallback default speed
-}
-
-function calculateRangeFromTimes(releaseTimeMs, hitTimeMs, bowSpeedFps) {
-  if (releaseTimeMs === null || hitTimeMs === null) return null;
-  const totalTimeSec = (hitTimeMs - releaseTimeMs) / 1000.0;
-  if (totalTimeSec <= 0) return null;
-
-  const V_sound = 1125.0; // fps
-  const b = 0.075;
-  const A = b;
-  const B = -(V_sound + bowSpeedFps + totalTimeSec * b * V_sound);
-  const C = totalTimeSec * bowSpeedFps * V_sound;
-
-  const discriminant = B * B - 4 * A * C;
-  if (discriminant < 0) return null;
-
-  const distanceFt = (-B - Math.sqrt(discriminant)) / (2 * A);
-  if (distanceFt <= 0) return null;
-
-  return {
-    yards: distanceFt / 3.0,
-    feet: distanceFt
-  };
-}
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -79,21 +41,18 @@ function renderBubbleLevel(el, roll, rangeSetting, toleranceSetting) {
   }
 }
 
-export function mountDashboard({ store, telemetry, el }) {
-  const ctx = el.traceCanvas.getContext("2d");
-  initOrientationVisualizer(el, store);
-
+export function mountReviewMarkers({ store, canvas }) {
   // Interactive RELEASE & HIT Marker Dragging
-  let draggedMarker = null;
+  let drag = null;
 
   const getMarkerClickTarget = (xClient, yClient) => {
     const state = store.get();
     if (!state.reviewMode || !state.reviewTrace) return null;
 
-    const canvas = el.traceCanvas;
     const rect = canvas.getBoundingClientRect();
     const clientWidth = rect.width;
     const clientHeight = rect.height;
+    if (clientWidth <= 0 || clientHeight <= 0) return null;
 
     const isTargetView = state.chartView === "target";
     const bandHeight = isTargetView ? 0.2 : 0.3;
@@ -148,13 +107,16 @@ export function mountDashboard({ store, telemetry, el }) {
   };
 
   const handleDragMove = (xClient) => {
-    if (!draggedMarker) return;
+    if (!drag) return;
     const state = store.get();
-    if (!state.reviewMode || !state.reviewTrace) return;
+    if (!state.reviewMode || state.reviewShotId !== drag.shotId || state.reviewTrace !== drag.trace) {
+      endDrag();
+      return;
+    }
 
-    const canvas = el.traceCanvas;
     const rect = canvas.getBoundingClientRect();
     const clientWidth = rect.width;
+    if (clientWidth <= 0) return;
     const frac = Math.max(0, Math.min(1, xClient / clientWidth));
 
     const timeRangeUs = reviewChartTimeRangeUs(state);
@@ -180,86 +142,86 @@ export function mountDashboard({ store, telemetry, el }) {
     }
 
     const updates = {};
-    if (draggedMarker === "release") {
+    if (drag.marker === "release") {
       updates.reviewReleaseIdx = idx;
       updates.reviewReleaseTimeMs = timeMs;
-    } else if (draggedMarker === "hit") {
+    } else if (drag.marker === "hit") {
       updates.reviewHitIdx = idx;
       updates.reviewHitTimeMs = timeMs;
     }
 
-    const newRelease = draggedMarker === "release" ? timeMs : state.reviewReleaseTimeMs;
-    const newHit = draggedMarker === "hit" ? timeMs : state.reviewHitTimeMs;
-
-    getActiveArrowSpeed().then((speedVal) => {
-      const range = calculateRangeFromTimes(newRelease, newHit, speedVal);
-      const rangeText = range
-        ? `| Est. Range: ${range.yards.toFixed(1)} yds (${Math.round(range.feet)} ft) @ ${speedVal} fps`
-        : "";
-
-      updates.reviewRangeEst = rangeText;
-      store.set(updates);
-    });
+    const newRelease = drag.marker === "release" ? timeMs : state.reviewReleaseTimeMs;
+    const newHit = drag.marker === "hit" ? timeMs : state.reviewHitTimeMs;
+    // Use the speed loaded for this review, not a newly selected active bow.
+    const range = calculateRangeFromTimes(newRelease, newHit, state.reviewRangeSpeed?.fps);
+    store.set({ ...updates, reviewRangeEst: formatRangeEstimate(range, state.reviewRangeSpeed) });
   };
 
-  el.traceCanvas.addEventListener("mousedown", (e) => {
-    const target = getMarkerClickTarget(e.offsetX, e.offsetY);
-    if (target) {
-      draggedMarker = target;
-    }
-  });
+  const startDrag = (x, y) => {
+    const marker = getMarkerClickTarget(x, y);
+    const state = store.get();
+    drag = marker ? { marker, shotId: state.reviewShotId, trace: state.reviewTrace } : null;
+  };
 
-  el.traceCanvas.addEventListener("mousemove", (e) => {
-    if (draggedMarker) {
+  canvas.addEventListener("mousedown", (e) => startDrag(e.offsetX, e.offsetY));
+
+  canvas.addEventListener("mousemove", (e) => {
+    if (drag) {
       handleDragMove(e.offsetX);
     } else {
       const target = getMarkerClickTarget(e.offsetX, e.offsetY);
-      el.traceCanvas.style.cursor = target ? "ew-resize" : "";
+      canvas.style.cursor = target ? "ew-resize" : "";
     }
   });
 
   const endDrag = () => {
-    draggedMarker = null;
-    if (el.traceCanvas) {
-      el.traceCanvas.style.cursor = "";
-    }
+    drag = null;
+    canvas.style.cursor = "";
   };
 
-  el.traceCanvas.addEventListener("mouseup", endDrag);
-  el.traceCanvas.addEventListener("mouseleave", endDrag);
+  canvas.addEventListener("mouseup", endDrag);
+  canvas.addEventListener("mouseleave", endDrag);
 
   // Touch Drag Support
-  el.traceCanvas.addEventListener("touchstart", (e) => {
+  canvas.addEventListener("touchstart", (e) => {
     if (e.touches.length === 1) {
       const touch = e.touches[0];
-      const rect = el.traceCanvas.getBoundingClientRect();
+      const rect = canvas.getBoundingClientRect();
       const x = touch.clientX - rect.left;
       const y = touch.clientY - rect.top;
-      const target = getMarkerClickTarget(x, y);
-      if (target) {
-        draggedMarker = target;
-      }
+      startDrag(x, y);
     }
   });
 
-  el.traceCanvas.addEventListener("touchmove", (e) => {
-    if (draggedMarker && e.touches.length === 1) {
+  canvas.addEventListener("touchmove", (e) => {
+    if (drag && e.touches.length === 1) {
       const touch = e.touches[0];
-      const rect = el.traceCanvas.getBoundingClientRect();
+      const rect = canvas.getBoundingClientRect();
       const x = touch.clientX - rect.left;
       handleDragMove(x);
       e.preventDefault(); // Disable scroll/pinch gesture while dragging a marker
     }
   }, { passive: false });
 
-  el.traceCanvas.addEventListener("touchend", endDrag);
+  canvas.addEventListener("touchend", endDrag);
+  canvas.addEventListener("touchcancel", endDrag);
+}
+
+export function mountDashboard({ store, telemetry, el }) {
+  const ctx = el.traceCanvas.getContext("2d");
+  initOrientationVisualizer(el, store);
+  mountReviewMarkers({ store, canvas: el.traceCanvas });
 
   let filteredRoll = null;
   let lastUpdateTime = null;
 
   store.subscribe((s) => {
     el.statusBadge.className = `status clickable ${s.statusMode || ""}`.trim();
-    el.statusBadge.title = s.connected ? "Disconnect Sensor" : "Connect Sensor";
+    const connectionAction = s.connected
+      ? s.statusMode === "demo" ? "Stop demo" : "Disconnect sensor"
+      : s.statusMode === "reconnecting" ? "Choose sensor" : "Connect sensor";
+    el.statusBadge.title = connectionAction;
+    el.statusBadge.setAttribute("aria-label", `${connectionAction}: ${s.statusText}`);
     el.statusText.textContent = s.statusText;
 
     // Toggle Review Mode layout components reactively

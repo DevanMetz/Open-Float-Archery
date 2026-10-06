@@ -2,6 +2,8 @@
  * Index entries reserve more space than Settings' actual names/linked nodes.
  * The flash shim models byte-alterable RRAM, not hardware timing or power loss. */
 #include "trace_store.h"
+#include "shot_log.h"
+#include "sleep_flush.h"
 #include <zephyr/fs/zms.h>
 #include <stdio.h>
 #include <errno.h>
@@ -13,7 +15,8 @@ static struct zms_fs fs;
 static struct stored_trace input, scratch;
 static uint32_t restored_id[TRACE_STORE_SLOTS];
 static unsigned int restored_count;
-static uint8_t shotlog[2804];
+static uint8_t shotlog[sizeof(struct stored_shot_log)];
+static unsigned int flash_writes, flash_erases;
 
 const struct flash_parameters *flash_get_parameters(const struct device *dev)
 {
@@ -41,6 +44,7 @@ int flash_write(const struct device *dev, off_t offset, const void *data, size_t
 {
 	(void)dev;
 	assert(offset >= 0 && (size_t)offset + size <= sizeof(rram) && offset % 16 == 0 && size % 16 == 0);
+	flash_writes++;
 	memcpy(rram + offset, data, size);
 	return 0;
 }
@@ -49,6 +53,7 @@ int flash_erase(const struct device *dev, off_t offset, size_t size)
 {
 	(void)dev;
 	assert(offset >= 0 && (size_t)offset + size <= sizeof(rram));
+	flash_erases++;
 	memset(rram + offset, 0xff, size);
 	return 0;
 }
@@ -92,6 +97,122 @@ static void remount(void)
 	fs.sector_size = 4096;
 	fs.sector_count = 16;
 	assert(!zms_mount(&fs));
+}
+
+static void check_live_ack_writes(void)
+{
+	struct stored_shot_log log;
+	struct stored_shot shot;
+	shot_log_reset(&log);
+	assert(zms_write(&fs, 102, &log, sizeof(log)) == sizeof(log));
+	unsigned int writes = flash_writes, erases = flash_erases;
+	/* Padding varies too, as it can in stack-allocated shot records. */
+	for (uint32_t i = 0; i < 100; i++) {
+		memset(&shot, (int)(i + 1), sizeof(shot));
+		shot.shot_id = 70000 + i;
+		shot.shot_count = (uint16_t)i;
+		assert(!shot_log_append(&log, &shot));
+		assert(shot_log_remove(&log, shot.shot_id));
+		/* The ack's persist job still runs; identical empty bytes suppress writes. */
+		assert(zms_write(&fs, 102, &log, sizeof(log)) == 0);
+		assert(flash_writes == writes && flash_erases == erases);
+	}
+	/* A missed live frame and its subsequent acknowledgment must change storage. */
+	shot.shot_id = UINT32_MAX;
+	assert(!shot_log_append(&log, &shot));
+	assert(zms_write(&fs, 102, &log, sizeof(log)) == sizeof(log));
+	assert(flash_writes > writes);
+	writes = flash_writes;
+	remount();
+	assert(zms_read(&fs, 102, shotlog, sizeof(shotlog)) == sizeof(shotlog));
+	assert(shot_log_restore(&log, shotlog, sizeof(shotlog), sizeof(shotlog)));
+	assert(log.count == 1 && log.shots[0].shot_id == UINT32_MAX);
+	assert(shot_log_remove(&log, UINT32_MAX));
+	assert(zms_write(&fs, 102, &log, sizeof(log)) == sizeof(log));
+	assert(flash_writes > writes);
+	remount();
+	assert(zms_read(&fs, 102, shotlog, sizeof(shotlog)) == sizeof(shotlog));
+	for (size_t i = 0; i < sizeof(shotlog); i++) assert(!shotlog[i]);
+	writes = flash_writes; erases = flash_erases;
+	assert(zms_write(&fs, 102, &log, sizeof(log)) == 0);
+	assert(flash_writes == writes && flash_erases == erases);
+	puts("SDK ZMS live-ack check passed: 100 drained queues added zero flash writes/erases; persisted backlog and acknowledgment survived remounts.");
+}
+
+struct sleep_model {
+	struct trace_store *store;
+	struct trace_persist_queue queue;
+};
+
+static int sleep_write_setting(void *context, const char *name, const void *data, size_t size)
+{
+	(void)context;
+	static const char *const names[] = {
+		"openfloat/shots", "openfloat/shotlog", "openfloat/wakesens", "openfloat/sleeptime",
+		"openfloat/sleepsens", "openfloat/bufrate", "openfloat/bufnvs", "openfloat/autosleep",
+		"openfloat/streamrate", "openfloat/followms", "openfloat/cant_offset", "openfloat/pitch_offset",
+	};
+	for (unsigned int i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+		if (strcmp(name, names[i])) continue;
+		/* Reuse the ordinary values reserved by the capacity test, plus the log. */
+		ssize_t rc = zms_write(&fs, i == 1 ? 102 : 10 + i * 3, data, size);
+		return rc < 0 ? (int)rc : 0;
+	}
+	assert(false);
+	return -EINVAL;
+}
+
+static int sleep_write_traces(void *context)
+{
+	struct sleep_model *model = context;
+	uint32_t token;
+	int slot = trace_persist_take(&model->queue, UINT32_MAX, true, &token);
+	if (slot < 0) return 0;
+	int rc = trace_store_save(model->store, &io, &input);
+	(void)trace_persist_finish(&model->queue, slot, token, rc);
+	return rc;
+}
+
+static void sleep_retry_delay(void *context, uint32_t milliseconds)
+{
+	(void)context; (void)milliseconds;
+	assert(false); /* This capacity scenario must fit without a save error. */
+}
+
+static void check_sleep_flush(struct trace_store *store)
+{
+	struct stored_shot_log log;
+	shot_log_reset(&log);
+	struct stored_shot shot = { .shot_count = 101, .shot_id = 70000 };
+	assert(!shot_log_append(&log, &shot));
+	const struct sleep_flush_values values = {
+		.counters = { 101, 70000 }, .queue = &log,
+		.wakesens = 2000, .sleeptime = 300000, .sleepsens = 150,
+		.bufrate = 52, .bufnvs = 1, .autosleep = 1, .streamrate = 1, .followms = 1500,
+		.cant_offset = -1234, .pitch_offset = 5678,
+	};
+	input.shot_id = 70000;
+	for (unsigned int i = 0; i < TRACE_CAPACITY; i++) input.points[i].roll_cdeg = (int16_t)(input.shot_id + i);
+	struct sleep_model model = { .store = store };
+	trace_persist_ready(&model.queue, input.shot_id % TRACE_RAM_SLOTS);
+	const struct sleep_flush_io sink = { &model, sleep_write_setting, sleep_write_traces, sleep_retry_delay };
+	assert(!sleep_flush(&values, &sink));
+	assert(!model.queue.pending_mask && !model.queue.failed_mask);
+	remount();
+	struct openfloat_shot_counters counters;
+	assert(zms_read(&fs, 10, &counters, sizeof(counters)) == sizeof(counters));
+	assert(counters.count == 101 && counters.shot_id == 70000);
+	assert(zms_read(&fs, 102, shotlog, sizeof(shotlog)) == sizeof(shotlog));
+	assert(shot_log_restore(&log, shotlog, sizeof(shotlog), sizeof(shotlog)));
+	assert(log.count == 1 && log.shots[0].shot_id == 70000);
+	struct trace_store reboot;
+	restored_count = 0;
+	assert(!trace_store_load(&reboot, &io, &scratch, collect, NULL));
+	assert(restored_count == TRACE_STORE_SLOTS && restored_id[TRACE_STORE_SLOTS - 1] == 70000);
+	unsigned int writes = flash_writes, erases = flash_erases;
+	assert(!sleep_flush(&values, &sink));
+	assert(flash_writes == writes && flash_erases == erases);
+	puts("SDK ZMS sleep flush passed after GC stress: counter, backlog, and full trace survived remount; unchanged flush added zero writes/erases.");
 }
 
 int main(void)
@@ -152,5 +273,7 @@ int main(void)
 		assert(zms_read(&fs, 102, check, sizeof(check)) == sizeof(check) && !memcmp(shotlog, check, sizeof(check)));
 	}
 	printf("SDK ZMS capacity/GC passed: 100 full traces, 100 shot-log updates, 100 remounts, 64 KB partition; free=%lld bytes.\n", (long long)zms_calc_free_space(&fs));
+	check_live_ack_writes();
+	check_sleep_flush(&store);
 	return 0;
 }

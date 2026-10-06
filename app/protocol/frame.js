@@ -56,6 +56,7 @@ export function quaternionToEulerDeg({ qw, qx, qy, qz }) {
 export function parseBinaryFrame(bytes, offset = 0) {
   if (bytes.length - offset < BINARY_FRAME_LEN) return null;
   if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
+  if (bytes[offset + 2] !== 1 || bytes[offset + 3] !== 1) return null;
 
   const view = new DataView(
     bytes.buffer,
@@ -147,12 +148,16 @@ export function parseBinaryShotFrame(bytes, offset = 0) {
   );
   const type = view.getUint8(3);
   if (type !== 2 && type !== 4) return null;
+  const protocol = view.getUint8(2);
+  if (![1, 2].includes(protocol) || (type === 4 && protocol !== 1)) return null;
+  const wide = protocol === 2;
   const lowShotId = view.getUint16(6, true);
   const shotId =
-    type === 4 ? lowShotId + view.getUint16(26, true) * 0x10000 : lowShotId;
+    wide ? lowShotId + view.getUint16(22, true) * 0x10000 :
+      type === 4 ? lowShotId + view.getUint16(26, true) * 0x10000 : lowShotId;
 
   return {
-    shotCount: view.getUint16(4, true),
+    shotCount: view.getUint16(4, true) + (wide ? view.getUint16(24, true) * 0x10000 : 0),
     shotId,
     axMg: view.getInt16(8, true),
     ayMg: view.getInt16(10, true),
@@ -161,8 +166,9 @@ export function parseBinaryShotFrame(bytes, offset = 0) {
     rollDeg: view.getInt16(16, true) / ANGLE_CDEG,
     pitchDeg: view.getInt16(18, true) / ANGLE_CDEG,
     yawDeg: view.getInt16(20, true) / ANGLE_CDEG,
-    clickerDtMs: view.getUint16(22, true),
-    impactDtMs: view.getUint16(24, true),
+    // V2 repurposes the two previously reserved timing words for upper counters.
+    clickerDtMs: wide ? null : view.getUint16(22, true),
+    impactDtMs: wide ? null : view.getUint16(24, true),
     shotSequence: type === 2 ? view.getUint16(26, true) : null,
     stored: type === 4,
   };
@@ -181,8 +187,10 @@ export function parseBinaryCountFrame(bytes, offset = 0) {
     BINARY_FRAME_LEN,
   );
   if (view.getUint8(3) !== 3) return null;
+  const protocol = view.getUint8(2);
+  if (![1, 2].includes(protocol)) return null;
 
-  return { count: view.getUint16(4, true) };
+  return { count: view.getUint16(4, true) + (protocol === 2 ? view.getUint16(24, true) * 0x10000 : 0) };
 }
 
 export function parseBinaryStorageFrame(bytes, offset = 0) {
@@ -195,9 +203,11 @@ export function parseBinaryStorageFrame(bytes, offset = 0) {
     BINARY_FRAME_LEN,
   );
   if (view.getUint8(3) !== 5) return null;
+  const protocol = view.getUint8(2);
+  if (![1, 2].includes(protocol)) return null;
 
   return {
-    shotCount: view.getUint16(4, true),
+    shotCount: view.getUint16(4, true) + (protocol === 2 ? view.getUint16(18, true) * 0x10000 : 0),
     pending: view.getUint16(6, true),
     uploadShotId: view.getUint16(8, true) + view.getUint16(14, true) * 0x10000,
     requested: view.getUint16(10, true) === 1,
@@ -216,6 +226,7 @@ export function parseBinaryTraceStatusFrame(bytes, offset = 0) {
     BINARY_FRAME_LEN,
   );
   if (view.getUint8(3) !== 7) return null;
+  if (![1, 2].includes(view.getUint8(2))) return null;
 
   return {
     shotId: view.getUint16(4, true) + view.getUint16(6, true) * 0x10000,
@@ -275,6 +286,8 @@ export function parseBinaryTraceFrame(bytes, offset = 0) {
 export function decodeBinaryFrame(bytes, offset = 0) {
   if (bytes.length - offset < 4) return null;
   if (bytes[offset] !== MAGIC_O || bytes[offset + 1] !== MAGIC_F) return null;
+  const protocol = bytes[offset + 2];
+  if (protocol !== 1 && protocol !== 2) return null;
 
   if (bytes[offset + 2] === 2 && bytes[offset + 3] === 1) {
     const sample = parseBinaryLiveV2Frame(bytes, offset);

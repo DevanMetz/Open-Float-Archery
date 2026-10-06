@@ -10,7 +10,7 @@
 //   "sample" -> Sample, "shot" -> Shot, "log" -> string,
 //   "status" -> { mode, text }
 
-import { decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-155";
+import { decodeBinaryFrame } from "../protocol/frame.js?v=shot-store-199";
 
 const OPENFLOAT_SERVICE = "8f3f3b10-0f5a-4f4c-9a2d-000000000001";
 const OPENFLOAT_LIVE = "8f3f3b10-0f5a-4f4c-9a2d-000000000002";
@@ -45,12 +45,16 @@ class BaseAdapter {
     this.connected = false;
   }
 
+  get deviceId() {
+    return "OpenFloat-Sensor";
+  }
+
   log(message) {
-    this.bus.emit("log", message);
+    this.bus.emitAsync("log", message);
   }
 
   status(mode, text) {
-    this.bus.emit("status", { mode, text });
+    this.bus.emit("status", { mode, text, deviceId: this.deviceId });
   }
 
   emitSample(sample) {
@@ -69,6 +73,10 @@ class BaseAdapter {
 export class DemoAdapter extends BaseAdapter {
   get name() {
     return "Demo";
+  }
+
+  get deviceId() {
+    return "OpenFloat-Demo";
   }
 
   get sequenceStep() {
@@ -127,10 +135,16 @@ export class BleAdapter extends BaseAdapter {
   constructor(bus) {
     super(bus);
     this.controlQueue = Promise.resolve();
+    this.connectionEpoch = 0;
+    this.connectionToken = {};
     this.pendingAckShotIds = new Set();
     this.pendingStoredShots = 0;
     this.storedShotWatchdog = null;
     this.traceDownloadQueue = [];
+    // Keep acknowledged metadata's exact local ID until its replay commits.
+    // Firmware can stop re-uploading metadata before the trace has arrived.
+    this.traceLocalShotIds = new Map();
+    this.interruptedTraceShotIds = [];
     this.currentTraceDownloadShotId = null;
     this.currentTraceChunkIndexes = new Set();
     this.currentTraceTotalChunks = 0;
@@ -143,27 +157,38 @@ export class BleAdapter extends BaseAdapter {
     this.maxReconnectAttempts = 6;
     this.manualDisconnect = false;
     this.dropHandler = () => this._onDrop();
-    this.liveValueHandler = (e) => this._onValue(e);
+    this.liveValueHandler = (e) => {
+      if (e.target === this.live) this._onValue(e);
+    };
     this.batteryValueHandler = (e) => {
-      const val = e.target.value.getUint8(0);
-      this.bus.emit("battery", val);
+      if (e.target === this.batteryChar && e.target.value?.byteLength) {
+        this.bus.emit("battery", e.target.value.getUint8(0));
+      }
     };
     this.unsubscribeShotSaved = bus.on("shot-saved", (shot) => {
       if (shot && shot.shotId != null) {
-        if (shot.stored) {
-          this.ackShot(shot.shotId);
-          if (!shot.duplicate) {
-            this._enqueueTraceDownload(shot.shotId);
-          }
-        } else {
-          this.ackShot(shot.shotId);
-        }
+        const source = shot.sourceConnection;
+        if (source && (source.token !== this.connectionToken || source.epoch !== this.connectionEpoch ||
+            (source.deviceId != null && source.deviceId !== this.deviceId))) return;
+        const acknowledgement = this.ackShot(shot.shotId);
+        if (shot.stored && (!shot.duplicate || shot.traceNeeded === true)) this._enqueueTraceDownload(shot.shotId, shot.localShotId);
+        return acknowledgement;
+      }
+    });
+    this.unsubscribeTraceSaved = bus.on("shot-trace-saved", (trace) => {
+      if (this.traceLocalShotIds.get(trace?.deviceShotId) === trace?.localShotId && trace?.localShotId) {
+        this._forgetTraceDownload(trace.deviceShotId);
       }
     });
   }
 
   get name() {
     return "Bluetooth";
+  }
+
+  get deviceId() {
+    const id = this.device?.id;
+    return typeof id === "string" && id ? `OpenFloat-BLE:${id}` : "OpenFloat-Sensor";
   }
 
   // Firmware adds a BLE frame every IMU sample, so sequence advances by 1.
@@ -182,92 +207,132 @@ export class BleAdapter extends BaseAdapter {
     // reliable of the two for discovery.
     this._stopReconnectTimer();
     this.manualDisconnect = false;
+    const epoch = ++this.connectionEpoch;
 
-    this.device = await navigator.bluetooth.requestDevice({
+    const device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [OPENFLOAT_SERVICE] }, { namePrefix: "OpenFloat" }],
       optionalServices: [OPENFLOAT_SERVICE, "battery_service"],
     });
+    if (this.manualDisconnect || epoch !== this.connectionEpoch) return false;
+    this.device = device;
     this.device.removeEventListener("gattserverdisconnected", this.dropHandler);
     this.device.addEventListener("gattserverdisconnected", this.dropHandler);
 
-    await this._connectGatt();
+    return this._connectGatt();
   }
 
   async _connectGatt() {
-    const server = await this.device.gatt.connect();
+    const device = this.device;
+    const epoch = ++this.connectionEpoch;
+    const active = () => !this.manualDisconnect && epoch === this.connectionEpoch;
+    const server = await device.gatt.connect();
+    if (!active()) {
+      // disconnect() may have run before gatt.connect() finished opening.
+      if (this.manualDisconnect && server.connected) server.disconnect();
+      return false;
+    }
     const service = await server.getPrimaryService(OPENFLOAT_SERVICE);
-    this.live = await service.getCharacteristic(OPENFLOAT_LIVE);
+    if (!active()) return false;
+    const live = await service.getCharacteristic(OPENFLOAT_LIVE);
+    if (!active()) return false;
+    let control = null;
     try {
-      this.control = await service.getCharacteristic(OPENFLOAT_CONTROL);
+      control = await service.getCharacteristic(OPENFLOAT_CONTROL);
     } catch (error) {
-      this.control = null;
+      if (!active()) return false;
       this.log(`BLE control characteristic not found: ${error.message}`);
     }
+    if (!active()) return false;
 
     // Discover standard Battery Service
-    this.batteryChar = null;
+    let batteryChar = null;
     try {
       const basService = await server.getPrimaryService("battery_service");
-      this.batteryChar = await basService.getCharacteristic("battery_level");
+      if (!active()) return false;
+      batteryChar = await basService.getCharacteristic("battery_level");
     } catch (error) {
+      if (!active()) return false;
       this.log(`BLE Battery Service not found: ${error.message}`);
     }
+    if (!active()) return false;
 
+    this.live = live;
+    this.control = control;
+    this.batteryChar = batteryChar;
     this.sampleCount = 0;
-    this.live.removeEventListener("characteristicvaluechanged", this.liveValueHandler);
-    this.live.addEventListener("characteristicvaluechanged", this.liveValueHandler);
-    await this.live.startNotifications();
+    live.addEventListener("characteristicvaluechanged", this.liveValueHandler);
+    await live.startNotifications();
+    if (!active()) return false;
     this.log("BLE notifications subscribed.");
 
-    if (this.batteryChar) {
-      this.batteryChar.removeEventListener("characteristicvaluechanged", this.batteryValueHandler);
-      this.batteryChar.addEventListener("characteristicvaluechanged", this.batteryValueHandler);
-      await this.batteryChar.startNotifications();
+    if (batteryChar) {
+      batteryChar.addEventListener("characteristicvaluechanged", this.batteryValueHandler);
       try {
-        const initVal = await this.batteryChar.readValue();
-        this.bus.emit("battery", initVal.getUint8(0));
+        await batteryChar.startNotifications();
+      } catch (error) {
+        if (!active()) return false;
+        this.log(`BLE battery notifications unavailable: ${error.message}`);
+      }
+      if (!active()) return false;
+      try {
+        const initVal = await batteryChar.readValue();
+        if (!active()) return false;
+        if (initVal.byteLength) this.bus.emit("battery", initVal.getUint8(0));
       } catch (err) {
+        if (!active()) return false;
         this.log(`Initial battery read failed: ${err.message}`);
       }
     }
 
     await this.sendControl("start");
+    if (!active()) return false;
     await this.sendControl("shotdump");
+    if (!active()) return false;
 
     this.connected = true;
     this.reconnectAttempts = 0;
-    this.status("live", `BLE ${this.device.name || ""}`.trim());
-    this.log(`BLE connected to ${this.device.name || this.device.id}.`);
+    this.status("live", `BLE ${device.name || ""}`.trim());
+    this.log(`BLE connected to ${device.name || device.id}.`);
+    await this._resumeTraceDownloads(epoch);
+    if (!active()) return false;
 
     // The firmware streams only once notifications are enabled; if nothing
     // arrives shortly, nudge it with another start command.
     this.watchdog = setTimeout(() => {
-      if (this.connected && this.sampleCount === 0 && this.pendingStoredShots === 0 && !this.currentTraceDownloadShotId) {
+      if (active() && this.connected && this.sampleCount === 0 && this.pendingStoredShots === 0 && this.currentTraceDownloadShotId == null) {
         this.log("No BLE frames after 2s — re-sending start.");
         this.sendControl("start");
       }
     }, 2000);
+    return true;
   }
 
   async sendControl(command) {
+    const control = this.control;
+    const epoch = this.connectionEpoch;
     this.controlQueue = this.controlQueue
       .catch(() => {})
-      .then(() => this.writeControl(command));
+      .then(() => this.writeControl(command, control, epoch));
     return this.controlQueue;
   }
 
-  async writeControl(command) {
-    if (!this.control) {
+  async writeControl(command, control = this.control, epoch = this.connectionEpoch) {
+    const active = () => !this.manualDisconnect && epoch === this.connectionEpoch && control === this.control;
+    if (!active()) return false;
+    if (!control) {
       this.log("No control characteristic available.");
       return false;
     }
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
+        if (!active()) return false;
         try {
-          await this.control.writeValue(new TextEncoder().encode(command));
+          await control.writeValue(new TextEncoder().encode(command));
+          if (!active()) return false;
           this.log(`Sent BLE control: ${command}.`);
           return true;
         } catch (error) {
+          if (!active()) return false;
           if (attempt === 2) {
             throw error;
           }
@@ -276,6 +341,7 @@ export class BleAdapter extends BaseAdapter {
         }
       }
     } catch (error) {
+      if (!active()) return false;
       this.log(`BLE control write failed: ${error.message}`);
       const message = String(error.message || error);
       if (message.includes("disconnected") || message.includes("not connected") || message.includes("Cannot perform GATT operations")) {
@@ -287,15 +353,16 @@ export class BleAdapter extends BaseAdapter {
   }
 
   async ackShot(shotId) {
-    if (this.pendingAckShotIds.has(shotId)) {
+    const pending = this.pendingAckShotIds;
+    if (pending.has(shotId)) {
       return;
     }
 
-    this.pendingAckShotIds.add(shotId);
+    pending.add(shotId);
     try {
-      await this.sendControl(`shotack:${shotId}`);
+      return await this.sendControl(`shotack:${shotId}`);
     } finally {
-      this.pendingAckShotIds.delete(shotId);
+      pending.delete(shotId);
     }
   }
 
@@ -306,11 +373,13 @@ export class BleAdapter extends BaseAdapter {
   }
 
   _onValue(event) {
+    const sourceConnection = { token: this.connectionToken, epoch: this.connectionEpoch, deviceId: this.deviceId };
     const dv = event.target.value;
     const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
 
     let decodedCount = 0;
     for (let offset = 0; offset + 4 <= bytes.length;) {
+      if (sourceConnection.epoch !== this.connectionEpoch) return;
       const decoded = decodeBinaryFrame(bytes, offset);
       if (!decoded || !decoded.byteLength) {
         break;
@@ -329,7 +398,7 @@ export class BleAdapter extends BaseAdapter {
           this.log(`Stored shot upload received: id ${decoded.shot.shotId}.`);
           this._feedStoredShotWatchdog();
         }
-        this.bus.emit("shot", decoded.shot);
+        this.bus.emit("shot", { ...decoded.shot, sourceConnection });
         continue;
       }
       if (decoded && decoded.kind === "count") {
@@ -346,7 +415,7 @@ export class BleAdapter extends BaseAdapter {
         if (decoded.storage.dropped > 0) {
           parts.push(`dropped ${decoded.storage.dropped}`);
         }
-        if (decoded.storage.retryAttempts > 1 && decoded.storage.uploadShotId) {
+        if (decoded.storage.pending > 0 && decoded.storage.retryAttempts > 1) {
           parts.push(`retry ${decoded.storage.retryAttempts} for ${decoded.storage.uploadShotId}`);
         }
         this.log(`${parts[0]} (${parts.slice(1).join(", ")}).`);
@@ -401,12 +470,27 @@ export class BleAdapter extends BaseAdapter {
   }
 
   _onDrop() {
+    this.connectionEpoch += 1;
+    // Old GATT promises may still settle. A new link must not wait for them.
+    this.controlQueue = Promise.resolve();
+    this.pendingAckShotIds = new Set();
+    this.live?.removeEventListener("characteristicvaluechanged", this.liveValueHandler);
+    this.batteryChar?.removeEventListener("characteristicvaluechanged", this.batteryValueHandler);
     const wasConnected = this.connected;
     this.connected = false;
     clearTimeout(this.watchdog);
     this.watchdog = null;
     this._stopStoredShotWatchdog();
     this._stopTraceDownloadTimer();
+    if (this.manualDisconnect) {
+      this.interruptedTraceShotIds = [];
+      this.traceLocalShotIds.clear();
+    } else {
+      this.interruptedTraceShotIds = [...new Set([
+        this.currentTraceDownloadShotId, ...this.traceDownloadQueue,
+        ...this.interruptedTraceShotIds, ...this.traceLocalShotIds.keys(),
+      ])].filter((shotId) => this.traceLocalShotIds.has(shotId));
+    }
     this.traceDownloadQueue = [];
     this.currentTraceDownloadShotId = null;
     this.currentTraceChunkIndexes.clear();
@@ -443,13 +527,17 @@ export class BleAdapter extends BaseAdapter {
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       if (this.manualDisconnect || this.connected) return;
+      let epoch;
       try {
         this.log(`BLE reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}...`);
-        await this._connectGatt();
+        const connecting = this._connectGatt();
+        epoch = this.connectionEpoch;
+        if (!await connecting) return;
         this.log("BLE reconnected.");
       } catch (error) {
+        if (this.manualDisconnect || epoch !== this.connectionEpoch) return;
         this.log(`BLE reconnect failed: ${error.message}`);
-        this._scheduleReconnect();
+        this._onDrop();
       }
     }, delayMs);
   }
@@ -486,7 +574,40 @@ export class BleAdapter extends BaseAdapter {
     }
   }
 
-  _enqueueTraceDownload(shotId) {
+  async _resumeTraceDownloads(epoch) {
+    const active = () => !this.manualDisconnect && this.connected && epoch === this.connectionEpoch;
+    for (const shotId of [...this.interruptedTraceShotIds]) {
+      if (!active()) return;
+      const localShotId = this.traceLocalShotIds.get(shotId);
+      if (!localShotId) continue;
+      if (shotId === this.currentTraceDownloadShotId || this.traceDownloadQueue.includes(shotId)) {
+        this.interruptedTraceShotIds = this.interruptedTraceShotIds.filter((id) => id !== shotId);
+        continue;
+      }
+      // Rebind only if the exact saved capture still needs its replay. A new
+      // connection has already discarded the previous partial chunk buffer.
+      const results = await this.bus.emitAsync("trace-resume", { shotId, localShotId });
+      if (!active()) return;
+      if (this.traceLocalShotIds.get(shotId) !== localShotId) continue;
+      if (results.some((result) => result.status === "fulfilled" && result.value === true)) {
+        this.interruptedTraceShotIds = this.interruptedTraceShotIds.filter((id) => id !== shotId);
+        this._enqueueTraceDownload(shotId, localShotId);
+      } else if (results.some((result) => result.status === "rejected")) {
+        this.log(`Saved trace check failed for shot ${shotId}; retrying on the next reconnect.`);
+      } else {
+        this._forgetTraceDownload(shotId);
+      }
+    }
+  }
+
+  _forgetTraceDownload(shotId) {
+    this.traceLocalShotIds.delete(shotId);
+    this.interruptedTraceShotIds = this.interruptedTraceShotIds.filter((id) => id !== shotId);
+    this.traceDownloadQueue = this.traceDownloadQueue.filter((id) => id !== shotId);
+  }
+
+  _enqueueTraceDownload(shotId, localShotId) {
+    if (typeof localShotId === "string" && localShotId) this.traceLocalShotIds.set(shotId, localShotId);
     if (
       this.currentTraceDownloadShotId === shotId ||
       this.traceDownloadQueue.includes(shotId)
@@ -512,12 +633,15 @@ export class BleAdapter extends BaseAdapter {
     this.currentTraceTotalChunks = 0;
     const attempt = { shotId, protocol };
     this.traceDownloadAttempt = attempt;
+    // Restart reassembly before a queued write can deliver any fresh chunks.
+    this.bus.emit("trace-start", { shotId });
+    if (this.traceDownloadAttempt !== attempt) return;
     this.log(`Starting serialized trace download for shot ${shotId}...`);
     this.requestTrace(shotId, protocol).then((sent) => {
       // A reply or disconnect can arrive before the control-write promise settles.
       if (this.traceDownloadAttempt !== attempt || this.currentTraceChunkIndexes.size) return;
       if (!sent) {
-        this._completeTraceDownload(shotId);
+        this._completeTraceDownload(shotId, true);
         return;
       }
       this.traceTimer = setTimeout(() => {
@@ -529,7 +653,7 @@ export class BleAdapter extends BaseAdapter {
           this._startTraceDownload(shotId, this.traceProtocol);
         } else {
           this.log(`Trace download timeout for shot ${shotId}.`);
-          this._completeTraceDownload(shotId);
+          this._completeTraceDownload(shotId, true);
         }
       }, 1500);
     });
@@ -559,12 +683,12 @@ export class BleAdapter extends BaseAdapter {
         this.currentTraceChunkIndexes.size === this.currentTraceTotalChunks
       ) {
         this.log(`Trace download complete for shot ${trace.shotId}.`);
-        this._completeTraceDownload(trace.shotId);
+        this._completeTraceDownload(trace.shotId, true);
       } else {
         // Reset watchdog during active chunk transfer (8 seconds)
         this.traceTimer = setTimeout(() => {
           this.log(`Trace download stalled for shot ${trace.shotId}. Proceeding to ack.`);
-          this._completeTraceDownload(trace.shotId);
+          this._completeTraceDownload(trace.shotId, true);
         }, 8000);
       }
       return true;
@@ -572,9 +696,12 @@ export class BleAdapter extends BaseAdapter {
     return false;
   }
 
-  _completeTraceDownload(shotId) {
+  _completeTraceDownload(shotId, retainForReconnect = false) {
     // A delayed status from an earlier request must not finish the next shot.
     if (shotId !== this.currentTraceDownloadShotId) return;
+    // A timeout may precede the OS reporting a radio drop. Unavailable replies
+    // or changed chunk counts end recovery; silence and uncommitted bytes do not.
+    if (!retainForReconnect) this._forgetTraceDownload(shotId);
     this._stopTraceDownloadTimer();
     this.currentTraceDownloadShotId = null;
     this.currentTraceChunkIndexes.clear();
@@ -600,21 +727,19 @@ export class BleAdapter extends BaseAdapter {
       this.unsubscribeShotSaved();
       this.unsubscribeShotSaved = null;
     }
-    clearTimeout(this.watchdog);
-    try {
-      if (this.live) await this.live.stopNotifications();
-    } catch (_) {}
-    try {
-      if (this.batteryChar) await this.batteryChar.stopNotifications();
-    } catch (_) {}
-    this.batteryChar = null;
-    try {
-      if (this.device && this.device.gatt.connected) this.device.gatt.disconnect();
-    } catch (_) {}
+    if (this.unsubscribeTraceSaved) {
+      this.unsubscribeTraceSaved();
+      this.unsubscribeTraceSaved = null;
+    }
     if (this.device) {
       this.device.removeEventListener("gattserverdisconnected", this.dropHandler);
     }
+    // Disconnecting GATT also stops its notifications. Invalidate callbacks
+    // synchronously, without waiting for another GATT operation to finish.
     this._onDrop();
+    try {
+      if (this.device?.gatt.connected) this.device.gatt.disconnect();
+    } catch (_) {}
   }
 }
 

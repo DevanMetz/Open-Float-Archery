@@ -20,6 +20,51 @@ static void write16(uint8_t *p, uint16_t value)
 	p[1] = (uint8_t)(value >> 8);
 }
 
+void trace_persist_forget(struct trace_persist_queue *queue, unsigned int slot)
+{
+	queue->pending_mask &= ~(UINT32_C(1) << slot);
+	queue->failed_mask &= ~(UINT32_C(1) << slot);
+	queue->order[slot] = ++queue->generation;
+	queue->attempts[slot] = 0;
+}
+
+void trace_persist_ready(struct trace_persist_queue *queue, unsigned int slot)
+{
+	trace_persist_forget(queue, slot);
+	queue->pending_mask |= UINT32_C(1) << slot;
+}
+
+int trace_persist_take(struct trace_persist_queue *queue, uint32_t eligible_mask,
+		       bool include_failed, uint32_t *token)
+{
+	eligible_mask &= queue->pending_mask | (include_failed ? queue->failed_mask : 0);
+	int slot = -1;
+	for (unsigned int i = 0; i < TRACE_RAM_SLOTS; i++) {
+		if (!(eligible_mask & (UINT32_C(1) << i))) continue;
+		if (slot < 0 || (int32_t)(queue->order[i] - queue->order[slot]) < 0) slot = (int)i;
+	}
+	if (slot >= 0) {
+		*token = queue->order[slot];
+		queue->pending_mask &= ~(UINT32_C(1) << slot);
+		if (queue->attempts[slot] < UINT8_MAX) queue->attempts[slot]++;
+	}
+	return slot;
+}
+
+bool trace_persist_finish(struct trace_persist_queue *queue, unsigned int slot, uint32_t token, int result)
+{
+	if (queue->order[slot] != token) return false;
+	uint32_t bit = UINT32_C(1) << slot;
+	if (!result) {
+		queue->failed_mask &= ~bit;
+		return false;
+	}
+	queue->failed_mask |= bit;
+	bool retry = queue->attempts[slot] < 3;
+	if (retry) queue->pending_mask |= bit;
+	return retry;
+}
+
 void trace_ring_push(struct trace_ring *ring, struct trace_point point, uint32_t now_ms)
 {
 	uint32_t elapsed = now_ms - ring->last_ms;

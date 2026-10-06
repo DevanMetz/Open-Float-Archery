@@ -6,7 +6,7 @@ import {
   getPendingSyncTasks,
   updateSyncTaskStatus,
   remove,
-} from "../core/db.js?v=shot-store-146";
+} from "../core/db.js?v=shot-store-176";
 
 let supabaseClient = null;
 let initializationPromise = null;

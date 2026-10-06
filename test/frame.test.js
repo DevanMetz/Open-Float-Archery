@@ -5,7 +5,9 @@ import {
   BINARY_FRAME_LEN,
   BINARY_LIVE_V2_FRAME_LEN,
   decodeBinaryFrame,
+  parseBinaryFrame,
   parseBinaryLiveV2Frame,
+  parseBinaryTraceStatusFrame,
   quaternionToEulerDeg,
 } from "../app/protocol/frame.js";
 
@@ -144,6 +146,45 @@ test("decodeBinaryFrame decodes a 29-byte shot event frame", () => {
   });
 });
 
+test("v2 live metadata preserves full counters without changing motion or release sequence", () => {
+  for (const [shotCount, shotId] of [[0, 0], [65535, 65535], [65536, 65536], [2147483647, 0xfedcba98], [0xffffffff, 0xffffffff]]) {
+    const bytes = frame29(2); bytes[2] = 2;
+    setU16(bytes, 4, shotCount); setU16(bytes, 6, shotId);
+    setU16(bytes, 22, Math.floor(shotId / 65536)); setU16(bytes, 24, Math.floor(shotCount / 65536));
+    setI16(bytes, 8, -1200); setI16(bytes, 10, 250); setI16(bytes, 12, 16000);
+    setU16(bytes, 14, 325); setI16(bytes, 16, -123); setI16(bytes, 18, 456); setI16(bytes, 20, -789);
+    setU16(bytes, 26, 65535);
+    assert.deepEqual(decodeBinaryFrame(bytes), { kind: "shot", byteLength: 29, shot: {
+      shotCount, shotId, axMg: -1200, ayMg: 250, azMg: 16000, thresholdG: 3.25,
+      rollDeg: -1.23, pitchDeg: 4.56, yawDeg: -7.89,
+      clickerDtMs: null, impactDtMs: null, shotSequence: 65535, stored: false,
+    } });
+  }
+});
+
+test("v2 count and storage metadata retain full counts in mixed legacy notifications", () => {
+  const legacy = frame29(3); setU16(legacy, 4, 4321);
+  const count = frame29(3); count[2] = 2; setU16(count, 4, 1); setU16(count, 24, 1);
+  const storage = frame29(5); storage[2] = 2;
+  setU16(storage, 4, 2); setU16(storage, 18, 1); setU16(storage, 6, 7);
+  setU16(storage, 8, 0x5678); setU16(storage, 14, 0x1234);
+  const mixed = new Uint8Array(87); mixed.set(legacy); mixed.set(count, 29); mixed.set(storage, 58);
+  assert.equal(decodeBinaryFrame(mixed).count, 4321);
+  assert.equal(decodeBinaryFrame(mixed, 29).count, 65537);
+  assert.deepEqual(decodeBinaryFrame(mixed, 58).storage, {
+    shotCount: 65538, pending: 7, uploadShotId: 0x12345678, requested: false, dropped: 0, retryAttempts: 0,
+  });
+});
+
+test("unknown metadata versions cannot be mistaken for legacy shot acknowledgements", () => {
+  for (const type of [2, 3, 4, 5]) {
+    const frame = frame29(type); frame[2] = 3;
+    assert.equal(decodeBinaryFrame(frame), null);
+  }
+  const stored = frame29(4); stored[2] = 2;
+  assert.equal(decodeBinaryFrame(stored), null, "Unsupported v2 stored metadata used the legacy ID layout");
+});
+
 test("decodeBinaryFrame decodes count-sync, storage-status, stored-shot, trace-status, and trace-chunk envelopes", () => {
   const count = frame29(3);
   setU16(count, 4, 4321);
@@ -223,7 +264,7 @@ test("decodeBinaryFrame decodes count-sync, storage-status, stored-shot, trace-s
   });
 });
 
-test("malformed or unknown binary input returns null or the legacy fallback without throwing", () => {
+test("malformed or unknown binary input is rejected without becoming a live sample", () => {
   assert.doesNotThrow(() => decodeBinaryFrame(new Uint8Array([0x4f, 0x46, 2])));
   assert.equal(decodeBinaryFrame(new Uint8Array([0x4f, 0x46, 2])), null);
   assert.doesNotThrow(() => decodeBinaryFrame(new Uint8Array(BINARY_FRAME_LEN)));
@@ -231,8 +272,24 @@ test("malformed or unknown binary input returns null or the legacy fallback with
 
   const unknown = frame29(99);
   assert.doesNotThrow(() => decodeBinaryFrame(unknown));
-  assert.equal(decodeBinaryFrame(unknown).kind, "sample");
-  assert.equal(decodeBinaryFrame(unknown).sample.type, 99);
+  assert.equal(decodeBinaryFrame(unknown), null);
+  assert.equal(parseBinaryFrame(unknown), null);
+});
+
+test("live and trace-status decoders reject unsupported versions at notification offsets", () => {
+  for (const protocol of [0, 3, 255]) {
+    for (const type of [1, 2, 3, 4, 5, 6, 7, 99]) {
+      const bytes = frame29(type); bytes[2] = protocol;
+      const packet = new Uint8Array(49); packet.set(bytes, 20);
+      assert.equal(decodeBinaryFrame(packet, 20), null);
+      assert.equal(parseBinaryFrame(packet, 20), null);
+      assert.equal(parseBinaryTraceStatusFrame(packet, 20), null);
+    }
+  }
+  for (const protocol of [1, 2]) {
+    const status = frame29(7); status[2] = protocol; status[8] = 2;
+    assert.equal(decodeBinaryFrame(status).traceStatus.shotId, 0);
+  }
 });
 
 test("quaternionToEulerDeg normalizes inputs and decodes cardinal rotations", () => {

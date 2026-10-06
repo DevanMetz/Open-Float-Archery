@@ -118,6 +118,48 @@ test("pending recording saves reject discard, reset, replacement and duplicate s
   assert.equal(telemetry.manualRecordingBuffer.length, 1);
 });
 
+test("manual start and discard complete despite synchronous and asynchronous log failures", async (t) => {
+  const telemetry = recorder(t);
+  telemetry.bus.on("log", () => { throw new Error("Log unavailable"); });
+  telemetry.bus.on("log", async () => { throw new Error("Delayed log failure"); });
+  assert.equal(telemetry.startManualRecording("Keep collecting"), true);
+  telemetry.ingest(sample(0, 20000));
+  assert.equal(telemetry.isRecordingManual, true);
+  assert.equal(telemetry.manualRecordingBuffer.length, 1);
+  assert.equal(telemetry.discardManualRecording(), true);
+  assert.equal(telemetry.manualRecordingBuffer.length, 0);
+  assert.equal(telemetry.store.get().manualRecordingActive, false);
+  await Promise.resolve();
+});
+
+test("saving an empty recording retains collection and explains the missing data despite a log failure", async (t) => {
+  const telemetry = recorder(t);
+  telemetry.bus.on("log", () => { throw new Error("Log unavailable"); });
+  telemetry.startManualRecording("Waiting for data");
+  assert.equal(await telemetry.saveManualRecording(), null);
+  assert.equal(telemetry.isRecordingManual, true);
+  assert.ok(!telemetry.isSavingManual);
+  assert.equal(telemetry.store.get().manualRecordingActive, true);
+  assert.match(telemetry.store.get().manualRecordMessage, /No samples to save/);
+  telemetry.ingest(sample(0, 20000));
+  assert.equal(telemetry.manualRecordingBuffer.length, 1);
+});
+
+test("transport reset also waits for a committed manual capture's pending refresh", (t) => {
+  const telemetry = recorder(t);
+  telemetry.ingest(sample(0, 20000));
+  telemetry.isSavingManual = true;
+  telemetry.store.set({ manualRecordingActive: false, manualRecordingSaving: true });
+  const epoch = telemetry.connectionEpoch;
+  assert.equal(telemetry.reset(), false);
+  assert.equal(telemetry.connectionEpoch, epoch);
+  assert.equal(telemetry.history30s.length, 1);
+  telemetry.isSavingManual = false;
+  telemetry.store.set({ manualRecordingSaving: false });
+  assert.equal(telemetry.reset(), true);
+  assert.equal(telemetry.history30s.length, 0);
+});
+
 test("delayed browser captures retain their original connection buffers", async (t) => {
   const telemetry = recorder(t);
   let freeze;
@@ -179,6 +221,32 @@ test("invalid firmware chunks do not allocate pending trace buffers", async (t) 
     await telemetry.onTraceChunk({ shotId: 42, chunkIndex, totalChunks });
   }
   assert.equal(telemetry.pendingTraces.size, 0);
+});
+
+test("firmware progress, conflict and invalid-frame handling survive failing log listeners", async (t) => {
+  const telemetry = recorder(t);
+  telemetry.bus.on("log", () => { throw new Error("Log unavailable"); });
+  telemetry.bus.on("log", async () => { throw new Error("Delayed log failure"); });
+  const chunk = { shotId: 42, chunkIndex: 0, totalChunks: 2, pointStride: 7,
+    payload: new Uint8Array([0, 0, 0, 0, 0, 0, 12]) };
+  await telemetry.onTraceChunk(chunk);
+  assert.equal(telemetry.pendingTraces.get(42).chunks.size, 1);
+  await telemetry.onTraceChunk({ ...chunk, payload: new Uint8Array([0, 0, 0, 0, 0, 0, 13]) });
+  assert.equal(telemetry.pendingTraces.size, 0, "A conflicting frame must clear the partial transfer");
+  await telemetry.onTraceChunk({ ...chunk, chunkIndex: -1 });
+  assert.equal(telemetry.pendingTraces.size, 0, "Invalid frames must not allocate a new transfer");
+});
+
+test("a missing browser trace stays a no-op when its explanatory log fails", async (t) => {
+  const telemetry = recorder(t);
+  let notified = 0, syncs = 0;
+  telemetry.bus.on("log", () => { throw new Error("Log unavailable"); });
+  telemetry.bus.on("shot-trace-saved", () => { notified += 1; });
+  telemetry.syncAdapter = { triggerSync() { syncs += 1; } };
+  await telemetry.saveBrowserShotTrace("missing-samples", 42, 10000, {}, 52);
+  assert.equal(notified, 0);
+  assert.equal(syncs, 0);
+  assert.equal(telemetry.shotTraceBuffer.length, 0);
 });
 
 test("firmware assembly bounds payload bytes, chunk counts and supported protocols", async (t) => {

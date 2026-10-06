@@ -1,6 +1,8 @@
 // Client-side IndexedDB database wrapper for OpenFloat.
 // Handles local storage of profiles, sessions, shots, traces, and the sync queue.
 
+import { publishSavedDataChange } from "./saved-data.js?v=shot-store-174";
+
 const DB_NAME = "openfloat_db";
 const DB_VERSION = 2;
 
@@ -90,7 +92,10 @@ async function runTransaction(storeNames, mode, work) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeNames, mode);
     let result;
-    tx.oncomplete = () => resolve(result);
+    tx.oncomplete = () => {
+      if (mode === "readwrite") publishSavedDataChange(db.name, [...tx.objectStoreNames]);
+      resolve(result);
+    };
     tx.onerror = tx.onabort = (event) => reject(
       tx.error || event.target.error || new DOMException("Database transaction aborted.", "AbortError"),
     );
@@ -122,9 +127,125 @@ export function getAll(storeName) {
   return runTransaction(storeName, "readonly", (tx) => tx.objectStore(storeName).getAll());
 }
 
+// A restored capture, trace, and session bow must come from one storage snapshot.
+// Keep large trace reads limited to the capture currently being reviewed.
+export async function readSavedReview(shotId) {
+  if (typeof shotId !== "string" || !shotId.trim()) throw new Error("Choose a saved capture to review.");
+  const snapshot = { shots: [], overrides: [], bowProfiles: [], trace: null };
+  await runTransaction(["shots", "shot_traces", "session_overrides", "bow_profiles"], "readonly", (tx) => {
+    for (const [name, field] of [["shots", "shots"], ["session_overrides", "overrides"], ["bow_profiles", "bowProfiles"]]) {
+      const request = tx.objectStore(name).getAll();
+      request.onsuccess = () => { snapshot[field] = request.result; };
+    }
+    const request = tx.objectStore("shot_traces").get(shotId);
+    request.onsuccess = () => { snapshot.trace = request.result || null; };
+  });
+  return snapshot;
+}
+
 export function getPendingSyncTasks() {
   return runTransaction("sync_queue", "readonly", (tx) =>
     tx.objectStore("sync_queue").index("status").getAll("pending"));
+}
+
+// A profile change and its upload must either both commit or both roll back.
+// Updates read the latest record and never recreate a profile deleted elsewhere.
+export async function saveBowProfile(profile, { create = false } = {}) {
+  if (typeof profile?.id !== "string" || !profile.id.trim() ||
+      typeof profile.model !== "string" || !profile.model.trim()) {
+    throw new Error("A bow profile needs an id and a name.");
+  }
+  for (const field of ["draw_weight", "arrow_speed"]) {
+    if (profile[field] != null && (!Number.isFinite(profile[field]) || profile[field] <= 0)) {
+      throw new Error("Bow weight and speed must be positive numbers or blank.");
+    }
+  }
+  const changes = structuredClone({ ...profile, model: profile.model.trim() });
+  let savedProfile;
+  await runTransaction(["bow_profiles", "sync_queue"], "readwrite", (tx) => {
+    const profiles = tx.objectStore("bow_profiles");
+    const save = (record) => {
+      savedProfile = record;
+      if (create) profiles.add(record);
+      else profiles.put(record);
+      tx.objectStore("sync_queue").add({
+        table: "bow_profiles", action: create ? "CREATE" : "UPDATE",
+        targetId: record.id, payload: record, status: "pending",
+      });
+    };
+    if (create) save(changes);
+    else {
+      const request = profiles.get(changes.id);
+      request.onsuccess = () => {
+        if (request.result) save({ ...request.result, ...changes });
+      };
+    }
+  });
+  if (!savedProfile) throw new Error("This bow profile is no longer saved. Create a new profile to keep these changes.");
+  return savedProfile;
+}
+
+// Keep historical shots and session assignments when removing a profile.
+export async function removeBowProfile(id) {
+  if (typeof id !== "string" || !id.trim()) throw new Error("Choose a bow profile to delete.");
+  let removedProfile = null;
+  await runTransaction(["bow_profiles", "sync_queue"], "readwrite", (tx) => {
+    const profiles = tx.objectStore("bow_profiles");
+    const request = profiles.get(id);
+    request.onsuccess = () => {
+      if (!request.result) return;
+      removedProfile = request.result;
+      profiles.delete(id);
+      tx.objectStore("sync_queue").add({ table: "bow_profiles", action: "DELETE", targetId: id, status: "pending" });
+    };
+  });
+  return removedProfile;
+}
+
+// Session groups can move or split while an editor is open. Patch their latest
+// settings in the same transaction that reads the surviving member captures.
+// Overrides stay local; cloud sessions are not the timestamp-derived UI groups.
+export async function saveSessionOverride(anchorId, changes, { shotIds = [anchorId] } = {}) {
+  if (typeof anchorId !== "string" || !anchorId.trim() || !Array.isArray(shotIds) || !shotIds.length ||
+      shotIds.some((id) => typeof id !== "string" || !id.trim())) {
+    throw new Error("Session settings must identify their saved captures.");
+  }
+  if (!changes || typeof changes !== "object" || Array.isArray(changes) || !Object.keys(changes).length ||
+      Object.keys(changes).some((key) => !["name", "bow_profile_id", "arrows_per_end"].includes(key))) {
+    throw new Error("Choose a session name, bow, or scorecard grouping to save.");
+  }
+  const patch = { updated_at: new Date().toISOString() };
+  for (const key of ["name", "bow_profile_id"]) {
+    if (!Object.hasOwn(changes, key)) continue;
+    if (changes[key] != null && typeof changes[key] !== "string") throw new Error("Session names and bow ids must be text or blank.");
+    patch[key] = !changes[key]?.trim() ? null : key === "name" ? changes[key].trim() : changes[key];
+  }
+  if (Object.hasOwn(changes, "arrows_per_end")) {
+    if (![3, 6].includes(changes.arrows_per_end)) throw new Error("Scorecard ends must contain three or six arrows.");
+    patch.arrows_per_end = changes.arrows_per_end;
+  }
+  const ids = new Set(shotIds);
+  const updated = [];
+  await runTransaction(["shots", "session_overrides"], "readwrite", (tx) => {
+    const settings = tx.objectStore("session_overrides");
+    let shots, overrides;
+    const save = () => {
+      if (!shots || !overrides) return;
+      const records = new Map(overrides.map((record) => [record.id, record]));
+      for (const group of groupShotsByTime(shots)) {
+        if (!group.shots.some((shot) => ids.has(shot.id))) continue;
+        const record = { ...records.get(anchorId), ...sessionOverrideForGroup(group, records), ...patch, id: group.anchorId };
+        settings.put(record);
+        updated.push(record);
+      }
+    };
+    const shotRequest = tx.objectStore("shots").getAll();
+    shotRequest.onsuccess = () => { shots = shotRequest.result; save(); };
+    const overrideRequest = settings.getAll();
+    overrideRequest.onsuccess = () => { overrides = overrideRequest.result; save(); };
+  });
+  if (!updated.length) throw new Error("These captures are no longer saved. Refresh Saved Shots.");
+  return updated;
 }
 
 export async function updateSyncTaskStatus(taskId, status) {
@@ -166,12 +287,11 @@ export async function removeSavedShots(shotIds) {
         // preserving any more specific settings already attached there.
         for (const group of groupShotsByTime(shotRequest.result)) {
           if (!group.shots.some((shot) => ids.has(shot.id))) continue;
-          const settings = overrideMap.get(group.anchorId);
+          const settings = sessionOverrideForGroup(group, overrideMap);
           if (!settings) continue;
           const remaining = group.shots.filter((shot) => !ids.has(shot.id));
           for (const survivor of groupShotsByTime(remaining)) {
-            if (survivor.anchorId === group.anchorId) continue;
-            overrides.put({ ...settings, ...overrideMap.get(survivor.anchorId), id: survivor.anchorId });
+            overrides.put({ ...settings, ...sessionOverrideForGroup(survivor, overrideMap), id: survivor.anchorId });
           }
         }
         for (const id of ids) {
@@ -357,9 +477,26 @@ function exportEnvelope(stores) {
   };
 }
 
+// A single capture and its trace must be read from the same committed version.
+// Keep the established single-shot format readable by the Settings importer.
+export async function exportShotData(shotId) {
+  if (typeof shotId !== "string" || !shotId.trim()) throw new Error("Choose a saved capture to export.");
+  let shot, trace;
+  await runTransaction(["shots", "shot_traces"], "readonly", (tx) => {
+    const shotRequest = tx.objectStore("shots").get(shotId);
+    shotRequest.onsuccess = () => { shot = shotRequest.result; };
+    const traceRequest = tx.objectStore("shot_traces").get(shotId);
+    traceRequest.onsuccess = () => { trace = traceRequest.result; };
+  });
+  if (!shot) throw new Error("This capture is no longer saved. Refresh Saved Shots and choose another.");
+  return { format: "openfloat-shot-export", version: EXPORT_VERSION,
+    exportedAt: new Date().toISOString(), shot, trace: trace || null };
+}
+
 // Read only the selected captures and their dependencies in one snapshot.
-// Overrides keep their original anchor ids; exporting a partial session never
-// invents a second override that could conflict when merged back later.
+// Overrides keep their original ids when their capture is selected. If a late
+// capture became the current anchor, its inherited settings travel under that
+// anchor only when the original context's capture is absent from the selection.
 export async function exportSelectedShots(shotIds) {
   const ids = [...new Set(shotIds)];
   if (!ids.length) throw new Error("Select at least one shot to export.");
@@ -379,6 +516,7 @@ export async function exportSelectedShots(shotIds) {
           collect("shot_traces", record.id);
           collect("session_overrides", record.id);
           collect("sessions", record.session_id);
+          collect("bow_profiles", record.bow_profile_id);
         }
         if (name === "sessions" || name === "session_overrides") {
           collect("bow_profiles", record.bow_profile_id);
@@ -386,6 +524,25 @@ export async function exportSelectedShots(shotIds) {
       };
     }
     for (const id of ids) collect("shots", id);
+    // Grouping and context reads share the selected records' transaction.
+    // Add a portable alias only for an already-selected current group anchor;
+    // non-anchor partial selections do not acquire another group's settings.
+    let shots, overrides;
+    const inherit = () => {
+      if (!shots || !overrides) return;
+      const records = new Map(overrides.map((record) => [record.id, record]));
+      for (const group of groupShotsByTime(shots)) {
+        if (!requested.shots.has(group.anchorId)) continue;
+        const settings = sessionOverrideForGroup(group, records);
+        if (!settings || requested.shots.has(settings.id)) continue;
+        stores.session_overrides.push({ ...settings, id: group.anchorId });
+        collect("bow_profiles", settings.bow_profile_id);
+      }
+    };
+    const shotRequest = tx.objectStore("shots").getAll();
+    shotRequest.onsuccess = () => { shots = shotRequest.result; inherit(); };
+    const overrideRequest = tx.objectStore("session_overrides").getAll();
+    overrideRequest.onsuccess = () => { overrides = overrideRequest.result; inherit(); };
   });
 
   if (stores.shots.length !== ids.length) {
@@ -430,8 +587,9 @@ export async function importAllData(payload, { merge = true, queueForSync = fals
 
 // Group shots into practice sessions purely from their timestamps. Any gap
 // larger than `gapMs` between consecutive shots starts a new session. Each group
-// is anchored by its earliest shot's id (stable as new shots are appended), so
-// user edits (name/bow) stored in `session_overrides` stay attached.
+// is anchored by its earliest shot's id (stable as new shots are appended).
+// Late earlier captures can change that anchor; resolve settings from the
+// group's member captures with sessionOverrideForGroup.
 // Returns groups sorted newest-first; each group's shots are also newest-first.
 export function groupShotsByTime(shots, gapMs = SESSION_GAP_MS) {
   const sortTime = (shot) => {
@@ -465,6 +623,19 @@ export function groupShotsByTime(shots, gapMs = SESSION_GAP_MS) {
   for (const g of groups) g.shots.reverse();
   groups.reverse();
   return groups;
+}
+
+// A current anchor's explicit settings win, including cleared fields. When a
+// late capture moves the anchor, use the earliest member with saved settings.
+// Do not blend settings from former groups that a bridging capture merged.
+export function sessionOverrideForGroup(group, overrides) {
+  const current = overrides.get(group.anchorId);
+  if (current) return current;
+  for (let index = group.shots.length - 1; index >= 0; index--) {
+    const settings = overrides.get(group.shots[index].id);
+    if (settings) return settings;
+  }
+  return null;
 }
 
 // Generate a cryptographic-quality UUIDv4 client side

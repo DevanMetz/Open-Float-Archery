@@ -1,16 +1,20 @@
 name: Firmware
 
 # The NCS workspace fetch is heavy (~10 GB, 15+ minutes), so this workflow only
-# runs when the firmware or this file changes, or on manual dispatch.
+# runs when firmware, its host checks, or this file changes, or on manual dispatch.
 on:
   push:
     branches: [main]
     paths:
       - "firmware/**"
+      - "tools/verify_ble_uuids.py"
+      - "tools/verify_trace_storage.py"
       - ".github/workflows/firmware.yml"
   pull_request:
     paths:
       - "firmware/**"
+      - "tools/verify_ble_uuids.py"
+      - "tools/verify_trace_storage.py"
       - ".github/workflows/firmware.yml"
   workflow_dispatch:
 
@@ -44,6 +48,14 @@ jobs:
           west build -p always -b xiao_nrf54l15/nrf54l15/cpuapp \
             -d "$GITHUB_WORKSPACE/openfloat/firmware/build-ci" \
             "$GITHUB_WORKSPACE/openfloat/firmware"
+
+      - name: Verify compiled BLE UUIDs
+        working-directory: openfloat
+        run: python3 tools/verify_ble_uuids.py firmware/build-ci/firmware/zephyr/zephyr.elf
+
+      - name: Verify SDK storage capacity and save/startup recovery
+        working-directory: openfloat
+        run: python3 tools/verify_trace_storage.py --zephyr ../ncs/zephyr --cc cc
 
       - name: Upload merged.hex
         uses: actions/upload-artifact@v7

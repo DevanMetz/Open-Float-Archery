@@ -14,15 +14,38 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - name: Run unit tests
         run: node --test test/
-      - name: Firmware trace host checks
+      - name: Firmware host checks
         run: |
           cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/trace_buffer.c firmware/tests/trace_buffer_test.c -o "$RUNNER_TEMP/trace_buffer_test"
           "$RUNNER_TEMP/trace_buffer_test" "$RUNNER_TEMP/timed-trace.bin"
           node tools/verify_trace_timing.mjs "$RUNNER_TEMP/timed-trace.bin"
           cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/trace_store.c firmware/tests/trace_store_test.c -o "$RUNNER_TEMP/trace_store_test"
           "$RUNNER_TEMP/trace_store_test"
+          cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/tests/metadata_frame_test.c -o "$RUNNER_TEMP/metadata_frame_test"
+          "$RUNNER_TEMP/metadata_frame_test" "$RUNNER_TEMP/metadata-frames.bin"
+          node tools/verify_metadata_frames.mjs "$RUNNER_TEMP/metadata-frames.bin"
+          python tools/verify_metadata_frames.py "$RUNNER_TEMP/metadata-frames.bin"
+          cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/trace_buffer.c firmware/src/shot_recovery.c firmware/tests/shot_control_test.c -o "$RUNNER_TEMP/shot_control_test"
+          "$RUNNER_TEMP/shot_control_test" "$RUNNER_TEMP/shot-controls.bin"
+          node tools/verify_shot_controls.mjs "$RUNNER_TEMP/shot-controls.bin"
+          python tools/verify_shot_controls.py "$RUNNER_TEMP/shot-controls.bin"
+          cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/tests/control_values_test.c -o "$RUNNER_TEMP/control_values_test"
+          "$RUNNER_TEMP/control_values_test"
+          cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/shot_log.c firmware/tests/shot_log_test.c -o "$RUNNER_TEMP/shot_log_test"
+          "$RUNNER_TEMP/shot_log_test" "$RUNNER_TEMP/shot-log-frames.bin"
+          node tools/verify_shot_log.mjs "$RUNNER_TEMP/shot-log-frames.bin"
+          python tools/verify_shot_log.py "$RUNNER_TEMP/shot-log-frames.bin"
+          cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/sleep_flush.c firmware/src/settings_retry.c firmware/src/shot_log.c firmware/src/trace_store.c firmware/tests/sleep_flush_test.c -o "$RUNNER_TEMP/sleep_flush_test"
+          "$RUNNER_TEMP/sleep_flush_test"
+          cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/boot_restore.c firmware/tests/boot_restore_test.c -o "$RUNNER_TEMP/boot_restore_test"
+          "$RUNNER_TEMP/boot_restore_test"
+          cc -std=c11 -Wall -Wextra -Werror -Ifirmware/src firmware/src/settings_retry.c firmware/src/shot_log.c firmware/tests/settings_retry_test.c -o "$RUNNER_TEMP/settings_retry_test"
+          "$RUNNER_TEMP/settings_retry_test"
 
   python-tools:
     name: Python tool checks
@@ -32,9 +55,43 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: BLE parser streams
+        run: python -m unittest discover -s test -p "*_test.py"
       - name: Follow-through trace verifier
         run: python tools/verify_follow_through_trace.py
       - name: Docs index is current
         run: |
           python tools/build_docs_index.py
           git diff --exit-code docs/index.json
+
+  cloud-schema:
+    name: Cloud schema (PostgreSQL ${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        postgres: [15, 17]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_DB: openfloat_schema_test
+          POSTGRES_PASSWORD: openfloat-test-only
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 127.0.0.1:5432:5432
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGDATABASE: openfloat_schema_test
+      PGUSER: postgres
+      PGPASSWORD: openfloat-test-only
+    steps:
+      - uses: actions/checkout@v6
+      - name: Fresh schema and repeated application
+        run: psql -X -q -v legacy=false -f test/cloud-schema.sql
+      - name: Legacy schema migration and repeated application
+        run: psql -X -q -v legacy=true -f test/cloud-schema.sql

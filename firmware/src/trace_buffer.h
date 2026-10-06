@@ -10,6 +10,7 @@
 #define TRACE_HAS_TIMING 1
 #define TRACE_TIMED_FORMAT 0x88
 #define TRACE_FRAME_SIZE 29
+#define TRACE_RAM_SLOTS 10
 
 struct trace_point {
 	int16_t roll_cdeg;
@@ -34,6 +35,22 @@ struct trace_ring {
 	uint16_t write_idx;
 	uint32_t last_ms;
 };
+
+/* Caller holds the trace mutex. Failed captures remain unsaved after three
+ * ordinary attempts and can be selected explicitly by the shutdown flush.
+ * Reusing a RAM slot changes its token before an old write can complete.
+ */
+struct trace_persist_queue {
+	uint32_t pending_mask, failed_mask, generation;
+	uint32_t order[TRACE_RAM_SLOTS];
+	uint8_t attempts[TRACE_RAM_SLOTS];
+};
+
+void trace_persist_forget(struct trace_persist_queue *queue, unsigned int slot);
+void trace_persist_ready(struct trace_persist_queue *queue, unsigned int slot);
+int trace_persist_take(struct trace_persist_queue *queue, uint32_t eligible_mask,
+		       bool include_failed, uint32_t *token);
+bool trace_persist_finish(struct trace_persist_queue *queue, unsigned int slot, uint32_t token, int result);
 
 void trace_ring_push(struct trace_ring *ring, struct trace_point point, uint32_t now_ms);
 void trace_ring_freeze(const struct trace_ring *ring, struct stored_trace *dest,

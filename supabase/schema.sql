@@ -50,7 +50,8 @@ create table if not exists public.shots (
   user_id           uuid not null default auth.uid() references auth.users (id) on delete cascade,
   session_id        uuid,
   device_id         text,
-  device_shot_id    integer,
+  device_shot_id    bigint,
+  capture_kind      text,
   stored_upload     boolean default false,
   timestamp         timestamptz,
   peak_g            numeric,
@@ -103,7 +104,8 @@ alter table public.bow_profiles
 
 alter table public.shots
   add column if not exists user_id           uuid default auth.uid(),
-  add column if not exists device_shot_id    integer,
+  add column if not exists device_shot_id    bigint,
+  add column if not exists capture_kind      text,
   add column if not exists stored_upload     boolean default false,
   add column if not exists yaw_angle_deg     numeric,
   add column if not exists shot_score        numeric,
@@ -123,6 +125,19 @@ alter table public.shots
   add column if not exists impact_x          numeric,
   add column if not exists impact_y          numeric,
   add column if not exists impact_recorded_at timestamptz;
+
+-- Capture IDs use all 32 unsigned bits. Widen older signed columns without
+-- changing saved values; skip the ALTER on already-updated projects.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'shots'
+      and column_name = 'device_shot_id' and data_type in ('smallint', 'integer')
+  ) then
+    alter table public.shots alter column device_shot_id type bigint;
+  end if;
+end $$;
 
 alter table public.shot_traces
   add column if not exists user_id            uuid default auth.uid(),
@@ -146,12 +161,15 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
--- Dedup index: firmware replays the same device shot on reconnect
+-- Capture identity: cloud retries use the saved capture UUID primary key
 -- ---------------------------------------------------------------------------
 
-create unique index if not exists shots_device_shot_id_unique
-  on public.shots (device_id, device_shot_id)
-  where device_shot_id is not null;
+-- The browser matches firmware repeats before saving and queueing an upload.
+-- Device numbers can repeat after rollover, older firmware resets, or storage
+-- erasure, and different users can upload the same sensor. A global device/shot
+-- unique index rejects those separate captures instead of deduplicating a UUID
+-- retry. Remove the old index while retaining every row and its replay.
+drop index if exists public.shots_device_shot_id_unique;
 
 -- ---------------------------------------------------------------------------
 -- Row-Level Security: each (anonymous) user manages only their own rows
@@ -181,7 +199,19 @@ create policy "shots_owner" on public.shots
 
 drop policy if exists "shot_traces_owner" on public.shot_traces;
 create policy "shot_traces_owner" on public.shot_traces
-  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+  for all using (user_id = (select auth.uid()))
+  with check (
+    user_id = (select auth.uid())
+    and exists (
+      select 1 from public.shots as capture
+      where capture.id = shot_traces.shot_id
+        and capture.user_id = (select auth.uid())
+    )
+  );
+
+-- A foreign key verifies that the capture exists but does not enforce its RLS.
+-- New/updated traces require an owned capture. USING still scopes existing
+-- traces by their owner, allowing that owner to remove a legacy mismatch.
 
 -- ---------------------------------------------------------------------------
 notify pgrst, 'reload schema';

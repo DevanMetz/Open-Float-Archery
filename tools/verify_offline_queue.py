@@ -47,6 +47,37 @@ class StoredShot:
     impact: int
 
 
+def parse_storage_status(frame: bytes | bytearray) -> Optional[StorageStatus]:
+    if len(frame) != 29 or frame[:2] != b"OF" or frame[3] != 5 or frame[2] not in (1, 2):
+        return None
+    count, pending, id_low, requested, dropped, id_high, retries = struct.unpack("<HHHHHHH", frame[4:18])
+    if frame[2] == 2:
+        count += int.from_bytes(frame[18:20], "little") << 16
+    return StorageStatus(count, pending, id_low + (id_high << 16), requested == 1, dropped, retries)
+
+
+def parse_trace_chunk(frame: bytes | bytearray):
+    """Decode an untimed legacy/extended chunk without truncating full shot IDs."""
+    if len(frame) != 29 or frame[:2] != b"OF" or frame[3] != 6 or frame[2] not in (1, 2):
+        return None
+    extended = frame[2] == 2
+    if extended:
+        shot_id, index, total, length, stride = struct.unpack("<IHHBB", frame[4:14])
+        if stride not in (4, 6, 7, 8) or total > (1000 * stride + 14) // 15:
+            return None
+    else:
+        shot_id, index, total, length = struct.unpack("<HBBB", frame[4:9])
+        stride = frame[28] if index == 0 else 0
+        if index == 0 and stride not in (4, 6, 7, 8):
+            return None
+    capacity, offset = (15, 14) if extended else (19, 9)
+    if not total or index >= total or not length or length > capacity:
+        return None
+    if extended and index < total - 1 and length != capacity:
+        return None
+    return shot_id, index, total, bytes(frame[offset:offset + length]), stride
+
+
 async def find_device(name_prefix: str, scan_timeout: float):
     try:
         from bleak import BleakScanner
@@ -98,20 +129,13 @@ async def run_verification(args) -> None:
             frame_type = frame[3]
             
             if frame_type == 5:
-                # Storage Status
-                shot_count, pending, upload_id_low, requested, dropped, upload_id_high, retries = struct.unpack("<HHHHHHH", frame[4:18])
-                upload_id = upload_id_low + upload_id_high * 0x10000
-                status = StorageStatus(
-                    shot_count=shot_count,
-                    pending=pending,
-                    upload_id=upload_id,
-                    requested=requested == 1,
-                    dropped=dropped,
-                    retries=retries
-                )
-                loop.call_soon_threadsafe(storage_status_queue.put_nowait, status)
+                status = parse_storage_status(frame)
+                if status is not None:
+                    loop.call_soon_threadsafe(storage_status_queue.put_nowait, status)
                 
             elif frame_type == 4:
+                if frame[2] != 1:
+                    continue
                 # Stored Shot
                 shot_count, shot_id_low, ax, ay, az, threshold, roll, pitch, yaw, clicker, impact, shot_id_high = struct.unpack("<HHhhhHhhhHHH", frame[4:28])
                 shot_id = shot_id_low + shot_id_high * 0x10000
@@ -131,11 +155,9 @@ async def run_verification(args) -> None:
                 loop.call_soon_threadsafe(stored_shot_queue.put_nowait, shot)
                 
             elif frame_type == 6:
-                # Trace Chunk
-                shot_id_low, chunk_index, total_chunks, payload_len = struct.unpack("<HBBB", frame[4:9])
-                payload = bytes(frame[9:9+payload_len])
-                point_stride = frame[28] if chunk_index == 0 else 0
-                loop.call_soon_threadsafe(trace_chunk_queue.put_nowait, (shot_id_low, chunk_index, total_chunks, payload, point_stride))
+                chunk = parse_trace_chunk(frame)
+                if chunk is not None:
+                    loop.call_soon_threadsafe(trace_chunk_queue.put_nowait, chunk)
                 
             elif frame_type == 7:
                 # Trace Status
@@ -194,14 +216,14 @@ async def run_verification(args) -> None:
             shot: StoredShot = await asyncio.wait_for(stored_shot_queue.get(), timeout=3.0)
             print(f"Received Stored Shot: count={shot.shot_count}, id={shot.shot_id}, "
                   f"accel=({shot.ax},{shot.ay},{shot.az})mg, angles=(roll={shot.roll},pitch={shot.pitch},yaw={shot.yaw})")
-            assert shot.shot_id > 0, "Expected positive shot_id"
+            # Resetting the lifetime count preserves the independently advancing ID.
         except asyncio.TimeoutError:
             print("Timeout waiting for stored shot frame")
             sys.exit(1)
 
         # Step 5: Request trace for the stored shot
-        print(f"Sending command: tracereq:{shot.shot_id}")
-        await client.write_gatt_char(OPENFLOAT_CONTROL_UUID, f"tracereq:{shot.shot_id}".encode("utf-8"))
+        print(f"Sending command: tracereq2:{shot.shot_id}")
+        await client.write_gatt_char(OPENFLOAT_CONTROL_UUID, f"tracereq2:{shot.shot_id}".encode("utf-8"))
 
         # Collect trace chunks
         trace_chunks = {}
@@ -226,8 +248,14 @@ async def run_verification(args) -> None:
                 for task in done:
                     res = task.result()
                     if task == chunk_task:
-                        shot_id_low, idx, tot, payload, stride = res
-                        print(f"Received trace chunk {idx+1}/{tot} for low_id {shot_id_low} ({len(payload)} bytes)")
+                        received_id, idx, tot, payload, stride = res
+                        if received_id != shot.shot_id:
+                            continue
+                        print(f"Received trace chunk {idx+1}/{tot} for id {received_id} ({len(payload)} bytes)")
+                        if total_chunks is not None and tot != total_chunks:
+                            raise AssertionError("Trace chunk count changed during download")
+                        if stride and point_stride is not None and stride != point_stride:
+                            raise AssertionError("Trace point stride changed during download")
                         trace_chunks[idx] = payload
                         if total_chunks is None:
                             total_chunks = tot
@@ -235,6 +263,8 @@ async def run_verification(args) -> None:
                             point_stride = stride
                     elif task == status_task:
                         req_id, status_code = res
+                        if req_id != shot.shot_id:
+                            continue
                         print(f"Received trace status for shot {req_id}: status={status_code}")
                         if status_code == 0:
                             print("Trace not found on device!")
@@ -253,9 +283,11 @@ async def run_verification(args) -> None:
         print(f"Total reassembled trace size: {len(raw_bytes)} bytes, point_stride: {point_stride}")
         assert len(raw_bytes) > 0, "Reassembled trace is empty"
         assert point_stride in (4, 6, 7, 8), f"Invalid point stride: {point_stride}"
+        assert len(raw_bytes) % point_stride == 0, "Trace ends partway through a point"
 
         # Decode some points
         num_points = len(raw_bytes) // point_stride
+        assert num_points <= 1000, "Trace exceeds firmware capacity"
         print(f"Decoded {num_points} trace points from firmware trace")
         
         # Step 6: Acknowledge stored shot to clear queue

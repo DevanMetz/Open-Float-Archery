@@ -3,12 +3,70 @@
 #endif
 #include "trace_buffer.h"
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
 static struct trace_ring ring;
 static struct stored_trace frozen, restored;
 static uint8_t legacy[7008];
+
+static void check_persist_queue(void)
+{
+	struct trace_persist_queue queue = { 0 }, before;
+	uint32_t token;
+	assert(trace_persist_take(&queue, UINT32_MAX, true, &token) == -1);
+	queue.generation = UINT32_MAX - 5;
+	for (unsigned int slot = 0; slot < TRACE_RAM_SLOTS; slot++) trace_persist_ready(&queue, slot);
+	for (unsigned int slot = 0; slot < TRACE_RAM_SLOTS; slot++) {
+		assert(trace_persist_take(&queue, UINT32_MAX, false, &token) == (int)slot);
+		assert(queue.attempts[slot] == 1);
+		assert(!trace_persist_finish(&queue, slot, token, 0));
+	}
+	assert(!queue.pending_mask && !queue.failed_mask);
+	trace_persist_ready(&queue, 9);
+	for (unsigned int attempt = 1; attempt <= 3; attempt++) {
+		assert(trace_persist_take(&queue, UINT32_MAX, false, &token) == 9);
+		assert(queue.attempts[9] == attempt);
+		assert(trace_persist_finish(&queue, 9, token, -EIO) == (attempt < 3));
+		assert(queue.failed_mask == (UINT32_C(1) << 9));
+	}
+	assert(!queue.pending_mask);
+	assert(trace_persist_take(&queue, UINT32_MAX, false, &token) == -1);
+	/* Shutdown can still find it; repeated failed sleep attempts never wrap the
+	 * byte counter and accidentally restart ordinary background retries.
+	 */
+	for (unsigned int attempt = 0; attempt < 1000; attempt++) {
+		assert(trace_persist_take(&queue, UINT32_MAX, true, &token) == 9);
+		assert(!trace_persist_finish(&queue, 9, token, -EIO));
+	}
+	assert(queue.attempts[9] == UINT8_MAX && !queue.pending_mask && queue.failed_mask);
+	assert(trace_persist_take(&queue, UINT32_MAX, true, &token) == 9);
+	assert(!trace_persist_finish(&queue, 9, token, 0));
+	assert(!queue.pending_mask && !queue.failed_mask);
+	trace_persist_ready(&queue, 0);
+	trace_persist_ready(&queue, 1);
+	assert(trace_persist_take(&queue, UINT32_C(1) << 1, false, &token) == 1);
+	assert(!trace_persist_finish(&queue, 1, token, 0));
+	assert(trace_persist_take(&queue, UINT32_MAX, false, &token) == 0);
+	/* Slot reuse while storage is in flight invalidates both success and error
+	 * completions, even if the new shot eventually has the same capture ID.
+	 */
+	trace_persist_forget(&queue, 0);
+	memcpy(&before, &queue, sizeof(queue));
+	assert(!trace_persist_finish(&queue, 0, token, -EIO));
+	assert(!trace_persist_finish(&queue, 0, token, 0));
+	assert(!memcmp(&queue, &before, sizeof(queue)));
+	trace_persist_ready(&queue, 0);
+	memcpy(&before, &queue, sizeof(queue));
+	assert(!trace_persist_finish(&queue, 0, token, -EIO));
+	assert(!trace_persist_finish(&queue, 0, token, 0));
+	assert(!memcmp(&queue, &before, sizeof(queue)));
+	assert(trace_persist_take(&queue, UINT32_MAX, false, &token) == 0);
+	assert(queue.attempts[0] == 1);
+	assert(!trace_persist_finish(&queue, 0, token, 0));
+	assert(!queue.pending_mask && !queue.failed_mask);
+}
 
 int main(int argc, char **argv)
 {
@@ -83,6 +141,7 @@ int main(int argc, char **argv)
 		}
 		assert(fclose(output) == 0);
 	}
-	puts("Trace buffer checks passed: clock wrap, gaps, ring wrap, migration, bounds, and wire encoding.");
+	check_persist_queue();
+	puts("Trace buffer checks passed: timing, migration, wire encoding, retained persistence failures, slot reuse, and generation wrap.");
 	return 0;
 }

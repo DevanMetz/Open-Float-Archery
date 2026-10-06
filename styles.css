@@ -1227,6 +1227,11 @@ td:last-child {
   border-color: var(--cyan);
 }
 
+.status.clickable:focus-visible {
+  outline: 3px solid var(--cyan);
+  outline-offset: 3px;
+}
+
 .store-link {
   color: var(--text);
   text-decoration: none;
@@ -1288,6 +1293,18 @@ td:last-child {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
   animation: modal-enter 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   overflow: hidden;
+}
+
+#cloudModal {
+  padding: 0;
+  color: var(--text);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+
+#cloudModal::backdrop {
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
 }
 
 @keyframes modal-enter {
@@ -1707,6 +1724,10 @@ td:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.review-details .review-export-status {
+  white-space: normal;
 }
 
 .review-outcome-panel {
@@ -2454,7 +2475,7 @@ td:last-child {
 /* Mobile Alert Banner Styles */
 .mobile-alert-banner {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   background: rgba(255, 190, 92, 0.15);
   border: 1px solid var(--amber);
@@ -2492,6 +2513,13 @@ td:last-child {
   font-size: 12px;
   color: var(--text);
   line-height: 1.4;
+}
+
+.mobile-alert-banner .alert-content a {
+  display: inline-block;
+  margin-top: 6px;
+  color: var(--cyan);
+  font-size: 13px;
 }
 
 .close-alert-btn {
@@ -2730,6 +2758,15 @@ canvas,
 
 .guide-content p {
   margin: 10px 0;
+}
+
+.guide-content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
 
 .guide-content ul,
@@ -3562,6 +3599,18 @@ canvas,
 
 .session-editor.hidden {
   display: none;
+}
+
+.session-edit-status {
+  margin: 8px 0;
+}
+
+.session-edit-status:empty {
+  margin: 0;
+}
+
+.history-load-status {
+  color: var(--red);
 }
 
 .session-editor .field {

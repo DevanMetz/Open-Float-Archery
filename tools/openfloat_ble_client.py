@@ -31,6 +31,7 @@ FRAME_SIZE = 29
 LIVE_V2_FRAME_SIZE = 20
 FRAME_STRUCT = struct.Struct("<2sBBHHhhhhhhhhhhB")
 LIVE_V2_STRUCT = struct.Struct("<2sBBHHbbbhhhhB")
+MAX_TEXT_LINE_BYTES = 4096
 
 
 @dataclass
@@ -70,13 +71,72 @@ class Sample:
 
 class OpenFloatParser:
     def __init__(self) -> None:
-        self.binary_buffer = bytearray()
-        self.text_buffer = bytearray()
+        self.buffer = bytearray()
+        self.discarding_text = False
 
     def feed(self, data: bytes) -> list[Sample]:
-        if self._looks_like_text(data):
-            return self._feed_text(data)
-        return self._feed_binary(data)
+        samples: list[Sample] = []
+        self.buffer.extend(data)
+
+        while self.buffer:
+            line_end = self.buffer.find(b"\n")
+            binary_start = self._binary_start()
+            if binary_start >= 0 and (line_end < 0 or binary_start < line_end):
+                del self.buffer[:binary_start]
+                if len(self.buffer) < 4:
+                    break
+                frame_len = binary_frame_len(self.buffer)
+                if frame_len is None:
+                    del self.buffer[:2]
+                    continue
+                if len(self.buffer) < frame_len:
+                    break
+
+                # A known frame owns its entire payload, including ASCII or LF.
+                frame = bytes(self.buffer[:frame_len])
+                del self.buffer[:frame_len]
+                self.discarding_text = False
+                sample = parse_binary_frame(frame)
+                if sample:
+                    samples.append(sample)
+                continue
+
+            if line_end >= 0:
+                line_bytes = bytes(self.buffer[:line_end])
+                del self.buffer[:line_end + 1]
+                if (
+                    not self.discarding_text
+                    and line_end <= MAX_TEXT_LINE_BYTES
+                    and self._looks_like_text(line_bytes)
+                ):
+                    line = line_bytes.decode("utf-8", errors="replace").strip()
+                    if line:
+                        sample = parse_ofraw_line(line)
+                        if sample:
+                            samples.append(sample)
+                        else:
+                            print(line)
+                self.discarding_text = False
+                continue
+
+            if len(self.buffer) > MAX_TEXT_LINE_BYTES:
+                # Retain any split four-byte header, but skip this oversized line.
+                self.buffer[:] = self.buffer[-3:]
+                self.discarding_text = True
+            break
+
+        return samples
+
+    def _binary_start(self) -> int:
+        start = self.buffer.find(b"OF")
+        while start >= 0:
+            header = self.buffer[start + 2:start + 4]
+            if not header or any(
+                not (32 <= byte < 127 or byte in (9, 10, 13)) for byte in header
+            ):
+                return start
+            start = self.buffer.find(b"OF", start + 2)
+        return -1
 
     @staticmethod
     def _looks_like_text(data: bytes) -> bool:
@@ -87,51 +147,6 @@ class OpenFloatParser:
         printable = sum(32 <= b < 127 or b in (9, 10, 13) for b in data)
         return printable >= max(1, int(len(data) * 0.9))
 
-    def _feed_text(self, data: bytes) -> list[Sample]:
-        samples: list[Sample] = []
-        self.text_buffer.extend(data)
-
-        while b"\n" in self.text_buffer:
-            line_bytes, _, rest = self.text_buffer.partition(b"\n")
-            self.text_buffer = bytearray(rest)
-            line = line_bytes.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            sample = parse_ofraw_line(line)
-            if sample:
-                samples.append(sample)
-            else:
-                print(line)
-
-        return samples
-
-    def _feed_binary(self, data: bytes) -> list[Sample]:
-        samples: list[Sample] = []
-        self.binary_buffer.extend(data)
-
-        while True:
-            start = self.binary_buffer.find(b"OF")
-            if start < 0:
-                self.binary_buffer.clear()
-                return samples
-            if start > 0:
-                del self.binary_buffer[:start]
-            if len(self.binary_buffer) < 4:
-                return samples
-
-            frame_len = binary_frame_len(self.binary_buffer)
-            if frame_len is None:
-                del self.binary_buffer[:2]
-                continue
-            if len(self.binary_buffer) < frame_len:
-                return samples
-
-            frame = bytes(self.binary_buffer[:frame_len])
-            del self.binary_buffer[:frame_len]
-            sample = parse_binary_frame(frame)
-            if sample:
-                samples.append(sample)
-
 
 def binary_frame_len(buf: bytes | bytearray) -> Optional[int]:
     if len(buf) < 4 or buf[:2] != b"OF":
@@ -140,7 +155,11 @@ def binary_frame_len(buf: bytes | bytearray) -> Optional[int]:
     frame_type = buf[3]
     if protocol == 2 and frame_type == 1:
         return LIVE_V2_FRAME_SIZE
-    return FRAME_SIZE
+    if (protocol == 1 and frame_type in (1, 2, 3, 4, 5, 6, 7)) or (
+        protocol == 2 and frame_type in (2, 3, 5, 6, 7)
+    ):
+        return FRAME_SIZE
+    return None
 
 
 def parse_binary_frame(frame: bytes) -> Optional[Sample]:
@@ -210,20 +229,30 @@ def parse_binary_frame(frame: bytes) -> Optional[Sample]:
     # frames are samples — the others reuse the envelope with different fields,
     # so report them and skip so they do not pollute sequence-loss tracking.
     if frame_type == 2:
+        if protocol not in (1, 2):
+            return None
+        shot_id = dt_us + (int.from_bytes(frame[22:24], "little") << 16 if protocol == 2 else 0)
+        shot_count = sequence_u16 + (int.from_bytes(frame[24:26], "little") << 16 if protocol == 2 else 0)
         shot_sequence = int.from_bytes(frame[26:28], "little")
         print(
             "OFSHOT(ble) "
-            f"shot_count={sequence_u16} shot_id={dt_us} "
+            f"shot_count={shot_count} shot_id={shot_id} "
             f"shot_sequence={shot_sequence}"
         )
         return None
     if frame_type == 3:
-        print(f"OFCOUNT(ble) shot_count={sequence_u16}")
+        if protocol not in (1, 2):
+            return None
+        shot_count = sequence_u16 + (int.from_bytes(frame[24:26], "little") << 16 if protocol == 2 else 0)
+        print(f"OFCOUNT(ble) shot_count={shot_count}")
         return None
     if frame_type == 4:
-        print(f"OFSTORED(ble) shot_count={sequence_u16} shot_id={dt_us}")
+        if protocol != 1:
+            return None
+        shot_id = dt_us + (int.from_bytes(frame[26:28], "little") << 16)
+        print(f"OFSTORED(ble) shot_count={sequence_u16} shot_id={shot_id}")
         return None
-    if frame_type != 1:
+    if frame_type != 1 or protocol != 1:
         return None
 
     return Sample(

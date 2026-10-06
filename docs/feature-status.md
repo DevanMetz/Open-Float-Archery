@@ -20,13 +20,34 @@ architecture, design intent, and forward-looking targets, see
 - Shot detection persists a lifetime shot count to RRAM (Zephyr Settings/ZMS),
   restores it on boot, and notifies the web app on every increment (and on
   connect). Correct it over BLE with `shotset:<n>` or clear with `shotreset`.
+- Count corrections and resets preserve capture IDs, including across reboot,
+  so the next release stays separate from earlier saved shots. Existing counter
+  settings migrate automatically; see `Blueprint.md` for the eight-byte record
+  and firmware downgrade notes. Malformed shot values are rejected without
+  changing the count. The unsigned lifetime count stops at `4294967295` while
+  capture IDs keep advancing.
+- Live shot IDs and current counts use 32-bit metadata fields, so acknowledgments
+  still match the saved shot above 65,535. Stored uploads join the same capture
+  and cannot undo a current count sync or an explicit count correction. Update
+  the dashboard before flashing this firmware; the updated dashboard also reads
+  older firmware. Host C, browser, Python, and SDK build checks pass; physical
+  rollover and reconnect checks remain pending.
 - Firmware keeps the newest 100 compact shot records in nonvolatile storage and
   uploads them to the browser on reconnect. The web app acknowledges each shot
   only after IndexedDB save, then firmware frees that stored slot. Every shot is
   queued the moment it is detected (even while connected), so a dropped live
   shot notification is recovered via the same ack/retry path without a
-  reconnect. The nonvolatile write is deferred a few seconds and skipped when
-  the browser acks in time, so RRAM is written only when a live frame was lost.
+  reconnect. The compact queue write is deferred a few seconds. Acknowledgments
+  clear unused slots and padding, and the storage backend skips unchanged empty
+  queues. Once an empty queue is stored, prompt acknowledgments avoid another
+  queue write. Saving or removing a changed backlog still writes, as do counters
+  and enabled traces independently. The SDK storage model verifies zero extra
+  flash writes across 100 drained queues and backlog recovery across remounts.
+  Restoring the queue requires a complete read and a supported layout before
+  changing RAM. Both older layouts remain readable, preserving order and
+  fields; current records keep full capture IDs. Host C-to-browser/Python
+  migration checks and the firmware build pass. Physical reboot checks remain
+  pending.
 - Buffered shot traces now freeze after a configurable follow-through delay
   (default 1.5 s, set over BLE with `followms:<ms>`) so stored traces include
   both pre-shot hold and post-release recovery. Firmware trace points and
@@ -35,6 +56,33 @@ architecture, design intent, and forward-looking targets, see
 - Fresh firmware defaults disconnected deep sleep to 300 s. Existing persisted
   settings can override it; update devices with `sleeptime:<s>` or the dashboard
   sleep slider.
+- Before automatic sleep, firmware finishes follow-through and checks that
+  settings, queued shots, and requested traces are saved. Saving gets up to
+  three attempts; continued errors keep the sensor awake and retry sleep
+  after thirty seconds. Controls are briefly unavailable during that final
+  save. Failed trace writes remain eligible until saved or their RAM slot is
+  reused. Host fault tests, SDK storage/remount checks, and the firmware build
+  pass; physical sleep/wake timing and battery behavior still need testing.
+- While running, failed saves of shot counters, queued shots, tuning settings,
+  and calibration offsets get up to three attempts with one-second delays.
+  Other ready settings can still save. New values replace older pending writes;
+  exhausted failures can recover on another update or the final sleep save.
+  Host fault tests, actual SDK storage/remount checks, and the firmware build
+  pass; physical save/worker timing still needs testing.
+- At startup, storage recovery finishes before the sensor advertises or records
+  new shots. Failed reads get three attempts. Continued errors, or malformed
+  saved counters/shot queues, keep startup closed and retry after thirty seconds;
+  the user LED double pulses while waiting. Missing settings on a fresh device
+  and malformed tuning values use defaults. Host read-fault tests, SDK backend
+  checks, and the firmware build pass; physical startup/LED behavior needs testing.
+- After startup reads finish, firmware checks saved shots/traces for a newer
+  capture ID. A queued shot or complete trace saved ahead of its counter can
+  therefore prevent reuse of that ID after reboot. The saved lifetime count,
+  including corrections and resets, stays unchanged. A recovered ID must save
+  before the sensor starts recording or replaying shots. Failed repairs use
+  the startup retry policy. Host checks, both client
+  decoders, and SDK storage/remount checks pass; physical reboot behavior needs
+  testing. Older 16-bit queued IDs cannot recover missing high bits.
 - Timed trace recovery (`tracetimed`) carries all 1,000 points with measured
   millisecond intervals, a release reference, full shot IDs, and CRC validation.
   Replays preserve rate changes and jitter. Gaps above 255 ms start a new device
@@ -165,12 +213,61 @@ architecture, design intent, and forward-looking targets, see
   - **Firmware-side Retry**: Upon disconnection, the firmware schedules BLE advertising via a delayable work queue after a 250 ms delay, retrying every 1000 ms if the stack is not ready, and cancels retries once a connection is re-established.
   - **Stale Link Cleanup**: If a BLE client disables live notifications without closing the connection, the firmware disconnects that idle central after a short grace period so the sensor can advertise again.
   - **Browser-side Reconnection**: If the link drops unexpectedly, the web app updates the status badge to `"BLE reconnecting..."` and retries connection up to 6 times using an exponential backoff strategy (`Math.min(1000 * 2^attempts, 8000)` ms, i.e., 1s, 2s, 4s, 8s, 8s, 8s). If reconnection succeeds, the live stream is restored; if all 6 attempts fail, it reverts to `"Disconnected"`, prompting the user to manually click the status badge to search again.
+  - Disconnecting or choosing another transport cancels pending setup and
+    invalidates old control writes. Delayed replies cannot revive a stopped
+    connection, apply its settings to another sensor, or disconnect the active
+    demo. Battery notification failures leave live telemetry usable.
+  - Automatic reconnect also retries an interrupted stored-shot replay under
+    its original saved capture, even if the sensor already accepted its metadata
+    acknowledgement. Fresh transfers discard partial chunks and skip completed
+    or deleted captures. Pending recovery lasts until the local replay is saved.
+    Transfer timeouts remain eligible for reconnect. If the sensor reports that
+    the trace is unavailable, that recovery attempt ends.
+    A repeat upload can also retry a stalled replay on the same connection;
+    each new request clears its old partial transfer before receiving fresh
+    chunks, while keeping the original saved capture.
+    Manually disconnecting, changing transport, or reloading the page clears
+    this retry context; the sensor must still retain the trace for recovery.
+    Unrecognized telemetry formats do not alter live readouts or end a pending
+    replay. Browser checks cover capture ID zero after rollover, including
+    duplicate uploads, acknowledgements, and a saved replay; physical rollover
+    verification remains pending.
+    Different BLE sensors keep separate captures and replays even when their
+    names and capture numbers match. Manual recordings and Steady Aim holds
+    retain their starting sensor when saved later. Browser checks cover these
+    cases; physical multi-sensor verification remains pending.
+    Older captures saved before sensor identification remain in Saved Shots.
+    Their first repeat upload can save another copy. Using another browser or
+    clearing Bluetooth permissions can also change the sensor's identity.
+  - The sensor and cloud status controls are native buttons with keyboard
+    activation, visible focus, and action labels that follow connection state.
+    Cloud settings use a native dialog with contained keyboard focus, Escape
+    dismissal, and focus returned to its opening button.
 - **Configurable Device Settings**: The Settings view can send threshold,
   wake/sleep, trace buffer, follow-through, BLE stream-rate, NVS buffering, and
   auto-sleep commands over BLE. Settings are cached locally and persisted on the
   device when firmware supports the command.
-- **Bow Profile Manager**: Organize and save stabilizer configurations, draw weights, and notes under custom bow profiles.
-- **Automatic Practice Sessions**: Saved shots are grouped into collapsible sessions automatically by timestamp — any gap longer than 30 minutes starts a new session. Rename any session and assign the bow used directly from the Saved Shots view.
+  Firmware rejects malformed numeric values and non-finite thresholds before
+  changing settings, while valid clamped values retain their documented limits.
+  Restoring tuning settings requires complete records and supported values;
+  invalid records retain firmware defaults. See the BLE reference for formats.
+- **Bow Profile Manager**: Organize stabilizer configurations, draw weights,
+  arrow speeds, and notes under custom bow profiles. Saves and deletes commit
+  with their pending upload tasks; failed writes retain the form for retry.
+  Pending actions prevent duplicate submissions, delayed profile loads cannot
+  replace the latest selection or a new draft, and refreshes keep unsaved edits.
+  The form checks the displayed weight/speed limits. Deleting a profile keeps
+  historical shots and session assignments. Browser preference failures do not
+  turn a committed profile change into an apparent save failure.
+- **Automatic Practice Sessions**: Saved shots are grouped into collapsible
+  sessions by timestamp; a gap longer than 30 minutes starts a new session.
+  Rename a session, assign its bow, and choose three- or six-arrow scorecard
+  ends in Saved Shots. Edits preserve the other settings, follow surviving
+  captures when the group changes during editing, and commit together across
+  a split group. Pending edits stay locked through refreshes; write or read
+  failures keep drafts for retry. An unavailable historical bow retains its
+  assignment when the session is renamed. These display settings remain local
+  and are included in backups.
 - **Keyboard Shot Review**: Recent captures, saved-shot titles, and session
   headers use native buttons with visible keyboard focus. Enter or Space opens
   a review or expands a session; hidden session content leaves the tab order.
@@ -180,12 +277,26 @@ architecture, design intent, and forward-looking targets, see
   Single, selected, and demo deletion commit captures, traces, and pending
   uploads together. Session names, bow assignments and end sizes follow the
   surviving captures; scorecards and recent captures refresh after deletion.
+  Older uploads retain those settings when they change the session's first
+  capture. Explicit settings at the current first capture take precedence;
+  otherwise the earliest member with saved settings supplies the context.
   Deletion affects this browser's saved data; cloud copies are unchanged.
   New captures and delayed traces refresh recent cards, history metrics, and
   session summaries in timestamp order. Undated imports sort after dated
   captures. Refreshes retain open session edits, selections, and keyboard focus;
   late telemetry updates the active review without clearing an unfinished arrow
   result. Opening a card reads the latest saved metadata.
+  Restoring a backup refreshes an open review and comparison, including trace,
+  microphone, metrics, session order, and bow speed. Clean target forms show the
+  restored result; unfinished edits retain their values and focus. An unchanged
+  recording keeps manual markers and playback; a changed or missing recording
+  replaces the old trace and stops playback. A newer restored result also wins
+  over an earlier save's delayed completion, and Save & Next follows the current
+  session. Failed refreshes can be retried without repeating a committed save.
+  Other tabs using this browser's saved data refresh reviews, comparisons,
+  history, bow choices, and adaptive training after a committed change. Returning
+  to a tab also refreshes it when tab messaging is unavailable. Hidden tabs wait
+  until visible; unfinished edits and unchanged replay markers are retained.
 - **Manual Long-Trace Recording**: A Record button inline with the Shot Sequence Trace title starts, stops, and saves custom-length telemetry captures of arbitrary duration — useful for capturing full ends or holding drills.
   Replay preserves measured sample times and microphone alignment while
   downsampling to about 52 Hz. Slow streams and delayed callbacks keep their
@@ -197,26 +308,64 @@ architecture, design intent, and forward-looking targets, see
   sample-rate fallback. Audio bands and draggable markers share the motion/audio
   time range in both Pin Float and Motion views. Motion shows quaternions,
   measured acceleration, or recorded angles according to the available data.
+  Marker dragging and range updates follow the pointer immediately using the
+  speed loaded for that review. Changing the active bow during review does not
+  change the estimate mid-drag, and an old gesture cannot change another capture.
   Disconnecting stops the recording and leaves a **Save** button available.
   Failed saves retain the capture for retry in the current tab; pending saves
   prevent duplicate clicks or discard, and reconnect waits until it is saved
   or discarded. Closing or reloading with an unsaved recording prompts a warning.
+  Once the local transaction commits, the recording stays saved even if a view
+  or cloud sync fails. Controls wait for saved views to finish refreshing, and
+  a failed refresh explains how to retry the views without saving again.
+  Background uploads stay queued and do not block the next recording.
+- **Acoustic Range Estimate**: Shot review detects a possible impact from the
+  saved full-rate microphone window, falling back to motion-point audio for
+  older traces. Markers retain recorded timing between motion samples. The
+  session's assigned bow speed takes precedence over the currently selected
+  profile. Invalid or missing speed uses an explicitly labeled 280 fps
+  assumption; unassigned captures using the active profile label it as the
+  current bow. This experimental sound/drag estimate still needs validation
+  against real distances and never fills in the recorded target distance.
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot on the same replay scrubber. Each trace uses its own movement scale and capture type; a confirmed release is centered, while holds use their mean orientation.
-- **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
+- **Interactive Connection Button**: Toggle sensor connection using the status
+  button at the top right of the header, with a click, Enter, or Space.
+- **Browser Compatibility Help**: Sensor access is checked before a connection
+  attempt can stop a demo or reset a recording. Unsupported browsers, ordinary
+  HTTP pages, and pages that block Bluetooth show a dismissible notice with
+  keyboard-accessible browser help. Demo and local saved-data tools remain
+  available. The [Quick Start browser guide](quick-start.md#browser-compatibility)
+  lists supported platforms, iPhone/iPad limitations, and HTTPS/localhost setup.
 - **Adaptive Training Coach**: The Training tab analyzes hold stability and
   level consistency across the newest 30 scored personal captures. It identifies
   the weaker available skill and recommends a drill with a visible baseline and
   a five-point stretch target (capped at 95). Sample shots, synthetic demo holds,
   and records without usable component scores do not consume that window.
+  Recommendations refresh when delayed traces add or correct saved scores.
+  Chosen drills, durations, and keyboard focus stay in place; a hold already
+  started keeps its original scoring rule and target through completion and Save.
   Archers can follow the recommendation or choose Steady Aim, Level Lock, or
   Settle & Hold. Every drill has its own scoring rule and form cue, calibrated
   orientation, a 5-second draw countdown, and a 5-30 second hold. Live Pin Float,
   a sigma ellipse, cant/pitch deviation, and maximum float support review. Saved
   traces preserve timing and are bounded to 52 Hz even with full-rate BLE input.
   The selected drill and duration stay fixed until the result is saved or
-  dismissed. A changed or disconnected telemetry connection cancels unfinished
-  holds so the archer can retry. Saves commit metadata, replay, and upload tasks
-  together; duplicate saves and dismissal are blocked while committing. Capture
+  dismissed. Preparation follows elapsed time even when timer callbacks are
+  delayed; the hold starts with its full duration at the actual cue. Leaving
+  Training, hiding the page, changing the connection, or a usable-data gap over
+  one second stops an unfinished hold with retry guidance. This gap threshold
+  is a browser continuity guard that still needs real-sensor validation. Late
+  samples cannot change a completed score. The saved time marks the end of the
+  scored hold window, even if Save or a retry happens later. Delayed completion
+  callbacks and clock corrections after the start cue cannot move a hold into a
+  later practice session. Finished results remain available
+  across tab switches and disconnection, redraw on resize/theme changes, and
+  warn before a reload could discard them. Saves commit metadata, replay, and
+  upload tasks together. A failed write keeps the result for retry with inline
+  feedback. After commit, controls stay guarded through view refresh; failed
+  updates report the hold as saved locally with guidance to reopen Saved Shots.
+  A committed hold cannot be saved again or trigger an unsaved-result warning.
+  Save feedback preserves keyboard focus and uses inline status. Capture
   type is separate from its label, keeping custom-named holds out of arrow
   scorecards. Saved demo training and manual recordings stay visibly labeled,
   remain local, and never alter the personal baseline.
@@ -232,6 +381,12 @@ architecture, design intent, and forward-looking targets, see
   precached with the app. Dashboard, Bow Shop, and alignment previews no longer
   need a CDN connection. Open the app online before range use so its initial
   offline cache can finish installing; optional cloud sync still needs internet.
+- **In-app Guide**: Browse Quick Start, Feature Status, and the BLE command
+  reference locally. Guide links stay in the app, section links scroll to their
+  headings below the header, and images resolve beside their Markdown source.
+  Guide pages and the Quick Start screenshot are precached for offline reading. Late page
+  responses cannot replace the latest selection; failed loads can be retried
+  by reopening Guide.
 - **Local Data Backup & Restore**: A Settings card exports every locally stored shot, trace, session override, and bow profile to a single JSON file, and imports one back (merging by key). Fully local — no account needed — so field-test data is portable between devices and easy to back up.
   Full backups and single-shot imports commit as one transaction; a malformed
   later record rolls back the entire import. Unsupported export versions and
@@ -240,20 +395,51 @@ architecture, design intent, and forward-looking targets, see
   acknowledgements. Imports preserve this browser's pending uploads and create
   fresh upload tasks from the restored records in the same transaction. Saved
   queue actions are never replayed, and imported sample captures stay local.
+  Backup controls stay disabled while preparing a file or restoring one.
+  Failed imports can retry the same file; repeated actions do not duplicate
+  restores or upload tasks. A committed import stays successful when cloud sync
+  or a view refresh fails. Refresh warnings ask you to reopen Settings or Saved
+  Shots, while the restored records remain saved locally. Results are announced
+  through a status region, and keyboard focus returns to the initiating button.
   Late trace saves preserve newer arrow results and skip deleted captures.
   Device metadata and its upload task commit before acknowledgement; duplicate
-  frames share that save. Firmware traces attach to the exact capture from the
+  frames share that save and re-acknowledge without another write.
+  Stored repeats also request a missing or empty replay under the original saved
+  capture. Complete recordings are acknowledged without another download.
+  Failed logging or saved-view callbacks cannot block the acknowledgement or invalidate saved
+  metadata. A busy view refresh cannot hold up firmware trace recovery. A queued
+  save notification from an old BLE connection cannot acknowledge a replacement
+  connection. Background sync failures keep uploads queued for retry.
+  Firmware traces attach to the exact capture from the
   current connection, while delayed browser traces retain their original sample
   buffers across reconnect. Firmware recovery preserves nonempty browser
   recordings in either arrival order and fills missing or empty recordings.
+  Failed progress logs cannot strand a firmware transfer. A committed trace
+  stays saved if logging, view refresh, or background sync fails. Reviews load
+  the latest saved trace; an older transfer completion cannot put its samples
+  back into a newer review. Refreshing an unchanged trace keeps manual markers,
+  playback, unfinished target edits, and keyboard focus.
   These paths have browser regression coverage with
   simulated device events; real-sensor reconnect testing remains pending.
-- **Single Shot Export**: You can export individual shots along with their telemetry trace to a standalone JSON file. This is accessible via the "Export Shot" button in the Trace Review banner on the Dashboard, or via the export icon (📤) next to any shot in the Saved Shots history list. This makes it easy to share specific shots for analysis.
+- **Single Shot Export**: Use **Export Shot** in review or the export icon beside
+  a saved capture to download its metadata and optional trace as JSON. The file
+  restores through Settings. Metadata and trace come from the same saved version,
+  including during a concurrent restore. Undated captures use an `undated`
+  filename; missing traces are reported without blocking export. Progress and
+  errors appear inline, and unfinished target edits remain in place.
 - **Selected Shot Export**: In Saved Shots, choose **Select Shots**, check the
   captures to include, then **Export Selected**. The JSON file contains those
   captures, their traces, and linked session/bow records; it restores through
   Settings like a normal backup. Selections survive history refreshes. A missing
   capture stops the export with a visible error instead of silently omitting it.
+  Exporting a session's current first capture preserves inherited settings and
+  their bow profile even when an older saved context's capture is unselected.
+  Direct shot bow assignments also include their referenced profiles.
+  Single and selected exports ignore repeat clicks while preparing a file and
+  keep their export/delete controls disabled across history refreshes. A selected
+  file retains the captures checked when export began, while newer selections
+  and keyboard focus stay in the UI. Failed exports can retry. Download URLs
+  remain available briefly so the browser can start reading the file.
 - **Optional Supabase Sync**: The Cloud modal accepts a Supabase URL and anon key
   for self-hosted sync. Local IndexedDB writes remain the source of truth and are
   queued before upload; leaving cloud settings blank keeps the app local-only.

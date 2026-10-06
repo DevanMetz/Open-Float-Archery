@@ -21,6 +21,13 @@ export class EventBus {
       for (const fn of set) fn(payload);
     }
   }
+
+  // Post-commit notifications await every listener and report failures without
+  // stopping later listeners. Live telemetry keeps using synchronous emit().
+  emitAsync(type, payload) {
+    const handlers = [...(this.handlers.get(type) || [])];
+    return Promise.allSettled(handlers.map((fn) => Promise.resolve().then(() => fn(payload))));
+  }
 }
 
 export function createStore(initial) {

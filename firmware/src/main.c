@@ -13,6 +13,15 @@
 #include <string.h>
 #include "trace_buffer.h"
 #include "trace_store.h"
+#include "metadata_frame.h"
+#include "shot_control.h"
+#include "control_values.h"
+#include "shot_log.h"
+#include "sleep_flush.h"
+#include "settings_read.h"
+#include "boot_restore.h"
+#include "shot_recovery.h"
+#include "settings_retry.h"
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
@@ -23,6 +32,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/atomic.h>
 
 #include <zephyr/bluetooth/att.h>
 #include <zephyr/bluetooth/bluetooth.h>
@@ -74,6 +84,7 @@ static uint32_t audio_blocks_processed;
 
 static void start_pdm(void);
 static void stop_pdm(void);
+static atomic_t poweroff_pending;
 
 static const struct device *const dmic_dev = DEVICE_DT_GET(DT_NODELABEL(dmic_dev));
 static volatile bool dmic_running;
@@ -223,7 +234,7 @@ struct k_thread audio_thread_data;
 
 static void start_pdm(void)
 {
-	if (!dmic_running && device_is_ready(dmic_dev)) {
+	if (!atomic_get(&poweroff_pending) && !dmic_running && device_is_ready(dmic_dev)) {
 		int err = dmic_trigger(dmic_dev, DMIC_TRIGGER_START);
 		if (err == 0) {
 			dmic_running = true;
@@ -274,7 +285,6 @@ static void stop_pdm(void)
 #define OPENFLOAT_CONN_TIMEOUT 400 /* 4 s */
 #define BLE_STALE_NOTIFY_DISCONNECT_MS 1500
 #define MADGWICK_BETA 0.08f
-#define STORED_SHOT_CAPACITY 100
 #define STORED_SHOT_UPLOAD_RETRY_MS 3000
 
 #define RAD_TO_DEG 57.29577951308232f
@@ -374,12 +384,19 @@ static const struct device *const stream_uart =
 
 static uint32_t disconnected_sleep_timeout_ms = 300000;
 #define CONNECTED_SLEEP_TIMEOUT_MS 600000
+#define SLEEP_SAVE_RETRY_MS 30000
+/* Serialize control dispatch with sealing the final sleep snapshot. Callbacks
+ * reject new commands while sealed, without holding a lock during storage I/O.
+ */
+static K_MUTEX_DEFINE(control_mutex);
+static uint64_t sleep_save_retry_after_ms;
+static int flush_persistence_before_sleep(void);
 
 static float cant_offset_deg;
 static float pitch_offset_deg;
 static uint64_t last_activity_time_ms;
-static int shot_count;
-static uint32_t shot_id;
+static struct openfloat_shot_counters shot_counters;
+static K_MUTEX_DEFINE(shot_counter_mutex);
 static uint32_t telemetry_sequence;
 static uint32_t raw_sample_sequence;
 static uint32_t ble_dropped_samples;
@@ -390,20 +407,18 @@ static float shot_accel_threshold_mps2 =
 	DEFAULT_SHOT_ACCEL_THRESHOLD_G * MPS2_PER_G;
 static float wake_sensitivity_g = 2.0f;
 static float sleep_sensitivity_g = 0.15f;
-static struct k_work shot_persist_work;
-static struct k_work shot_log_persist_work;
 /*
  * Delay before persisting the stored-shot log to RRAM after a shot while
  * connected. Long enough for the browser to ack the live frame and drain the
- * queue first, so the ~2.2 KB RRAM write only happens when a live frame was
+ * queue first, so the ~2.8 KB RRAM write only happens when a live frame was
  * actually lost.
  */
 #define SHOT_LOG_RECONCILE_DELAY_MS 3000
 static struct k_work_delayable shot_log_reconcile_work;
-static struct k_work wake_sens_persist_work;
-static struct k_work sleep_time_persist_work;
-static struct k_work sleep_sens_persist_work;
-static struct k_work offsets_persist_work;
+static struct k_work_delayable settings_persist_work;
+static struct settings_retry settings_writes;
+static K_MUTEX_DEFINE(settings_retry_mutex);
+static void request_settings_save(uint32_t mask);
 static struct k_work_delayable battery_measure_work;
 static volatile bool zero_requested;
 static volatile bool trigger_shot_requested;
@@ -436,13 +451,13 @@ static K_WORK_DELAYABLE_DEFINE(stale_ble_disconnect_work,
 
 static struct bt_uuid_128 openfloat_service_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x8f3f3b10, 0x0f5a, 0x4f4c, 0x9a2d,
-			   0x000000000001));
+			   0x000000000001ULL));
 static struct bt_uuid_128 openfloat_live_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x8f3f3b10, 0x0f5a, 0x4f4c, 0x9a2d,
-			   0x000000000002));
+			   0x000000000002ULL));
 static struct bt_uuid_128 openfloat_control_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x8f3f3b10, 0x0f5a, 0x4f4c, 0x9a2d,
-			   0x000000000003));
+			   0x000000000003ULL));
 
 
 
@@ -458,25 +473,6 @@ struct imu_sample {
 	struct vec3 gyro;
 };
 
-struct stored_shot {
-	uint16_t shot_count;
-	uint32_t shot_id;
-	int16_t ax_mg;
-	int16_t ay_mg;
-	int16_t az_mg;
-	uint16_t threshold_cg;
-	int16_t roll_cdeg;
-	int16_t pitch_cdeg;
-	int16_t yaw_cdeg;
-	uint16_t clicker_dt_ms;
-	uint16_t impact_dt_ms;
-};
-
-struct stored_shot_log {
-	uint16_t count;
-	struct stored_shot shots[STORED_SHOT_CAPACITY];
-};
-
 /* Accel of the most recent detected shot, reported in BLE shot-event frames. */
 static struct vec3 last_shot_accel;
 static struct stored_shot last_shot_record;
@@ -489,7 +485,7 @@ static struct stored_shot_log stored_shot_log;
  */
 static K_MUTEX_DEFINE(shot_log_mutex);
 
-static struct stored_trace stored_traces[10];
+static struct stored_trace stored_traces[TRACE_RAM_SLOTS];
 static struct trace_ring ram_trace;
 /* Only short RAM operations hold this mutex. Separate snapshots keep RRAM and
  * BLE I/O outside the IMU's trace lock and prevent mixing two captures. */
@@ -500,26 +496,19 @@ static union {
 	uint8_t bytes[sizeof(struct stored_trace)];
 } trace_persist_snapshot;
 static struct trace_store trace_storage;
+static struct zms_fs *settings_storage;
 static K_MUTEX_DEFINE(trace_upload_mutex);
 
 static int buffer_rate_hz = 52;
 static int buffer_nvs_enabled = 1;
 static int ble_stream_divider = 1;
 static int auto_sleep_enabled = 1;
-static struct k_work auto_sleep_persist_work;
 static uint32_t follow_through_ms = 1500;
-static struct k_work buffer_rate_persist_work;
-static struct k_work buffer_nvs_persist_work;
-static struct k_work streamrate_persist_work;
-static struct k_work follow_through_persist_work;
 
 static struct k_work_delayable trace_persist_work;
 static struct k_work_delayable trace_freeze_work;
 static struct k_work_delayable trace_upload_work;
-static volatile uint32_t trace_pending_mask;
-static uint32_t trace_capture_order[10];
-static uint32_t trace_capture_generation;
-static uint8_t trace_persist_attempts[10];
+static struct trace_persist_queue trace_writes;
 
 static bool trace_freeze_pending;
 static uint32_t trace_freeze_shot_id;
@@ -572,10 +561,8 @@ static bool trace_freeze_pending_slot(void)
 
 	trace_ring_freeze(&ram_trace, &stored_traces[trace_freeze_slot],
 			  trace_freeze_shot_id, trace_release_ms);
-	if (buffer_nvs_enabled) {
-		trace_pending_mask |= BIT(trace_freeze_slot);
-		trace_capture_order[trace_freeze_slot] = ++trace_capture_generation;
-		trace_persist_attempts[trace_freeze_slot] = 0;
+	if (buffer_nvs_enabled && stored_traces[trace_freeze_slot].count > 0) {
+		trace_persist_ready(&trace_writes, trace_freeze_slot);
 	}
 
 	trace_freeze_pending = false;
@@ -590,12 +577,14 @@ static void trace_freeze_work_handler(struct k_work *work)
 	 * rescheduled it. Respect the new deadline rather than freezing early. */
 	bool frozen = false;
 	if (trace_freeze_pending && remaining > 0) {
-		k_work_reschedule(&trace_freeze_work, K_MSEC(remaining));
+		if (!atomic_get(&poweroff_pending)) {
+			k_work_reschedule(&trace_freeze_work, K_MSEC(remaining));
+		}
 	} else {
 		frozen = trace_freeze_pending_slot();
 	}
 	k_mutex_unlock(&trace_mutex);
-	if (frozen) k_work_reschedule(&trace_persist_work, K_NO_WAIT);
+	if (frozen && !atomic_get(&poweroff_pending)) k_work_reschedule(&trace_persist_work, K_NO_WAIT);
 }
 
 static void schedule_trace_freeze(uint32_t shot_id_value)
@@ -609,13 +598,13 @@ static void schedule_trace_freeze(uint32_t shot_id_value)
 	}
 
 	trace_freeze_shot_id = shot_id_value;
-	trace_freeze_slot = shot_id_value % 10;
+	trace_freeze_slot = shot_id_value % TRACE_RAM_SLOTS;
 	trace_release_ms = release_ms;
 	trace_freeze_due_ms = k_uptime_get() + follow_through_ms;
 	trace_freeze_pending = true;
 	stored_traces[trace_freeze_slot].shot_id = shot_id_value;
 	stored_traces[trace_freeze_slot].count = 0;
-	trace_pending_mask &= ~BIT(trace_freeze_slot);
+	trace_persist_forget(&trace_writes, trace_freeze_slot);
 	k_work_reschedule(&trace_freeze_work, K_MSEC(follow_through_ms));
 	k_mutex_unlock(&trace_mutex);
 	if (frozen) k_work_reschedule(&trace_persist_work, K_NO_WAIT);
@@ -624,38 +613,16 @@ static void schedule_trace_freeze(uint32_t shot_id_value)
 static void stored_shot_append(const struct stored_shot *shot)
 {
 	k_mutex_lock(&shot_log_mutex, K_FOREVER);
-	if (stored_shot_log.count >= STORED_SHOT_CAPACITY) {
-		memmove(&stored_shot_log.shots[0], &stored_shot_log.shots[1],
-			(STORED_SHOT_CAPACITY - 1) *
-				sizeof(stored_shot_log.shots[0]));
-		stored_shot_log.count = STORED_SHOT_CAPACITY - 1;
+	if (shot_log_append(&stored_shot_log, shot)) {
 		stored_shot_evicted_count++;
 	}
-
-	stored_shot_log.shots[stored_shot_log.count++] = *shot;
 	k_mutex_unlock(&shot_log_mutex);
 }
 
 static bool stored_shot_remove(uint32_t shot_id)
 {
-	bool removed = false;
-
 	k_mutex_lock(&shot_log_mutex, K_FOREVER);
-	for (uint16_t i = 0; i < stored_shot_log.count; i++) {
-		if (stored_shot_log.shots[i].shot_id != shot_id) {
-			continue;
-		}
-
-		if (i + 1 < stored_shot_log.count) {
-			memmove(&stored_shot_log.shots[i],
-				&stored_shot_log.shots[i + 1],
-				(stored_shot_log.count - i - 1) *
-					sizeof(stored_shot_log.shots[0]));
-		}
-		stored_shot_log.count--;
-		removed = true;
-		break;
-	}
+	bool removed = shot_log_remove(&stored_shot_log, shot_id);
 	k_mutex_unlock(&shot_log_mutex);
 
 	return removed;
@@ -684,6 +651,14 @@ static uint16_t stored_shot_count_snapshot(void)
 	k_mutex_unlock(&shot_log_mutex);
 
 	return count;
+}
+
+static struct openfloat_shot_counters shot_counters_snapshot(void)
+{
+	k_mutex_lock(&shot_counter_mutex, K_FOREVER);
+	struct openfloat_shot_counters value = shot_counters;
+	k_mutex_unlock(&shot_counter_mutex);
+	return value;
 }
 
 static int32_t scale_float(float value, float scale)
@@ -1024,9 +999,53 @@ static int prepare_imu_for_sleep(void)
 	return 0;
 }
 
-static void enter_deep_sleep(void)
+enum sleep_attempt { SLEEP_WAIT, SLEEP_SAVE_FAILED };
+
+static enum sleep_attempt enter_deep_sleep(void)
 {
 	int err;
+	/* Keep collecting the follow-through window before sealing a pending shot.
+	 * This also handles a simulated shot during an already expired idle timeout.
+	 */
+	k_mutex_lock(&control_mutex, K_FOREVER);
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	bool waiting_for_trace = trace_freeze_pending && trace_freeze_due_ms > k_uptime_get();
+	k_mutex_unlock(&trace_mutex);
+	uint64_t inactive = k_uptime_get() - last_activity_time_ms;
+	uint64_t timeout = current_conn ? CONNECTED_SLEEP_TIMEOUT_MS : disconnected_sleep_timeout_ms;
+	if (!auto_sleep_enabled || inactive <= timeout || zero_requested || trigger_shot_requested || waiting_for_trace) {
+		k_mutex_unlock(&control_mutex);
+		return SLEEP_WAIT;
+	}
+	atomic_set(&poweroff_pending, 1);
+	k_mutex_unlock(&control_mutex);
+
+	err = flush_persistence_before_sleep();
+	if (err) {
+		printk("# Sleep deferred: persistence failed %d; retry in 30 s\n", err);
+		sleep_save_retry_after_ms = k_uptime_get() + SLEEP_SAVE_RETRY_MS;
+		k_mutex_lock(&control_mutex, K_FOREVER);
+		atomic_clear(&poweroff_pending);
+		bool advertise = !current_conn;
+		k_mutex_unlock(&control_mutex);
+		start_pdm();
+		if (advertise) k_work_reschedule(&adv_start_work, K_NO_WAIT);
+		k_work_reschedule(&battery_measure_work, K_NO_WAIT);
+		k_mutex_lock(&trace_upload_mutex, K_FOREVER);
+		if (trace_upload_in_progress) k_work_reschedule(&trace_upload_work, K_NO_WAIT);
+		k_mutex_unlock(&trace_upload_mutex);
+		return SLEEP_SAVE_FAILED;
+	}
+	printk("# Persistence flushed: entering deep sleep\n");
+	/* Only successful persistence may reach hardware shutdown or its reboot
+	 * fallback. Suppress delayed advertising and hardware work before poweroff.
+	 */
+	struct k_work_sync sync;
+	k_work_cancel_delayable_sync(&adv_start_work, &sync);
+	k_work_cancel_delayable_sync(&battery_measure_work, &sync);
+	k_work_cancel_delayable_sync(&tune_ble_link_work, &sync);
+	k_work_cancel_delayable_sync(&stale_ble_disconnect_work, &sync);
+	k_work_cancel_delayable_sync(&trace_upload_work, &sync);
 
 	/* 1. Turn off user LED if active */
 	gpio_pin_set_dt(&user_led, 0);
@@ -1035,8 +1054,12 @@ static void enter_deep_sleep(void)
 	stop_pdm();
 
 	/* 2. Disconnect BLE and stop advertising */
-	if (current_conn) {
-		bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_POWER_OFF);
+	k_mutex_lock(&control_mutex, K_FOREVER);
+	struct bt_conn *conn = current_conn ? bt_conn_ref(current_conn) : NULL;
+	k_mutex_unlock(&control_mutex);
+	if (conn) {
+		bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_POWER_OFF);
+		bt_conn_unref(conn);
 		/* Wait a moment for disconnect callback to complete and clean up */
 		k_sleep(K_MSEC(200));
 	}
@@ -1348,117 +1371,38 @@ static bool detect_shot(const struct vec3 *accel, const struct vec3 *gyro, uint6
 	return false;
 }
 
-/* Settings key "openfloat/shots" holds the lifetime shot count in RRAM. */
+/* Settings key "openfloat/shots" holds the count and independent capture ID. */
 static int openfloat_settings_set(const char *name, size_t len,
 				  settings_read_cb read_cb, void *cb_arg)
 {
 	if (settings_name_steq(name, "shots", NULL)) {
-		uint32_t value;
+		uint8_t bytes[sizeof(shot_counters)];
+		struct openfloat_shot_counters value;
 		ssize_t rc;
 
-		if (len != sizeof(value)) {
+		if (len != sizeof(uint32_t) && len != sizeof(value)) {
 			return -EINVAL;
 		}
-		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
+		rc = read_cb(cb_arg, bytes, len);
+		if (rc != (ssize_t)len) {
+			return rc < 0 ? rc : -EINVAL;
 		}
-		shot_count = (int)value;
-		shot_id = value;
+		if (!openfloat_restore_shot_counters(&value, bytes, len)) return -EINVAL;
+		k_mutex_lock(&shot_counter_mutex, K_FOREVER);
+		shot_counters = value;
+		k_mutex_unlock(&shot_counter_mutex);
 		return 0;
 	}
 
 	if (settings_name_steq(name, "shotlog", NULL)) {
-		struct stored_shot_log value;
+		uint8_t bytes[sizeof(stored_shot_log)];
 		ssize_t rc;
 
-		if (len != sizeof(value)) {
-			/* Backward compatible migration for older smaller stored_shot_log formats. */
-			if (len == 2 + 22 * STORED_SHOT_CAPACITY) {
-				static struct {
-					uint16_t count;
-					struct {
-						uint16_t shot_count;
-						uint16_t shot_id;
-						int16_t ax_mg;
-						int16_t ay_mg;
-						int16_t az_mg;
-						uint16_t threshold_cg;
-						int16_t roll_cdeg;
-						int16_t pitch_cdeg;
-						int16_t yaw_cdeg;
-						uint16_t clicker_dt_ms;
-						uint16_t impact_dt_ms;
-					} shots[STORED_SHOT_CAPACITY];
-				} old_log;
-				if (len == sizeof(old_log)) {
-					rc = read_cb(cb_arg, &old_log, sizeof(old_log));
-					if (rc >= 0 && old_log.count <= STORED_SHOT_CAPACITY) {
-						stored_shot_log.count = old_log.count;
-						for (int i = 0; i < old_log.count; i++) {
-							stored_shot_log.shots[i].shot_count = old_log.shots[i].shot_count;
-							stored_shot_log.shots[i].shot_id = old_log.shots[i].shot_id;
-							stored_shot_log.shots[i].ax_mg = old_log.shots[i].ax_mg;
-							stored_shot_log.shots[i].ay_mg = old_log.shots[i].ay_mg;
-							stored_shot_log.shots[i].az_mg = old_log.shots[i].az_mg;
-							stored_shot_log.shots[i].threshold_cg = old_log.shots[i].threshold_cg;
-							stored_shot_log.shots[i].roll_cdeg = old_log.shots[i].roll_cdeg;
-							stored_shot_log.shots[i].pitch_cdeg = old_log.shots[i].pitch_cdeg;
-							stored_shot_log.shots[i].yaw_cdeg = old_log.shots[i].yaw_cdeg;
-							stored_shot_log.shots[i].clicker_dt_ms = old_log.shots[i].clicker_dt_ms;
-							stored_shot_log.shots[i].impact_dt_ms = old_log.shots[i].impact_dt_ms;
-						}
-						return 0;
-					}
-				}
-			}
-			if (len == 2 + 18 * STORED_SHOT_CAPACITY) {
-				static struct {
-					uint16_t count;
-					struct {
-						uint16_t shot_count;
-						uint16_t shot_id;
-						int16_t ax_mg;
-						int16_t ay_mg;
-						int16_t az_mg;
-						uint16_t threshold_cg;
-						int16_t roll_cdeg;
-						int16_t pitch_cdeg;
-						int16_t yaw_cdeg;
-					} shots[STORED_SHOT_CAPACITY];
-				} old_log;
-				if (len == sizeof(old_log)) {
-					rc = read_cb(cb_arg, &old_log, sizeof(old_log));
-					if (rc >= 0 && old_log.count <= STORED_SHOT_CAPACITY) {
-						stored_shot_log.count = old_log.count;
-						for (int i = 0; i < old_log.count; i++) {
-							stored_shot_log.shots[i].shot_count = old_log.shots[i].shot_count;
-							stored_shot_log.shots[i].shot_id = old_log.shots[i].shot_id;
-							stored_shot_log.shots[i].ax_mg = old_log.shots[i].ax_mg;
-							stored_shot_log.shots[i].ay_mg = old_log.shots[i].ay_mg;
-							stored_shot_log.shots[i].az_mg = old_log.shots[i].az_mg;
-							stored_shot_log.shots[i].threshold_cg = old_log.shots[i].threshold_cg;
-							stored_shot_log.shots[i].roll_cdeg = old_log.shots[i].roll_cdeg;
-							stored_shot_log.shots[i].pitch_cdeg = old_log.shots[i].pitch_cdeg;
-							stored_shot_log.shots[i].yaw_cdeg = old_log.shots[i].yaw_cdeg;
-							stored_shot_log.shots[i].clicker_dt_ms = 0;
-							stored_shot_log.shots[i].impact_dt_ms = 0;
-						}
-						return 0;
-					}
-				}
-			}
-			return -EINVAL;
-		}
-		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
-		if (value.count > STORED_SHOT_CAPACITY) {
-			return -EINVAL;
-		}
-		stored_shot_log = value;
-		return 0;
+		if (!shot_log_valid_storage_size(len)) return -EINVAL;
+		rc = read_cb(cb_arg, bytes, len);
+		if (rc < 0) return rc;
+		/* Settings load completes before BLE and the IMU start. */
+		return shot_log_restore(&stored_shot_log, bytes, len, (size_t)rc) ? 0 : -EINVAL;
 	}
 
 	if (settings_name_steq(name, "wakesens", NULL)) {
@@ -1469,9 +1413,8 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
+		if (!openfloat_valid_tuning_setting("wakesens", value)) return -EINVAL;
 		wake_sensitivity_g = (float)value / 1000.0f;
 		return 0;
 	}
@@ -1484,9 +1427,8 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
+		if (!openfloat_valid_tuning_setting("sleeptime", value)) return -EINVAL;
 		disconnected_sleep_timeout_ms = value;
 		return 0;
 	}
@@ -1499,9 +1441,8 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
+		if (!openfloat_valid_tuning_setting("sleepsens", value)) return -EINVAL;
 		sleep_sensitivity_g = (float)value / 1000.0f;
 		return 0;
 	}
@@ -1514,9 +1455,7 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
 		cant_offset_deg = (float)value / 1000.0f;
 		return 0;
 	}
@@ -1529,9 +1468,7 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
 		pitch_offset_deg = (float)value / 1000.0f;
 		return 0;
 	}
@@ -1544,9 +1481,8 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
+		if (!openfloat_valid_tuning_setting("bufrate", value)) return -EINVAL;
 		buffer_rate_hz = (int)value;
 		return 0;
 	}
@@ -1559,9 +1495,8 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
+		if (!openfloat_valid_tuning_setting("bufnvs", value)) return -EINVAL;
 		buffer_nvs_enabled = (int)value;
 		return 0;
 	}
@@ -1574,9 +1509,8 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
+		if (!openfloat_valid_tuning_setting("autosleep", value)) return -EINVAL;
 		auto_sleep_enabled = (int)value;
 		return 0;
 	}
@@ -1589,9 +1523,8 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
+		if (!openfloat_valid_tuning_setting("streamrate", value)) return -EINVAL;
 		ble_stream_divider = (int)value;
 		return 0;
 	}
@@ -1604,12 +1537,8 @@ static int openfloat_settings_set(const char *name, size_t len,
 			return -EINVAL;
 		}
 		rc = read_cb(cb_arg, &value, sizeof(value));
-		if (rc < 0) {
-			return rc;
-		}
-		if (value > 3000) {
-			value = 3000;
-		}
+		if (rc != (ssize_t)sizeof(value)) return rc < 0 ? rc : -EINVAL;
+		if (!openfloat_valid_tuning_setting("followms", value)) return -EINVAL;
 		follow_through_ms = value;
 		return 0;
 	}
@@ -1642,146 +1571,88 @@ static int openfloat_settings_set(const char *name, size_t len,
 SETTINGS_STATIC_HANDLER_DEFINE(openfloat, "openfloat", NULL,
 			       openfloat_settings_set, NULL, NULL);
 
-/*
- * Persist the shot count off the IMU loop. settings_save_one() does an RRAM
- * write that can take a few ms; running it on the system workqueue keeps the
- * high-rate FIFO loop from stalling, and re-submitting while pending naturally
- * coalesces bursts of shots into a single write of the latest count.
+static struct sleep_flush_values persistent_values_snapshot(void)
+{
+	return (struct sleep_flush_values){
+		.counters = shot_counters_snapshot(), .queue = &stored_shot_log,
+		.wakesens = (uint32_t)scale_float(wake_sensitivity_g, 1000.0f),
+		.sleeptime = disconnected_sleep_timeout_ms,
+		.sleepsens = (uint32_t)scale_float(sleep_sensitivity_g, 1000.0f),
+		.bufrate = (uint32_t)buffer_rate_hz, .bufnvs = (uint32_t)buffer_nvs_enabled,
+		.autosleep = (uint32_t)auto_sleep_enabled, .streamrate = (uint32_t)ble_stream_divider,
+		.followms = follow_through_ms,
+		.cant_offset = (int32_t)scale_float(cant_offset_deg, 1000.0f),
+		.pitch_offset = (int32_t)scale_float(pitch_offset_deg, 1000.0f),
+	};
+}
+
+/* Schedule while holding the retry mutex so a worker's delayed retry cannot
+ * overwrite a concurrent new value's immediate request. No storage I/O here.
  */
-static void shot_persist_work_handler(struct k_work *work)
+static void schedule_settings_save_locked(void)
 {
-	uint32_t value = (uint32_t)shot_count;
-	int rc = settings_save_one("openfloat/shots", &value, sizeof(value));
+	uint32_t delay = settings_retry_delay(&settings_writes, k_uptime_get_32());
+	if (delay != UINT32_MAX && !atomic_get(&poweroff_pending))
+		k_work_reschedule(&settings_persist_work, K_MSEC(delay));
+}
 
-	if (rc) {
-		printk("# shot count save failed: %d\n", rc);
+static void request_settings_save(uint32_t mask)
+{
+	k_mutex_lock(&settings_retry_mutex, K_FOREVER);
+	settings_retry_request(&settings_writes, mask, k_uptime_get_32());
+	schedule_settings_save_locked();
+	k_mutex_unlock(&settings_retry_mutex);
+}
+
+static int write_background_setting(void *context, const char *key, const void *data, size_t size)
+{
+	ARG_UNUSED(context);
+	int rc = settings_save_one(key, data, size);
+	if (rc) printk("# Settings save failed for %s: %d\n", key, rc);
+	return rc;
+}
+
+static void settings_persist_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	uint32_t token;
+	k_mutex_lock(&settings_retry_mutex, K_FOREVER);
+	int key = settings_retry_take(&settings_writes, k_uptime_get_32(), &token);
+	if (key < 0) schedule_settings_save_locked();
+	k_mutex_unlock(&settings_retry_mutex);
+	if (key < 0) return;
+
+	/* Copy current values under their RAM locks, then release all locks for
+	 * Settings I/O. One shared worker serializes use of the existing log copy.
+	 * A newer request changes its token, preserving that request after this I/O.
+	 */
+	k_mutex_lock(&control_mutex, K_FOREVER);
+	struct sleep_flush_values values = persistent_values_snapshot();
+	k_mutex_unlock(&control_mutex);
+	if (key == SETTING_SHOTLOG) {
+		static struct stored_shot_log snapshot;
+		k_mutex_lock(&shot_log_mutex, K_FOREVER);
+		memcpy(&snapshot, &stored_shot_log, sizeof(snapshot));
+		k_mutex_unlock(&shot_log_mutex);
+		values.queue = &snapshot;
 	}
+	int rc = settings_retry_save(key, &values, write_background_setting, NULL);
+	k_mutex_lock(&settings_retry_mutex, K_FOREVER);
+	settings_retry_finish(&settings_writes, key, token, rc, k_uptime_get_32());
+	schedule_settings_save_locked();
+	k_mutex_unlock(&settings_retry_mutex);
 }
 
-static void wake_sens_persist_work_handler(struct k_work *work)
-{
-	uint32_t value = (uint32_t)scale_float(wake_sensitivity_g, 1000.0f);
-	int rc = settings_save_one("openfloat/wakesens", &value, sizeof(value));
-
-	if (rc) {
-		printk("# wake sensitivity save failed: %d\n", rc);
-	}
-}
-
-/*
- * Snapshot the log under the mutex, then do the slow RRAM write unlocked so
- * the high-rate IMU loop is never blocked behind settings_save_one(). Both
- * persist handlers run on the system workqueue, so the static snapshot is
- * never used concurrently.
- */
-static void persist_shot_log_snapshot(void)
-{
-	static struct stored_shot_log snapshot;
-	int rc;
-
-	k_mutex_lock(&shot_log_mutex, K_FOREVER);
-	snapshot = stored_shot_log;
-	k_mutex_unlock(&shot_log_mutex);
-
-	rc = settings_save_one("openfloat/shotlog", &snapshot,
-			       sizeof(snapshot));
-	if (rc) {
-		printk("# shot log save failed: %d\n", rc);
-	}
-}
-
-static void shot_log_persist_work_handler(struct k_work *work)
-{
-	persist_shot_log_snapshot();
-}
-
-/*
- * Connected-path reconcile, scheduled a few seconds after each shot. If the
- * browser acked the live frame, stored_shot_remove() already drained the queue
- * and this is a no-op — no RRAM write. If a shot is still pending the live
- * frame was lost: persist the backlog and flag a storage-status frame so the
- * browser pulls it via shotdump and the ack/retry path recovers the shot.
+/* A live-acked queue is already empty: no request and no RRAM write. A missed
+ * live frame queues the current backlog after the existing reconcile delay.
  */
 static void shot_log_reconcile_work_handler(struct k_work *work)
 {
-	if (stored_shot_count_snapshot() == 0) {
-		return;
-	}
-
-	persist_shot_log_snapshot();
+	ARG_UNUSED(work);
+	if (atomic_get(&poweroff_pending) || stored_shot_count_snapshot() == 0) return;
+	request_settings_save(BIT(SETTING_SHOTLOG));
 	ble_send_storage_status = true;
 }
-
-static void sleep_time_persist_work_handler(struct k_work *work)
-{
-	uint32_t value = disconnected_sleep_timeout_ms;
-	int rc = settings_save_one("openfloat/sleeptime", &value, sizeof(value));
-
-	if (rc) {
-		printk("# sleep timeout save failed: %d\n", rc);
-	}
-}
-
-static void sleep_sens_persist_work_handler(struct k_work *work)
-{
-	uint32_t value = (uint32_t)scale_float(sleep_sensitivity_g, 1000.0f);
-	int rc = settings_save_one("openfloat/sleepsens", &value, sizeof(value));
-
-	if (rc) {
-		printk("# sleep sensitivity save failed: %d\n", rc);
-	}
-}
-
-static void buffer_rate_persist_work_handler(struct k_work *work)
-{
-	uint32_t value = (uint32_t)buffer_rate_hz;
-	int rc = settings_save_one("openfloat/bufrate", &value, sizeof(value));
-
-	if (rc) {
-		printk("# buffer rate save failed: %d\n", rc);
-	}
-}
-
-static void buffer_nvs_persist_work_handler(struct k_work *work)
-{
-	uint32_t value = (uint32_t)buffer_nvs_enabled;
-	int rc = settings_save_one("openfloat/bufnvs", &value, sizeof(value));
-
-	if (rc) {
-		printk("# buffer nvs save failed: %d\n", rc);
-	}
-}
-
-static void auto_sleep_persist_work_handler(struct k_work *work)
-{
-	uint32_t value = (uint32_t)auto_sleep_enabled;
-	int rc = settings_save_one("openfloat/autosleep", &value, sizeof(value));
-
-	if (rc) {
-		printk("# auto sleep save failed: %d\n", rc);
-	}
-}
-
-static void streamrate_persist_work_handler(struct k_work *work)
-{
-	uint32_t value = (uint32_t)ble_stream_divider;
-	int rc = settings_save_one("openfloat/streamrate", &value, sizeof(value));
-
-	if (rc) {
-		printk("# streamrate save failed: %d\n", rc);
-	}
-}
-
-static void follow_through_persist_work_handler(struct k_work *work)
-{
-	uint32_t value = follow_through_ms;
-	int rc = settings_save_one("openfloat/followms", &value, sizeof(value));
-
-	if (rc) {
-		printk("# follow-through save failed: %d\n", rc);
-	}
-}
-
 
 static int trace_settings_read(void *context, unsigned int slot, unsigned int part,
 			       void *data, size_t size)
@@ -1789,12 +1660,10 @@ static int trace_settings_read(void *context, unsigned int slot, unsigned int pa
 	ARG_UNUSED(context);
 	char key[32];
 	snprintf(key, sizeof(key), "openfloat/ts%u/%u", slot, part);
-	ssize_t length = settings_get_val_len(key);
-	if (length < 0) return (int)length;
-	if (!length) return -ENOENT;
-	if ((size_t)length != size) return -EBADMSG;
-	ssize_t rc = settings_load_one(key, data, size);
-	return rc < 0 ? (int)rc : ((size_t)rc == size ? 0 : -EBADMSG);
+	int rc = openfloat_settings_read(settings_storage, key, data, size);
+	if (!rc) return -ENOENT;
+	if (rc == -EMSGSIZE) return -EBADMSG;
+	return rc < 0 ? rc : ((size_t)rc == size ? 0 : -EBADMSG);
 }
 
 static int trace_settings_write(void *context, unsigned int slot, unsigned int part,
@@ -1813,37 +1682,215 @@ static const struct trace_store_io trace_settings_io = {
 static void trace_restored(void *context, const struct stored_trace *trace)
 {
 	ARG_UNUSED(context);
-	stored_traces[trace->shot_id % 10] = *trace;
+	stored_traces[trace->shot_id % TRACE_RAM_SLOTS] = *trace;
+}
+
+static bool boot_counter_present, boot_full_log_ids, boot_id_recovered;
+
+static int boot_initialize_settings(void *context)
+{
+	ARG_UNUSED(context);
+	int rc = settings_subsys_init();
+	if (rc) return rc;
+	void *storage = NULL;
+	rc = settings_storage_get(&storage);
+	settings_storage = storage;
+	return rc ? rc : (storage ? 0 : -ENODEV);
+}
+
+static void boot_reset_restored_state(void *context)
+{
+	/* No BLE, acquisition, or application writer starts before boot succeeds.
+	 * Reuse existing RAM, discarding all partial results before each retry.
+	 */
+	const struct sleep_flush_values *defaults = context;
+	shot_counters = defaults->counters;
+	boot_counter_present = boot_full_log_ids = false;
+	boot_id_recovered = false;
+	shot_log_reset(&stored_shot_log);
+	memset(stored_traces, 0, sizeof(stored_traces));
+	memset(&trace_storage, 0, sizeof(trace_storage));
+	wake_sensitivity_g = (float)defaults->wakesens / 1000.0f;
+	disconnected_sleep_timeout_ms = defaults->sleeptime;
+	sleep_sensitivity_g = (float)defaults->sleepsens / 1000.0f;
+	buffer_rate_hz = (int)defaults->bufrate;
+	buffer_nvs_enabled = (int)defaults->bufnvs;
+	auto_sleep_enabled = (int)defaults->autosleep;
+	ble_stream_divider = (int)defaults->streamrate;
+	follow_through_ms = defaults->followms;
+	cant_offset_deg = (float)defaults->cant_offset / 1000.0f;
+	pitch_offset_deg = (float)defaults->pitch_offset / 1000.0f;
+}
+
+struct boot_setting_value { size_t size; };
+
+static ssize_t boot_setting_read_value(void *context, void *data, size_t size)
+{
+	const struct boot_setting_value *value = context;
+	if (size > value->size) return -EIO;
+	/* Legacy trace restore reads into this same snapshot. */
+	memmove(data, trace_persist_snapshot.bytes, size);
+	return size;
+}
+
+static int boot_restore_setting(void *context, const char *name)
+{
+	ARG_UNUSED(context);
+	char key[32];
+	snprintf(key, sizeof(key), "openfloat/%s", name);
+	int rc = openfloat_settings_read(settings_storage, key, trace_persist_snapshot.bytes,
+					 sizeof(trace_persist_snapshot.bytes));
+	if (rc > 0) {
+		const struct boot_setting_value value = { .size = (size_t)rc };
+		rc = openfloat_settings_set(name, value.size, boot_setting_read_value, (void *)&value);
+		if (rc == -EINVAL) rc = -EBADMSG;
+		if (!rc && !strcmp(name, "shots")) boot_counter_present = true;
+		if (!rc && !strcmp(name, "shotlog")) boot_full_log_ids = value.size == sizeof(stored_shot_log);
+	}
+	if (rc) printk("# Boot setting restore failed for %s: %d\n", key, rc);
+	return rc;
+}
+
+static int boot_restore_traces(void *context)
+{
+	ARG_UNUSED(context);
+	int rc = trace_store_load(&trace_storage, &trace_settings_io, &trace_persist_snapshot.trace,
+				 trace_restored, NULL);
+	if (rc) printk("# Boot trace restore failed: %d\n", rc);
+	if (!rc) {
+		uint32_t previous = shot_counters.shot_id;
+		rc = shot_recover_id(&shot_counters, boot_counter_present, &stored_shot_log,
+				     boot_full_log_ids, stored_traces, TRACE_RAM_SLOTS);
+		if (rc) printk("# Boot capture ID recovery failed: %d\n", rc);
+		else if ((boot_id_recovered = previous != shot_counters.shot_id))
+			printk("# Capture ID recovered: %u -> %u; count unchanged\n", previous, shot_counters.shot_id);
+	}
+	return rc;
+}
+
+static int boot_commit_recovered(void *context)
+{
+	ARG_UNUSED(context);
+	if (!boot_id_recovered) return 0;
+	/* All startup reads passed. Save before replay can acknowledge and remove
+	 * the last retained evidence of a newer ID. No acquisition/writers yet. */
+	const struct sleep_flush_values values = persistent_values_snapshot();
+	return settings_retry_save(SETTING_SHOTS, &values, write_background_setting, NULL);
+}
+
+static void boot_restore_retry_delay(void *context, uint32_t milliseconds)
+{
+	ARG_UNUSED(context);
+	k_sleep(K_MSEC(milliseconds));
+}
+
+static int persist_next_trace(uint32_t eligible_mask, bool include_failed,
+			      uint32_t *processed, bool *retry_out)
+{
+	if (processed) *processed = 0;
+	if (retry_out) *retry_out = false;
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	uint32_t token;
+	int slot = trace_persist_take(&trace_writes, eligible_mask, include_failed, &token);
+	if (slot < 0) {
+		k_mutex_unlock(&trace_mutex);
+		return 0;
+	}
+	trace_persist_snapshot.trace = stored_traces[slot];
+	k_mutex_unlock(&trace_mutex);
+	int rc = trace_store_save(&trace_storage, &trace_settings_io, &trace_persist_snapshot.trace);
+	if (rc) printk("# trace save failed for shot %u: %d\n", trace_persist_snapshot.trace.shot_id, rc);
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	/* Retain failures after the ordinary three attempts. Sleep gets its own
+	 * bounded retry passes; a replaced RAM slot must not inherit an old result.
+	 */
+	bool retry = trace_persist_finish(&trace_writes, slot, token, rc);
+	k_mutex_unlock(&trace_mutex);
+	if (processed) *processed = BIT(slot);
+	if (retry_out) *retry_out = retry;
+	return rc;
 }
 
 static void trace_persist_work_handler(struct k_work *work)
 {
 	/* Persist one capture per invocation, oldest pending first. Yield between
 	 * captures so freeze/upload work can run; reuse the existing 8 KB snapshot. */
+	bool retry;
+	(void)persist_next_trace(UINT32_MAX, false, NULL, &retry);
 	k_mutex_lock(&trace_mutex, K_FOREVER);
-	int slot = -1;
-	for (int i = 0; i < 10; i++) {
-		if (!(trace_pending_mask & BIT(i))) continue;
-		if (slot < 0 || (int32_t)(trace_capture_order[i] - trace_capture_order[slot]) < 0) slot = i;
-	}
-	if (slot >= 0) {
-		trace_persist_snapshot.trace = stored_traces[slot];
-		trace_pending_mask &= ~BIT(slot);
-		trace_persist_attempts[slot]++;
-	}
-	k_mutex_unlock(&trace_mutex);
-	if (slot < 0) return;
-	int rc = trace_store_save(&trace_storage, &trace_settings_io, &trace_persist_snapshot.trace);
-	if (rc) printk("# trace save failed for shot %u: %d\n", trace_persist_snapshot.trace.shot_id, rc);
-	k_mutex_lock(&trace_mutex, K_FOREVER);
-	bool retry = rc && stored_traces[slot].shot_id == trace_persist_snapshot.trace.shot_id &&
-		stored_traces[slot].count > 0 && trace_persist_attempts[slot] < 3;
-	if (retry) trace_pending_mask |= BIT(slot);
-	bool pending = trace_pending_mask != 0;
+	bool pending = trace_writes.pending_mask != 0;
 	k_mutex_unlock(&trace_mutex);
 	/* Bounded delayed retries avoid spinning on a full or failing backend. New
 	 * captures get their own attempts; all ten remain available in powered RAM. */
-	if (pending) k_work_reschedule(&trace_persist_work, retry ? K_SECONDS(1) : K_NO_WAIT);
+	if (pending && !atomic_get(&poweroff_pending))
+		k_work_reschedule(&trace_persist_work, retry ? K_SECONDS(1) : K_NO_WAIT);
+}
+
+static int write_sleep_setting(void *context, const char *key, const void *data, size_t size)
+{
+	ARG_UNUSED(context);
+	int rc = settings_save_one(key, data, size);
+	if (rc) printk("# Sleep save failed for %s: %d\n", key, rc);
+	/* Control updates and background I/O are already sealed/drained. Account
+	 * for each final write without restarting ordinary retries while closing.
+	 */
+	k_mutex_lock(&settings_retry_mutex, K_FOREVER);
+	for (enum openfloat_setting setting = 0; setting < SETTING_COUNT; setting++) {
+		if (!strcmp(key, settings_retry_key(setting))) {
+			settings_retry_settle(&settings_writes, setting, rc);
+			break;
+		}
+	}
+	k_mutex_unlock(&settings_retry_mutex);
+	return rc;
+}
+
+static int write_sleep_traces(void *context)
+{
+	ARG_UNUSED(context);
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	uint32_t remaining = trace_writes.pending_mask | trace_writes.failed_mask;
+	k_mutex_unlock(&trace_mutex);
+	int result = 0;
+	while (remaining) {
+		uint32_t processed;
+		int rc = persist_next_trace(remaining, true, &processed, NULL);
+		if (rc && !result) result = rc;
+		if (!processed) break;
+		remaining &= ~processed;
+	}
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	bool unsaved = (trace_writes.pending_mask | trace_writes.failed_mask) != 0;
+	k_mutex_unlock(&trace_mutex);
+	return result ? result : (unsaved ? -EAGAIN : 0);
+}
+
+static void sleep_flush_retry_delay(void *context, uint32_t milliseconds)
+{
+	ARG_UNUSED(context);
+	k_sleep(K_MSEC(milliseconds));
+}
+
+static int flush_persistence_before_sleep(void)
+{
+	/* Called by the paused main loop with control dispatch sealed. Synchronous
+	 * cancellation/flush finishes prior writers before reusing their snapshots;
+	 * never invoke this from the system workqueue or while holding their mutexes.
+	 */
+	struct k_work_sync sync;
+	k_work_cancel_delayable_sync(&shot_log_reconcile_work, &sync);
+	k_work_cancel_delayable_sync(&trace_freeze_work, &sync);
+	k_work_cancel_delayable_sync(&trace_persist_work, &sync);
+	k_work_cancel_delayable_sync(&settings_persist_work, &sync);
+	k_mutex_lock(&trace_mutex, K_FOREVER);
+	(void)trace_freeze_pending_slot();
+	k_mutex_unlock(&trace_mutex);
+	const struct sleep_flush_values values = persistent_values_snapshot();
+	const struct sleep_flush_io io = {
+		.write_setting = write_sleep_setting, .write_traces = write_sleep_traces,
+		.retry_delay = sleep_flush_retry_delay,
+	};
+	return sleep_flush(&values, &io);
 }
 
 
@@ -1860,21 +1907,6 @@ static void print_float_signed(const char *label, float val, int decimals)
 	int32_t frac = abs_val % (int32_t)multiplier;
 	const char *sign = (scaled < 0 && whole == 0) ? "-" : "";
 	printk("%s %s%d.%0*d\n", label, sign, whole, decimals, frac);
-}
-
-static void offsets_persist_work_handler(struct k_work *work)
-{
-	int32_t cant_val = (int32_t)scale_float(cant_offset_deg, 1000.0f);
-	int rc = settings_save_one("openfloat/cant_offset", &cant_val, sizeof(cant_val));
-	if (rc) {
-		printk("# cant_offset save failed: %d\n", rc);
-	}
-
-	int32_t pitch_val = (int32_t)scale_float(pitch_offset_deg, 1000.0f);
-	rc = settings_save_one("openfloat/pitch_offset", &pitch_val, sizeof(pitch_val));
-	if (rc) {
-		printk("# pitch_offset save failed: %d\n", rc);
-	}
 }
 
 #define BT_UUID_BAS_VAL 0x180f
@@ -1911,16 +1943,17 @@ static const struct device *const vbat_reg = DEVICE_DT_GET(DT_NODELABEL(vbat_pwr
 
 static void battery_measure_work_handler(struct k_work *work)
 {
+	if (atomic_get(&poweroff_pending)) return;
 	if (!device_is_ready(battery_adc.dev)) {
 		printk("# Battery SAADC device not ready\n");
-		k_work_reschedule(&battery_measure_work, K_SECONDS(5));
+		if (!atomic_get(&poweroff_pending)) k_work_reschedule(&battery_measure_work, K_SECONDS(5));
 		return;
 	}
 
 	int err = adc_channel_setup_dt(&battery_adc);
 	if (err) {
 		printk("# Battery ADC channel setup failed: %d\n", err);
-		k_work_reschedule(&battery_measure_work, K_SECONDS(5));
+		if (!atomic_get(&poweroff_pending)) k_work_reschedule(&battery_measure_work, K_SECONDS(5));
 		return;
 	}
 
@@ -1971,7 +2004,7 @@ static void battery_measure_work_handler(struct k_work *work)
 		(void)regulator_disable(vbat_reg);
 	}
 
-	k_work_reschedule(&battery_measure_work, K_SECONDS(10));
+	if (!atomic_get(&poweroff_pending)) k_work_reschedule(&battery_measure_work, K_SECONDS(10));
 }
 
 static void print_threshold_g(float threshold_g)
@@ -1985,12 +2018,9 @@ static void print_threshold_g(float threshold_g)
 static bool set_shot_threshold_from_command(const char *command)
 {
 	const char *value = command + strlen("thresh:");
-	char *end;
 	float threshold_g;
 
-	errno = 0;
-	threshold_g = strtof(value, &end);
-	if (errno != 0 || end == value || *end != '\0') {
+	if (!openfloat_parse_float(value, &threshold_g)) {
 		printk("# BLE control: invalid threshold command '%s'\n", command);
 		return false;
 	}
@@ -2114,10 +2144,9 @@ static void build_openfloat_shot_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 
 	frame[0] = 'O';
 	frame[1] = 'F';
-	frame[2] = 1; /* protocol version */
 	frame[3] = type;
-	put_u16_le(frame, 4, (uint16_t)shot_count);
-	put_u16_le(frame, 6, (uint16_t)shot_id);
+	struct openfloat_shot_counters value = shot_counters_snapshot();
+	openfloat_write_shot_counters(frame, value.count, value.shot_id);
 	put_u16_le(frame, 8,
 		   (uint16_t)clamp_i16(scale_float(last_shot_accel.x, SCALE_MG)));
 	put_u16_le(frame, 10,
@@ -2131,10 +2160,6 @@ static void build_openfloat_shot_binary(uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 		   type == 2 ? (uint16_t)last_shot_record.pitch_cdeg : 0);
 	put_u16_le(frame, 20,
 		   type == 2 ? (uint16_t)last_shot_record.yaw_cdeg : 0);
-	put_u16_le(frame, 22,
-		   type == 2 ? last_shot_record.clicker_dt_ms : 0);
-	put_u16_le(frame, 24,
-		   type == 2 ? last_shot_record.impact_dt_ms : 0);
 	put_u16_le(frame, 26, type == 2 ? last_shot_sequence : 0);
 }
 
@@ -2142,23 +2167,7 @@ static void build_openfloat_stored_shot_binary(
 	uint8_t frame[OPENFLOAT_BLE_FRAME_SIZE],
 	const struct stored_shot *shot)
 {
-	memset(frame, 0, OPENFLOAT_BLE_FRAME_SIZE);
-	frame[0] = 'O';
-	frame[1] = 'F';
-	frame[2] = 1; /* protocol version */
-	frame[3] = 4; /* stored shot upload */
-	put_u16_le(frame, 4, shot->shot_count);
-	put_u16_le(frame, 6, shot->shot_id);
-	put_u16_le(frame, 8, (uint16_t)shot->ax_mg);
-	put_u16_le(frame, 10, (uint16_t)shot->ay_mg);
-	put_u16_le(frame, 12, (uint16_t)shot->az_mg);
-	put_u16_le(frame, 14, shot->threshold_cg);
-	put_u16_le(frame, 16, (uint16_t)shot->roll_cdeg);
-	put_u16_le(frame, 18, (uint16_t)shot->pitch_cdeg);
-	put_u16_le(frame, 20, (uint16_t)shot->yaw_cdeg);
-	put_u16_le(frame, 22, shot->clicker_dt_ms);
-	put_u16_le(frame, 24, shot->impact_dt_ms);
-	put_u16_le(frame, 26, (uint16_t)(shot->shot_id >> 16));
+	shot_log_build_frame(shot, frame);
 }
 
 static void build_openfloat_storage_status_binary(
@@ -2169,9 +2178,8 @@ static void build_openfloat_storage_status_binary(
 	memset(frame, 0, OPENFLOAT_BLE_FRAME_SIZE);
 	frame[0] = 'O';
 	frame[1] = 'F';
-	frame[2] = 1; /* protocol version */
 	frame[3] = 5; /* stored-shot queue status */
-	put_u16_le(frame, 4, (uint16_t)shot_count);
+	openfloat_write_storage_count(frame, shot_counters_snapshot().count);
 	put_u16_le(frame, 6, pending);
 	put_u16_le(frame, 8,
 		   stored_shot_upload_in_progress ?
@@ -2182,7 +2190,6 @@ static void build_openfloat_storage_status_binary(
 		   stored_shot_upload_in_progress ?
 			   (uint16_t)(stored_shot_upload_id >> 16) : 0);
 	put_u16_le(frame, 16, stored_shot_upload_attempts);
-	put_u16_le(frame, 18, 0);
 }
 
 static void build_openfloat_trace_status_binary(
@@ -2212,7 +2219,7 @@ static void __maybe_unused write_openfloat_live_binary(uint32_t sequence,
 	uart_write_bytes(frame, sizeof(frame));
 }
 
-static ssize_t write_openfloat_control(struct bt_conn *conn,
+static ssize_t handle_openfloat_control(struct bt_conn *conn,
 				       const struct bt_gatt_attr *attr,
 				       const void *buf, uint16_t len,
 				       uint16_t offset, uint8_t flags)
@@ -2226,6 +2233,9 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 	if (len >= sizeof(command)) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
 	}
+	if (memchr(buf, '\0', len)) {
+		return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+	}
 
 	memcpy(command, buf, len);
 	command[len] = '\0';
@@ -2237,7 +2247,9 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		trigger_shot_requested = true;
 		printk("# BLE control: shot trigger simulated\n");
 	} else if (!strncmp(command, "thresh:", strlen("thresh:"))) {
-		(void)set_shot_threshold_from_command(command);
+		if (!set_shot_threshold_from_command(command)) {
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+		}
 	} else if (!strcmp(command, "start")) {
 		ble_notify_enabled = true;
 		ble_send_count_sync = true;
@@ -2261,11 +2273,12 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		printk("# BLE control: stored shot upload requested, pending=%u\n",
 		       stored_shot_count_snapshot());
 	} else if (!strcmp(command, "shotreset")) {
-		shot_count = 0;
-		shot_id = 0;
+		k_mutex_lock(&shot_counter_mutex, K_FOREVER);
+		openfloat_set_shot_count(&shot_counters, 0);
+		k_mutex_unlock(&shot_counter_mutex);
 		last_shot_accel = (struct vec3){ 0 };
 		k_mutex_lock(&shot_log_mutex, K_FOREVER);
-		stored_shot_log.count = 0;
+		shot_log_reset(&stored_shot_log);
 		k_mutex_unlock(&shot_log_mutex);
 		stored_shot_evicted_count = 0;
 		stored_shot_upload_in_progress = false;
@@ -2273,48 +2286,47 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		stored_shot_upload_attempts = 0;
 		stored_shot_upload_requested = false;
 		ble_send_count_sync = true;
-		k_work_submit(&shot_persist_work);
-		k_work_submit(&shot_log_persist_work);
+		request_settings_save(BIT(SETTING_SHOTS));
+		request_settings_save(BIT(SETTING_SHOTLOG));
 		printk("# BLE control: shot count reset to 0\n");
 	} else if (!strncmp(command, "shotset:", strlen("shotset:"))) {
-		int value = atoi(command + strlen("shotset:"));
-
-		if (value < 0) {
-			value = 0;
+		uint32_t value;
+		if (!openfloat_parse_u32(command + strlen("shotset:"), &value)) {
+			printk("# BLE control: invalid shot count command '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 		}
-		shot_count = value;
-		shot_id = (uint32_t)value;
+		k_mutex_lock(&shot_counter_mutex, K_FOREVER);
+		openfloat_set_shot_count(&shot_counters, value);
+		k_mutex_unlock(&shot_counter_mutex);
 		ble_send_count_sync = true;
-		k_work_submit(&shot_persist_work);
-		printk("# BLE control: shot count set to %d\n", shot_count);
+		request_settings_save(BIT(SETTING_SHOTS));
+		printk("# BLE control: shot count set to %u\n", value);
 	} else if (!strncmp(command, "shotack:", strlen("shotack:"))) {
-		const char *value_str = command + strlen("shotack:");
-		char *end;
-		errno = 0;
-		unsigned long value = strtoul(value_str, &end, 10);
-
-		if (errno == 0 && end != value_str && *end == '\0' &&
-		    value <= UINT32_MAX && stored_shot_remove((uint32_t)value)) {
+		uint32_t value;
+		if (!openfloat_parse_u32(command + strlen("shotack:"), &value)) {
+			printk("# BLE control: invalid shot acknowledgment '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+		}
+		if (stored_shot_remove(value)) {
 			stored_shot_upload_in_progress = false;
 			stored_shot_upload_sent_ms = 0;
 			stored_shot_upload_attempts = 0;
 			stored_shot_upload_requested =
 				stored_shot_count_snapshot() > 0;
-			k_work_submit(&shot_log_persist_work);
+			request_settings_save(BIT(SETTING_SHOTLOG));
 			ble_send_storage_status = true;
-			printk("# BLE control: stored shot acked: id=%lu pending=%u\n",
+			printk("# BLE control: stored shot acked: id=%u pending=%u\n",
 			       value, stored_shot_count_snapshot());
 		} else {
-			printk("# BLE control: stored shot ack ignored: id=%lu\n",
+			printk("# BLE control: stored shot ack ignored: id=%u\n",
 			       value);
 		}
 	} else if (!strncmp(command, "wakesens:", strlen("wakesens:"))) {
 		const char *value_str = command + strlen("wakesens:");
-		char *end;
-		errno = 0;
-		float val = strtof(value_str, &end);
-		if (errno != 0 || end == value_str || *end != '\0') {
+		float val;
+		if (!openfloat_parse_float(value_str, &val)) {
 			printk("# BLE control: invalid wake sensitivity command '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 		} else {
 			if (val < 0.5f) {
 				val = 0.5f;
@@ -2322,79 +2334,87 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 				val = 8.0f;
 			}
 			wake_sensitivity_g = val;
-			k_work_submit(&wake_sens_persist_work);
+			request_settings_save(BIT(SETTING_WAKESENS));
 			int32_t tenths = scale_float(wake_sensitivity_g, 10.0f);
 			printk("# BLE control: wake sensitivity set to %d.%01d g\n",
 			       tenths / 10, tenths % 10);
 		}
 	} else if (!strncmp(command, "sleeptime:", strlen("sleeptime:"))) {
 		const char *value_str = command + strlen("sleeptime:");
-		char *end;
-		errno = 0;
-		long val = strtol(value_str, &end, 10);
-		if (errno != 0 || end == value_str || *end != '\0') {
+		int32_t val;
+		if (!openfloat_parse_i32(value_str, &val)) {
 			printk("# BLE control: invalid sleep timeout command '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 		} else {
 			if (val < 5) val = 5;
 			if (val > 600) val = 600;
 			disconnected_sleep_timeout_ms = (uint32_t)val * 1000;
-			k_work_submit(&sleep_time_persist_work);
+			request_settings_save(BIT(SETTING_SLEEPTIME));
 			printk("# BLE control: sleep timeout set to %u s\n", disconnected_sleep_timeout_ms / 1000);
 		}
 	} else if (!strncmp(command, "sleepsens:", strlen("sleepsens:"))) {
 		const char *value_str = command + strlen("sleepsens:");
-		char *end;
-		errno = 0;
-		float val = strtof(value_str, &end);
-		if (errno != 0 || end == value_str || *end != '\0') {
+		float val;
+		if (!openfloat_parse_float(value_str, &val)) {
 			printk("# BLE control: invalid sleep sensitivity command '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 		} else {
 			if (val < 0.05f) val = 0.05f;
 			if (val > 0.50f) val = 0.50f;
 			sleep_sensitivity_g = val;
-			k_work_submit(&sleep_sens_persist_work);
+			request_settings_save(BIT(SETTING_SLEEPSENS));
 			int32_t hundredths = scale_float(sleep_sensitivity_g, 100.0f);
 			printk("# BLE control: sleep sensitivity set to %d.%02d g\n",
 			       hundredths / 100, hundredths % 100);
 		}
 	} else if (!strncmp(command, "bufrate:", strlen("bufrate:"))) {
-		int value = atoi(command + strlen("bufrate:"));
-		if (value == 0 || value == 52 || value == 104 || value == 208) {
+		uint32_t value;
+		if (openfloat_parse_u32(command + strlen("bufrate:"), &value) &&
+		    openfloat_valid_buffer_rate(value)) {
 			buffer_rate_hz = value;
-			k_work_submit(&buffer_rate_persist_work);
+			request_settings_save(BIT(SETTING_BUFRATE));
 			printk("# BLE control: buffer rate set to %d Hz\n", buffer_rate_hz);
 		} else {
 			printk("# BLE control: invalid buffer rate command '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 		}
 	} else if (!strncmp(command, "bufnvs:", strlen("bufnvs:"))) {
-		int value = atoi(command + strlen("bufnvs:"));
-		if (value == 0 || value == 1) {
+		uint32_t value;
+		if (openfloat_parse_u32(command + strlen("bufnvs:"), &value) && value <= 1) {
 			buffer_nvs_enabled = value;
-			k_work_submit(&buffer_nvs_persist_work);
+			request_settings_save(BIT(SETTING_BUFNVS));
 			printk("# BLE control: buffer NVS set to %s\n", buffer_nvs_enabled ? "ON" : "OFF");
 		} else {
 			printk("# BLE control: invalid buffer NVS command '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 		}
 	} else if (!strncmp(command, "autosleep:", strlen("autosleep:"))) {
-		int value = atoi(command + strlen("autosleep:"));
-		if (value == 0 || value == 1) {
+		uint32_t value;
+		if (openfloat_parse_u32(command + strlen("autosleep:"), &value) && value <= 1) {
 			auto_sleep_enabled = value;
-			k_work_submit(&auto_sleep_persist_work);
+			request_settings_save(BIT(SETTING_AUTOSLEEP));
 			printk("# BLE control: auto sleep set to %s\n", auto_sleep_enabled ? "ON" : "OFF");
 		} else {
 			printk("# BLE control: invalid auto sleep command '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 		}
 	} else if (!strncmp(command, "streamrate:", strlen("streamrate:"))) {
-		int value = atoi(command + strlen("streamrate:"));
-		if (value == 1 || value == 2 || value == 5 || value == 10 || value == 20) {
+		uint32_t value;
+		if (openfloat_parse_u32(command + strlen("streamrate:"), &value) &&
+		    openfloat_valid_stream_divider(value)) {
 			ble_stream_divider = value;
-			k_work_submit(&streamrate_persist_work);
+			request_settings_save(BIT(SETTING_STREAMRATE));
 			printk("# BLE control: stream rate divider set to %d\n", ble_stream_divider);
 		} else {
 			printk("# BLE control: invalid stream rate divider command '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 		}
 	} else if (!strncmp(command, "followms:", strlen("followms:"))) {
-		int value = atoi(command + strlen("followms:"));
+		int32_t value;
+		if (!openfloat_parse_i32(command + strlen("followms:"), &value)) {
+			printk("# BLE control: invalid follow-through command '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+		}
 		if (value < 0) {
 			value = 0;
 		}
@@ -2402,7 +2422,7 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 			value = 3000;
 		}
 		follow_through_ms = (uint32_t)value;
-		k_work_submit(&follow_through_persist_work);
+		request_settings_save(BIT(SETTING_FOLLOWMS));
 		printk("# BLE control: follow-through trace window set to %u ms\n",
 		       follow_through_ms);
 	} else if (!strncmp(command, "tracereq:", strlen("tracereq:")) ||
@@ -2411,42 +2431,51 @@ static ssize_t write_openfloat_control(struct bt_conn *conn,
 		unsigned int mode = !strncmp(command, "tracetimed:", 11) ? 3 :
 			(!strncmp(command, "tracereq2:", 10) ? 2 : 1);
 		const char *value_str = strchr(command, ':') + 1;
-		char *end;
-		errno = 0;
-		unsigned long req_id = strtoul(value_str, &end, 10);
-		if (errno == 0 && end != value_str && *end == '\0' &&
-		    req_id <= UINT32_MAX) {
-			int slot = req_id % 10;
-			k_mutex_lock(&trace_upload_mutex, K_FOREVER);
-			k_mutex_lock(&trace_mutex, K_FOREVER);
-			bool found = stored_traces[slot].shot_id == (uint32_t)req_id &&
-				stored_traces[slot].count > 0;
-			bool available = found && trace_chunk_count(&stored_traces[slot], mode) > 0;
-			if (available) trace_upload_snapshot = stored_traces[slot];
-			k_mutex_unlock(&trace_mutex);
-			trace_upload_generation++;
-			trace_upload_in_progress = available;
-			if (available) {
-				trace_upload_chunk_idx = 0;
-				trace_upload_mode = mode;
-				trace_upload_crc = mode == 3 ? trace_wire_crc(&trace_upload_snapshot) : 0;
-				k_work_reschedule(&trace_upload_work, K_NO_WAIT);
-				printk("# BLE control: trace upload started for shot=%lu slot=%d len=%d\n",
-				       req_id, slot, trace_upload_snapshot.count);
-			} else {
-				trace_status_shot_id = (uint32_t)req_id;
-				/* 2: present, but the legacy envelope cannot represent this trace. */
-				trace_status_code = found ? 2 : 0;
-				trace_status_pending = true;
-				printk("# BLE control: trace unavailable for shot=%lu mode=%u\n", req_id, mode);
-			}
-			k_mutex_unlock(&trace_upload_mutex);
+		uint32_t req_id;
+		if (!openfloat_parse_u32(value_str, &req_id)) {
+			printk("# BLE control: invalid trace request '%s'\n", command);
+			return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 		}
+		int slot = req_id % TRACE_RAM_SLOTS;
+		k_mutex_lock(&trace_upload_mutex, K_FOREVER);
+		k_mutex_lock(&trace_mutex, K_FOREVER);
+		bool found = stored_traces[slot].shot_id == req_id &&
+			stored_traces[slot].count > 0;
+		bool available = found && trace_chunk_count(&stored_traces[slot], mode) > 0;
+		if (available) trace_upload_snapshot = stored_traces[slot];
+		k_mutex_unlock(&trace_mutex);
+		trace_upload_generation++;
+		trace_upload_in_progress = available;
+		if (available) {
+			trace_upload_chunk_idx = 0;
+			trace_upload_mode = mode;
+			trace_upload_crc = mode == 3 ? trace_wire_crc(&trace_upload_snapshot) : 0;
+			k_work_reschedule(&trace_upload_work, K_NO_WAIT);
+			printk("# BLE control: trace upload started for shot=%u slot=%d len=%d\n",
+			       req_id, slot, trace_upload_snapshot.count);
+		} else {
+			trace_status_shot_id = req_id;
+			/* 2: present, but the legacy envelope cannot represent this trace. */
+			trace_status_code = found ? 2 : 0;
+			trace_status_pending = true;
+			printk("# BLE control: trace unavailable for shot=%u mode=%u\n", req_id, mode);
+		}
+		k_mutex_unlock(&trace_upload_mutex);
 	} else {
 		printk("# BLE control: unknown command '%s'\n", command);
 	}
 
 	return len;
+}
+
+static ssize_t write_openfloat_control(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+				      const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	k_mutex_lock(&control_mutex, K_FOREVER);
+	ssize_t result = atomic_get(&poweroff_pending) ? BT_GATT_ERR(BT_ATT_ERR_WRITE_REQ_REJECTED) :
+		handle_openfloat_control(conn, attr, buf, len, offset, flags);
+	k_mutex_unlock(&control_mutex);
+	return result;
 }
 
 static void openfloat_live_ccc_changed(const struct bt_gatt_attr *attr,
@@ -2491,6 +2520,7 @@ BT_GATT_SERVICE_DEFINE(openfloat_svc,
 
 static void trace_upload_work_handler(struct k_work *work)
 {
+	if (atomic_get(&poweroff_pending)) return;
 	k_mutex_lock(&trace_upload_mutex, K_FOREVER);
 	if (!ble_notify_enabled || !trace_upload_in_progress) {
 		trace_upload_in_progress = false;
@@ -2514,7 +2544,7 @@ static void trace_upload_work_handler(struct k_work *work)
 	 * that new upload past its first chunk or retry an obsolete request. */
 	if (generation == trace_upload_generation && trace_upload_in_progress) {
 		if (!err) trace_upload_chunk_idx++;
-		k_work_reschedule(&trace_upload_work, K_MSEC(err ? 50 : 10));
+		if (!atomic_get(&poweroff_pending)) k_work_reschedule(&trace_upload_work, K_MSEC(err ? 50 : 10));
 	}
 	k_mutex_unlock(&trace_upload_mutex);
 }
@@ -2523,7 +2553,7 @@ static const struct bt_data ad[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
 	BT_DATA_BYTES(BT_DATA_UUID128_ALL,
 		      BT_UUID_128_ENCODE(0x8f3f3b10, 0x0f5a, 0x4f4c, 0x9a2d,
-					 0x000000000001)),
+					 0x000000000001ULL)),
 };
 
 static const struct bt_data sd[] = {
@@ -2533,6 +2563,7 @@ static const struct bt_data sd[] = {
 
 static int start_ble_advertising(void)
 {
+	if (atomic_get(&poweroff_pending)) return 0;
 	int err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad),
 				  sd, ARRAY_SIZE(sd));
 
@@ -2621,21 +2652,29 @@ static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
 		printk("# BLE connection failed: %u\n", err);
-		k_work_reschedule(&adv_start_work, K_MSEC(500));
+		if (!atomic_get(&poweroff_pending)) k_work_reschedule(&adv_start_work, K_MSEC(500));
 		return;
 	}
 
+	k_mutex_lock(&control_mutex, K_FOREVER);
+	if (atomic_get(&poweroff_pending)) {
+		k_mutex_unlock(&control_mutex);
+		(void)bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_POWER_OFF);
+		return;
+	}
 	current_conn = bt_conn_ref(conn);
 	(void)k_work_cancel_delayable(&adv_start_work);
 	(void)k_work_cancel_delayable(&stale_ble_disconnect_work);
 	printk("# BLE connected\n");
 	last_activity_time_ms = k_uptime_get();
 	(void)k_work_reschedule(&tune_ble_link_work, K_MSEC(500));
+	k_mutex_unlock(&control_mutex);
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	printk("# BLE disconnected: reason %u\n", reason);
+	k_mutex_lock(&control_mutex, K_FOREVER);
 	ble_notify_enabled = false;
 	stored_shot_upload_in_progress = false;
 	stored_shot_upload_sent_ms = 0;
@@ -2650,7 +2689,8 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	}
 
 	last_activity_time_ms = k_uptime_get();
-	k_work_reschedule(&adv_start_work, K_MSEC(250));
+	if (!atomic_get(&poweroff_pending)) k_work_reschedule(&adv_start_work, K_MSEC(250));
+	k_mutex_unlock(&control_mutex);
 }
 
 static void le_param_updated(struct bt_conn *conn, uint16_t interval,
@@ -2822,7 +2862,7 @@ static void print_openfloat_live_text(uint32_t sequence, uint32_t dt_us,
 				      float roll_deg, float pitch_deg,
 				      float yaw_deg)
 {
-	printk("OFRAW,1,%u,%llu,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+	printk("OFRAW,1,%u,%llu,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u\n",
 	       sequence,
 	       (unsigned long long)uptime_us(),
 	       dt_us,
@@ -2839,7 +2879,7 @@ static void print_openfloat_live_text(uint32_t sequence, uint32_t dt_us,
 	       scale_float(q->x, SCALE_QUAT),
 	       scale_float(q->y, SCALE_QUAT),
 	       scale_float(q->z, SCALE_QUAT),
-	       shot_count);
+	       shot_counters_snapshot().count);
 }
 
 static void print_cpu_load_if_due(uint64_t now_us)
@@ -2890,35 +2930,40 @@ int main(void)
 	       OPENFLOAT_BLE_NOTIFY_PAYLOAD_SIZE);
 	printk("# format: OFSHOT,proto,shot_id,uptime_us,ax_mg,ay_mg,az_mg,shot_count\n");
 
-	k_work_init(&shot_persist_work, shot_persist_work_handler);
-	k_work_init(&shot_log_persist_work, shot_log_persist_work_handler);
+	k_work_init_delayable(&settings_persist_work, settings_persist_work_handler);
 	k_work_init_delayable(&shot_log_reconcile_work,
 			      shot_log_reconcile_work_handler);
-	k_work_init(&wake_sens_persist_work, wake_sens_persist_work_handler);
-	k_work_init(&sleep_time_persist_work, sleep_time_persist_work_handler);
-	k_work_init(&sleep_sens_persist_work, sleep_sens_persist_work_handler);
-	k_work_init(&offsets_persist_work, offsets_persist_work_handler);
 	k_work_init_delayable(&battery_measure_work, battery_measure_work_handler);
-	k_work_init(&buffer_rate_persist_work, buffer_rate_persist_work_handler);
-	k_work_init(&buffer_nvs_persist_work, buffer_nvs_persist_work_handler);
-	k_work_init(&auto_sleep_persist_work, auto_sleep_persist_work_handler);
-	k_work_init(&streamrate_persist_work, streamrate_persist_work_handler);
-	k_work_init(&follow_through_persist_work, follow_through_persist_work_handler);
 	k_work_init_delayable(&trace_persist_work, trace_persist_work_handler);
 	k_work_init_delayable(&trace_freeze_work, trace_freeze_work_handler);
 	k_work_init_delayable(&trace_upload_work, trace_upload_work_handler);
 	k_work_init_delayable(&adv_start_work, adv_start_work_handler);
-	err = settings_subsys_init();
-	if (err) {
-		printk("# settings init failed: %d (shot count will not persist)\n",
-		       err);
-	} else {
-		(void)settings_load();
-		err = trace_store_load(&trace_storage, &trace_settings_io, &trace_persist_snapshot.trace,
-				       trace_restored, NULL);
-		if (err) printk("# trace storage load failed: %d\n", err);
+	init_user_led();
+	struct sleep_flush_values boot_defaults = persistent_values_snapshot();
+	const struct boot_restore_io boot_io = {
+		.context = &boot_defaults, .initialize = boot_initialize_settings,
+		.reset = boot_reset_restored_state, .restore_setting = boot_restore_setting,
+		.restore_traces = boot_restore_traces, .commit_recovered = boot_commit_recovered,
+		.retry_delay = boot_restore_retry_delay,
+	};
+	while ((err = boot_restore(&boot_io)) != 0) {
+		printk("# Startup deferred: storage restore failed %d; retry in 30 s\n", err);
+		/* Double pulse while waiting. Never start acquisition or overwrite
+		 * unread shot IDs/backlog with defaults after a persistent read error.
+		 */
+		bool led_ready = user_led.port != NULL && gpio_is_ready_dt(&user_led);
+		for (unsigned int pulse = 0; pulse < 15; pulse++) {
+			if (led_ready) gpio_pin_set_dt(&user_led, 1);
+			k_sleep(K_MSEC(100));
+			if (led_ready) gpio_pin_set_dt(&user_led, 0);
+			k_sleep(K_MSEC(100));
+			if (led_ready) gpio_pin_set_dt(&user_led, 1);
+			k_sleep(K_MSEC(100));
+			if (led_ready) gpio_pin_set_dt(&user_led, 0);
+			k_sleep(K_MSEC(1700));
+		}
 	}
-	printk("# shot_count restored: %d\n", shot_count);
+	printk("# shot_count restored: %u\n", shot_counters_snapshot().count);
 	printk("# stored_shots restored: %u/%u\n", stored_shot_log.count,
 	       STORED_SHOT_CAPACITY);
 	int32_t wake_tenths = scale_float(wake_sensitivity_g, 10.0f);
@@ -2936,7 +2981,6 @@ int main(void)
 	printk("# streamrate restored: 1110/%d Hz\n", ble_stream_divider);
 	printk("# follow_through restored: %u ms\n", follow_through_ms);
 
-	init_user_led();
 	init_user_btn();
 
 	(void)init_ble();
@@ -3090,14 +3134,16 @@ int main(void)
 				shot_detected = true;
 				last_activity_time_ms = k_uptime_get();
 
-				shot_count++;
-				shot_id++;
+				k_mutex_lock(&shot_counter_mutex, K_FOREVER);
+				openfloat_advance_shot(&shot_counters);
+				struct openfloat_shot_counters release = shot_counters;
+				k_mutex_unlock(&shot_counter_mutex);
 
 				last_shot_accel = avg_accel;
 				last_shot_sequence = (uint16_t)telemetry_sequence;
 				last_shot_record = (struct stored_shot){
-					.shot_count = (uint16_t)shot_count,
-					.shot_id = shot_id,
+					.shot_count = (uint16_t)release.count,
+					.shot_id = release.shot_id,
 					.ax_mg = clamp_i16(scale_float(avg_accel.x, SCALE_MG)),
 					.ay_mg = clamp_i16(scale_float(avg_accel.y, SCALE_MG)),
 					.az_mg = clamp_i16(scale_float(avg_accel.z, SCALE_MG)),
@@ -3115,29 +3161,29 @@ int main(void)
 				 * its trace, even while connected, so a dropped live
 				 * frame can still be recovered via the stored-shot
 				 * ack/retry path. The trace freeze is RAM-only unless
-				 * bufnvs is enabled, so this adds no RRAM writes by
-				 * default; the shot-log RRAM write is deferred below.
+				 * bufnvs is enabled (the default); the shot-log RRAM
+				 * write is deferred below.
 				 */
 				stored_shot_append(&last_shot_record);
 				if (buffer_rate_hz > 0) {
-					schedule_trace_freeze(shot_id);
+					schedule_trace_freeze(release.shot_id);
 				}
 
 				led_shot_until_ms = k_uptime_get() + LED_SHOT_PULSE_MS;
 
-				printk("OFSHOT,1,%u,%llu,%d,%d,%d,%d,0,0\n",
-				       shot_id,
+				printk("OFSHOT,1,%u,%llu,%d,%d,%d,%u,0,0\n",
+				       release.shot_id,
 				       (unsigned long long)uptime_us(),
 				       scale_float(avg_accel.x, SCALE_MG),
 				       scale_float(avg_accel.y, SCALE_MG),
 				       scale_float(avg_accel.z, SCALE_MG),
-				       shot_count);
+				       release.count);
 
 				(void)notify_openfloat_shot_event(2);
-				k_work_submit(&shot_persist_work);
+				request_settings_save(BIT(SETTING_SHOTS));
 				if (ble_notify_enabled) {
 					/*
-					 * Connected: defer the ~2.2 KB shot-log RRAM
+					 * Connected: defer the ~2.8 KB shot-log RRAM
 					 * write. If the browser acks the live frame
 					 * first the queue drains and the reconcile
 					 * handler is a no-op, so RRAM is written only
@@ -3148,7 +3194,7 @@ int main(void)
 						K_MSEC(SHOT_LOG_RECONCILE_DELAY_MS));
 				} else {
 					/* Disconnected: nobody will ack; persist now. */
-					k_work_submit(&shot_log_persist_work);
+					request_settings_save(BIT(SETTING_SHOTLOG));
 				}
 			}
 			if (ble_send_count_sync) {
@@ -3168,17 +3214,19 @@ int main(void)
 				notify_next_stored_shot();
 			}
 
+			k_mutex_lock(&control_mutex, K_FOREVER);
 			if (user_btn_pressed() || zero_requested) {
 				zero_requested = false;
 				cant_offset_deg = roll_deg;
 				pitch_offset_deg = pitch_deg;
-				k_work_submit(&offsets_persist_work);
+				request_settings_save(BIT(SETTING_CANT_OFFSET) | BIT(SETTING_PITCH_OFFSET));
 				flags |= BIT(0);
 				printk("# Calibrated: cant=0 pitch=0\n");
 			}
 
+			k_mutex_unlock(&control_mutex);
 			update_user_led();
-			if (shot_count > 0) {
+			if (shot_counters_snapshot().count > 0) {
 				flags |= BIT(1);
 			}
 
@@ -3229,10 +3277,18 @@ int main(void)
 			}
 		}
 
-		if (should_sleep) {
-			printk("# Inactivity timeout (%llu s): entering deep sleep\n",
-			       (unsigned long long)(inactive_dur / 1000));
-			enter_deep_sleep();
+		if (should_sleep && now_ms >= sleep_save_retry_after_ms) {
+			if (enter_deep_sleep() == SLEEP_SAVE_FAILED) {
+				/* A bounded storage retry paused FIFO acquisition. Do not
+				 * mix pre-pause partial groups or queued BLE frames with
+				 * fresh samples when the normal loop resumes.
+				 */
+				accel_sum = (struct vec3){ 0 };
+				gyro_sum = (struct vec3){ 0 };
+				group_count = 0;
+				ble_dropped_samples += ble_payload_frames;
+				ble_payload_frames = 0;
+			}
 		}
 	}
 

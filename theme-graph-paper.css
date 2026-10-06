@@ -141,7 +141,8 @@ body::before {
 }
 
 header,
-.modal-overlay {
+.modal-overlay,
+#cloudModal::backdrop {
   backdrop-filter: none;
 }
 

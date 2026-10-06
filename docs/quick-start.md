@@ -6,6 +6,44 @@ firmware toolchain once.
 
 ---
 
+## Browser compatibility
+
+### Browsers for live sensor use
+
+| Browser and platform | Direct Bluetooth sensor connection |
+| --- | --- |
+| Chrome or Edge on Windows or macOS | Supported browser path |
+| Chrome on Android or ChromeOS | Supported browser path |
+| Firefox or Safari | Web Bluetooth unavailable |
+| Safari, Chrome, or Edge on iPhone/iPad | Web Bluetooth unavailable |
+| Chromium on Linux | Platform-dependent; unavailable by default |
+
+Browser support changes over time. See the [Web Bluetooth compatibility data](https://github.com/mdn/browser-compat-data/blob/main/api/Bluetooth.json)
+and [Chrome's supported platforms](https://developer.chrome.com/docs/capabilities/bluetooth).
+The app checks the Bluetooth API actually available in your browser. A browser
+notice explains unavailable sensor access and links back to this section.
+
+### Secure pages and local serving
+
+Open [OpenFloat over HTTPS](https://openfloatarchery.com), or use
+`http://localhost:4178` on the computer serving the app. An ordinary HTTP address
+on your home network does not provide the secure context needed for Bluetooth.
+A phone's `localhost` refers to the phone itself. See [secure contexts](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Secure_Contexts).
+
+Open the app directly in a tab if an embedded page blocks Bluetooth. Turn on
+your computer or phone's Bluetooth, wake the sensor, and choose it from the
+browser's picker. Browser support alone does not confirm that a radio or sensor
+is ready.
+
+### Demo and saved data
+
+Demo, Saved Shots, and local backup/restore work without Web Bluetooth. Try the
+header's **Demo** button, or import an existing JSON capture in Settings. Sensor
+support checks do not erase recordings or stop a running demo. Installing the
+site as an app keeps the same browser's Bluetooth requirements.
+
+---
+
 ## 1. What you need
 
 **Hardware**
@@ -141,10 +179,15 @@ A healthy device streams ~1110 averaged frames/s with zero FIFO overruns.
 
 ---
 
+If the user LED repeatedly double pulses and the sensor does not advertise,
+firmware is waiting for storage recovery. It retries after thirty seconds rather
+than starting with unread counters or shot queues. The USB UART overlay reports
+the failing restore key/error. Startup/LED behavior still needs on-device testing.
+
 ## 6. Open the web app
 
-Serve the repo root over localhost (Web Bluetooth and native ES modules require
-an `http://` origin, not a `file://` path):
+Serve the repo root over localhost (native ES modules need an HTTP origin;
+Web Bluetooth additionally needs HTTPS or a trustworthy local origin):
 
 ```powershell
 python -m http.server 4178
@@ -158,7 +201,8 @@ offline once loaded, and the hosted build lives at `openfloatarchery.com`.
 ## 7. Connect over Bluetooth
 
 1. Power the sensor (battery or USB) and move it so it is awake.
-2. In the app header, click the **Disconnected** status badge (top-left).
+2. In the app header, activate the **Disconnected** sensor button (top-right).
+   It also works with Tab followed by Enter or Space.
 3. In the browser's Bluetooth picker, choose your **`OpenFloat-XXXX`** device
    and pair.
 4. The badge turns green and the Dashboard begins streaming: the bow orientation

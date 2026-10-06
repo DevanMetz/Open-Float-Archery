@@ -5,7 +5,8 @@
 // be shared. Regenerate the index with `python tools/build_docs_index.py`.
 
 const HASH_PREFIX = "#/guide/";
-const INDEX_URL = "docs/index.json";
+const APP_URL = new URL("../../", import.meta.url);
+const INDEX_URL = new URL("docs/index.json", APP_URL);
 
 function escapeHtml(text) {
   return text
@@ -14,33 +15,59 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;");
 }
 
-// Inline formatting applied to already-HTML-escaped text: `code`, **bold**,
-// and [label](url) links.
-function renderInline(text) {
-  let out = escapeHtml(text);
-  out = out.replace(/`([^`]+)`/g, (_m, code) => `<code>${code}</code>`);
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    (_m, label, url) =>
-      `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`,
-  );
-  return out;
+function escapeAttribute(text) {
+  return escapeHtml(text).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function guideHash(id, anchor = "") {
+  return HASH_PREFIX + id.split("/").map(encodeURIComponent).join("/") + anchor;
+}
+
+// Build HTML once per token: generated tags and literal code must not be
+// interpreted again as Markdown. Raw HTML stays text.
+function renderInline(text, options) {
+  const tokens = /`([^`]+)`|(!?)\[([^\]]+)\]\(([^)]+)\)|\*\*([^*]+)\*\*/g;
+  let out = "", end = 0;
+  for (const match of text.matchAll(tokens)) {
+    out += escapeHtml(text.slice(end, match.index));
+    end = match.index + match[0].length;
+    const [, code, image, label, destination, bold] = match;
+    if (code !== undefined) {
+      out += `<code>${escapeHtml(code)}</code>`;
+    } else if (bold !== undefined) {
+      out += `<strong>${renderInline(bold, options)}</strong>`;
+    } else {
+      let url;
+      try { url = new URL(destination.trim(), options.pageUrl); } catch (_) {}
+      if (!url || !["http:", "https:"].includes(url.protocol)) {
+        out += escapeHtml(label);
+      } else if (image) {
+        out += `<img src="${escapeAttribute(url.href)}" alt="${escapeAttribute(label)}" loading="lazy" decoding="async">`;
+      } else {
+        const pageId = !url.search && options.pages?.get(url.origin + url.pathname);
+        const href = pageId ? guideHash(pageId, url.hash) : url.href;
+        const external = pageId ? "" : ' target="_blank" rel="noopener noreferrer"';
+        out += `<a href="${escapeAttribute(href)}"${external}>${renderInline(label, options)}</a>`;
+      }
+    }
+  }
+  return out + escapeHtml(text.slice(end));
 }
 
 // Minimal block-level Markdown -> HTML. Supports headings, fenced code blocks,
-// blockquotes, ordered/unordered lists, horizontal rules, and paragraphs —
-// the subset used by the guide content in docs/.
-function renderMarkdown(md) {
+// blockquotes, ordered/unordered lists, horizontal rules, paragraphs, links,
+// and images - the subset used by the guide content in docs/.
+export function renderMarkdown(md, options = {}) {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
   const html = [];
+  const headingIds = new Set();
   let i = 0;
 
   const flushList = (buffer, ordered) => {
     if (!buffer.length) return;
     const tag = ordered ? "ol" : "ul";
     html.push(`<${tag}>`);
-    buffer.forEach((item) => html.push(`<li>${renderInline(item)}</li>`));
+    buffer.forEach((item) => html.push(`<li>${renderInline(item, options)}</li>`));
     html.push(`</${tag}>`);
     buffer.length = 0;
   };
@@ -72,7 +99,12 @@ function renderMarkdown(md) {
     const heading = line.match(/^(#{1,4})\s+(.*)$/);
     if (heading) {
       const level = heading[1].length;
-      html.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+      const slug = heading[2].trim().toLowerCase()
+        .replace(/[^\p{L}\p{N}_\s-]/gu, "").replace(/\s+/g, "-") || "section";
+      let id = slug, suffix = 0;
+      while (headingIds.has(id)) id = `${slug}-${++suffix}`;
+      headingIds.add(id);
+      html.push(`<h${level} id="${escapeAttribute(id)}">${renderInline(heading[2], options)}</h${level}>`);
       i += 1;
       continue;
     }
@@ -84,7 +116,7 @@ function renderMarkdown(md) {
         quote.push(lines[i].replace(/^>\s?/, ""));
         i += 1;
       }
-      html.push(`<blockquote>${renderInline(quote.join(" "))}</blockquote>`);
+      html.push(`<blockquote>${renderInline(quote.join(" "), options)}</blockquote>`);
       continue;
     }
 
@@ -146,7 +178,7 @@ function renderMarkdown(md) {
       para.push(lines[i]);
       i += 1;
     }
-    html.push(`<p>${renderInline(para.join(" "))}</p>`);
+    html.push(`<p>${renderInline(para.join(" "), options)}</p>`);
   }
 
   return html.join("\n");
@@ -176,15 +208,19 @@ function chooseDefault(pages, firstRef) {
   return firstRef.id;
 }
 
-export function mountGuide({ sidebar, content }) {
+export function mountGuide({ sidebar, content, header }) {
   if (!sidebar || !content) return null;
 
   const pages = new Map();
+  const pageByUrl = new Map();
   const linkById = new Map();
   const firstRef = { id: null };
   let defaultId = null;
   let activeId = null;
+  let activeAnchor = "";
   let ready = false;
+  let pageRequest = 0;
+  let loadingIndex = null;
   const fetchCache = new Map();
 
   function highlight(id) {
@@ -193,33 +229,56 @@ export function mountGuide({ sidebar, content }) {
     });
   }
 
-  async function loadPage(id) {
+  function scrollPage(anchor) {
+    let target = content;
+    if (anchor) {
+      const heading = [...content.querySelectorAll("[id]")].find((node) => node.id === anchor);
+      if (heading) target = heading;
+    }
+    // The sticky header wraps on smaller screens; use its current height so
+    // section links and the sidebar stay readable at every viewport width.
+    const offset = `${(header?.getBoundingClientRect().height || 0) + 12}px`;
+    sidebar.style.top = offset;
+    target.style.scrollMarginTop = offset;
+    if (target === content) content.scrollTop = 0;
+    target.scrollIntoView({ block: "start" });
+  }
+
+  async function loadPage(id, anchor = "") {
     const page = pages.get(id) || pages.get(defaultId);
     if (!page) return;
-    if (page.id === activeId) return;
+    activeAnchor = anchor;
+    if (page.id === activeId) {
+      if (fetchCache.has(page.id) && anchor) scrollPage(anchor);
+      return;
+    }
+    const request = ++pageRequest;
     activeId = page.id;
     highlight(page.id);
 
     if (fetchCache.has(page.id)) {
       content.innerHTML = fetchCache.get(page.id);
-      content.scrollTop = 0;
+      scrollPage(activeAnchor);
       return;
     }
 
     content.innerHTML = '<p class="guide-loading">Loading…</p>';
     try {
-      const res = await fetch(page.path);
+      const pageUrl = new URL(page.path, APP_URL);
+      const res = await fetch(pageUrl);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const md = await res.text();
-      const rendered = renderMarkdown(md);
+      const rendered = renderMarkdown(md, { pageUrl, pages: pageByUrl });
       fetchCache.set(page.id, rendered);
+      if (request !== pageRequest) return;
       content.innerHTML = rendered;
-      content.scrollTop = 0;
+      scrollPage(activeAnchor);
     } catch (err) {
+      if (request !== pageRequest) return;
       activeId = null;
       content.innerHTML = `<p class="guide-error">Could not load this guide (${escapeHtml(
         String(err.message || err),
-      )}).</p>`;
+      )}). Open Guide again to retry.</p>`;
     }
   }
 
@@ -257,7 +316,7 @@ export function mountGuide({ sidebar, content }) {
         link.style.paddingLeft = `${10 + depth * 12}px`;
         link.textContent = node.name;
         link.addEventListener("click", () => {
-          window.location.hash = `${HASH_PREFIX}${node.id}`;
+          window.location.hash = guideHash(node.id);
           loadPage(node.id);
         });
         container.appendChild(link);
@@ -270,35 +329,51 @@ export function mountGuide({ sidebar, content }) {
   function pageIdFromHash() {
     const hash = window.location.hash || "";
     if (hash.startsWith(HASH_PREFIX)) {
-      return hash.slice(HASH_PREFIX.length);
+      const [id, anchor = ""] = hash.slice(HASH_PREFIX.length).split("#");
+      try { return { id: decodeURIComponent(id), anchor: decodeURIComponent(anchor) }; }
+      catch (_) { return null; }
     }
     return null;
   }
 
   // Fetch the generated index and build the sidebar tree.
-  const loaded = (async () => {
-    sidebar.innerHTML = '<p class="guide-loading">Loading…</p>';
-    try {
-      const res = await fetch(INDEX_URL);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const tree = data.tree || [];
-      indexFiles(tree, pages, firstRef);
-      defaultId = chooseDefault(pages, firstRef);
-      sidebar.innerHTML = "";
-      renderTree(tree, sidebar, 0);
-      ready = true;
-    } catch (err) {
-      sidebar.innerHTML = `<p class="guide-error">Could not load the guide index (${escapeHtml(
-        String(err.message || err),
-      )}). Run <code>python tools/build_docs_index.py</code>.</p>`;
-    }
-  })();
+  function loadIndex() {
+    if (ready) return Promise.resolve();
+    if (loadingIndex) return loadingIndex;
+    loadingIndex = (async () => {
+      sidebar.innerHTML = '<p class="guide-loading">Loading…</p>';
+      try {
+        const res = await fetch(INDEX_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const tree = data.tree || [];
+        pages.clear();
+        linkById.clear();
+        pageByUrl.clear();
+        firstRef.id = null;
+        indexFiles(tree, pages, firstRef);
+        pages.forEach((page) => {
+          pageByUrl.set(new URL(page.path, APP_URL).href, page.id);
+        });
+        defaultId = chooseDefault(pages, firstRef);
+        sidebar.innerHTML = "";
+        renderTree(tree, sidebar, 0);
+        ready = true;
+      } catch (err) {
+        sidebar.innerHTML = `<p class="guide-error">Could not load the guide index (${escapeHtml(
+          String(err.message || err),
+        )}). Open Guide again to retry.</p>`;
+      }
+    })().finally(() => { loadingIndex = null; });
+    return loadingIndex;
+  }
+  loadIndex();
 
   async function show() {
-    await loaded;
+    await loadIndex();
     if (!ready) return;
-    loadPage(pageIdFromHash() || activeId || defaultId);
+    const target = pageIdFromHash();
+    return loadPage(target?.id || activeId || defaultId, target?.anchor);
   }
 
   return {

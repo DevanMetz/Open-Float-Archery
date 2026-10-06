@@ -1,7 +1,8 @@
 // Shot history, review, recent shots, and deletion UI module.
 
-import { getAll, get, put, removeSavedShots, saveShotOutcome, exportSelectedShots, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=shot-store-146";
-import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-155";
+import { getAll, get, readSavedReview, removeSavedShots, saveShotOutcome, saveSessionOverride, exportShotData, exportSelectedShots, groupShotsByTime, sessionOverrideForGroup, SESSION_GAP_MS } from "../core/db.js?v=shot-store-176";
+import { downloadJson, exportFileStamp } from "./download.js?v=shot-store-176";
+import { coachForScore } from "../telemetry/telemetry.js?v=shot-store-183";
 import { scoreValue, shotFloatScore, averageShotScore } from "../telemetry/score.js?v=shot-store-150";
 import {
   buildScorecard,
@@ -12,6 +13,8 @@ import {
   normalizeImpact,
 } from "../telemetry/outcome.js?v=shot-store-150";
 import { resolveReviewMicSeries } from "../protocol/trace.js?v=shot-store-125";
+import { ASSUMED_ARROW_SPEED_FPS, arrowSpeedFps, calculateRangeFromTimes, findImpactTimeMs, formatRangeEstimate } from "../telemetry/range.js?v=shot-store-163";
+import { traceTimeline, timelineIndexAt } from "./replay.js?v=shot-store-155";
 import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=shot-store-155";
 import {
   buildSessionFloatPlot,
@@ -24,7 +27,7 @@ import {
 import { mountImpactTarget } from "./impact-target.js?v=shot-store-138";
 import { tracePhases } from "./trace-phases.js?v=shot-store-155";
 
-export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab }) {
+export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab, download = downloadJson }) {
   // Escape user-entered text before injecting into innerHTML.
   function escapeHtml(str) {
     return String(str == null ? "" : str)
@@ -67,6 +70,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   let reviewArrows = [];
   let outcomeSaving = false;
   let savedOutcomeExists = false;
+  let outcomeDirty = false;
+  let reviewedTraceRecord = null;
   let reviewRequest = 0;
   let reviewReturnFocus = null;
   let historyRequest = 0;
@@ -75,8 +80,82 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   let compareOptionsRequest = 0;
   let reviewUpdateRequest = 0;
   let exportInProgress = false;
+  let reviewExportShotId = null;
   let deletionInProgress = false;
   const selectedShotIds = new Set();
+  const sessionOperations = new Map();
+
+  function sessionOperation(group) {
+    const matching = [...sessionOperations.values()].filter((operation) => group.shots.some((shot) => operation.shotIds.has(shot.id)));
+    return matching.find((operation) => operation.busy) || matching[0];
+  }
+
+  function sessionRows(operation) {
+    return [...el.historyList.querySelectorAll(".session-group")].filter((row) =>
+      [...row.querySelectorAll(".history-item")].some((item) => operation.shotIds.has(item.dataset.shotId)));
+  }
+
+  function sessionControls(row, operation) {
+    const busy = !!operation?.busy;
+    row.setAttribute("aria-busy", String(busy));
+    row.querySelectorAll(".session-name-input,.session-bow-input,.session-save-btn,.session-cancel-btn,.session-edit-btn,.session-end-size")
+      .forEach((control) => { control.disabled = busy; });
+    row.querySelector(".session-edit-status").textContent = operation?.message || "";
+  }
+
+  async function persistSessionSettings(group, changes, { editing = false } = {}) {
+    if (sessionOperation(group)?.busy) return;
+    // Drop an older message for this group, including after its anchor moved.
+    for (const [id, operation] of sessionOperations) {
+      if (group.shots.some((shot) => operation.shotIds.has(shot.id))) sessionOperations.delete(id);
+    }
+    const operation = { shotIds: new Set(group.shots.map((shot) => shot.id)), busy: true,
+      message: editing ? "Saving session..." : "Saving scorecard grouping..." };
+    sessionOperations.set(group.anchorId, operation);
+    sessionRows(operation).forEach((row) => sessionControls(row, operation));
+    let committed = false;
+    try {
+      await saveSessionOverride(group.anchorId, changes, { shotIds: [...operation.shotIds] });
+      committed = true;
+      operation.message = editing ? "Session saved." : "Scorecard grouping saved.";
+      if (editing) {
+        for (const row of sessionRows(operation)) {
+          row.querySelector(".session-editor").classList.add("hidden");
+          row.querySelector(".session-edit-btn").setAttribute("aria-expanded", "false");
+        }
+      }
+      bus.emit("log", editing ? `Updated session "${changes.name || defaultSessionName(group.startTime)}".` : "Updated scorecard grouping.");
+      if (await loadShotHistoryList() === false) {
+        operation.message = "Settings saved. Saved Shots could not refresh; open it again to retry.";
+        bus.emit("log", operation.message);
+      }
+    } catch (error) {
+      operation.message = committed ? `Settings saved; the view could not refresh: ${error.message}`
+        : `Could not save ${editing ? "session" : "scorecard grouping"}: ${error.message}${editing ? " Your changes are still here; try again." : ""}`;
+      bus.emit("log", operation.message);
+      if (!editing && !committed) {
+        for (const row of sessionRows(operation)) {
+          const select = row.querySelector(".session-end-size");
+          if (select) select.value = select.dataset.savedValue;
+        }
+      }
+    } finally {
+      operation.busy = false;
+      const rows = sessionRows(operation);
+      for (const row of rows) {
+        const ids = new Set([...row.querySelectorAll(".history-item")].map((item) => item.dataset.shotId));
+        const pending = [...sessionOperations.values()].find((candidate) => candidate.busy && [...candidate.shotIds].some((id) => ids.has(id)));
+        sessionControls(row, pending || operation);
+      }
+      if (committed) {
+        sessionOperations.delete(group.anchorId);
+        const focused = document.activeElement;
+        if (focused === document.body || rows.some((row) => row.contains(focused))) {
+          rows[0]?.querySelector(editing ? ".session-edit-btn" : ".session-end-size")?.focus();
+        }
+      }
+    }
+  }
 
   function focusOutcomeScore() {
     const buttons = el.outcomeScoreButtons;
@@ -96,6 +175,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     canvas: el.outcomeImpactCanvas,
     onSelect(impact) {
       if (outcomeSaving) return;
+      outcomeDirty = true;
       selectedImpact = impact;
       if (impact) {
         selectedOutcome = { score: impact.score, isX: false };
@@ -165,6 +245,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
 
   function renderOutcomeEditor(shot) {
+    outcomeDirty = false;
     const canRecord = canRecordArrowOutcome(shot);
     currentOutcomeShotId = canRecord ? shot.id : null;
     el.reviewOutcomePanel?.classList.toggle("hidden", !canRecord);
@@ -254,23 +335,41 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       }
     }
     if (store.get().reviewShotId === shotId) {
-      store.set({ reviewInfo: buildReviewInfo(updatedShot) });
-      renderOutcomeEditor(updatedShot);
-      if (el.reviewOutcomeStatus) {
-        el.reviewOutcomeStatus.textContent = clear
-          ? "Result cleared"
-          : `Saved ${formatShotOutcome(updatedShot, { includeContext: true })}`;
-      }
+      outcomeDirty = false;
+      if (el.reviewOutcomeStatus) el.reviewOutcomeStatus.textContent = "Result saved locally. Refreshing views...";
     }
-    await Promise.all([loadRecentShotsList(), loadShotHistoryList()]);
-    if (!isDemo && syncAdapter) syncAdapter.triggerSync();
+    let latestShot = updatedShot;
+    let refreshed = true;
+    try {
+      const [views, reviewedShot] = await Promise.all([
+        Promise.all([loadRecentShotsList(), loadShotHistoryList()]),
+        refreshReviewedCapture(shotId, { restored: true }),
+      ]);
+      refreshed = views.every((result) => result !== false);
+      if (reviewedShot) latestShot = reviewedShot;
+    } catch (error) {
+      refreshed = false;
+      bus.emit("log", `Target result saved locally; view refresh failed: ${error.message}`);
+    }
+    if (store.get().reviewShotId === shotId && el.reviewOutcomeStatus) {
+      const result = formatShotOutcome(latestShot, { includeContext: true });
+      const replaced = result !== formatShotOutcome(updatedShot, { includeContext: true })
+        || JSON.stringify(normalizeImpact(latestShot)) !== JSON.stringify(normalizeImpact(updatedShot));
+      el.reviewOutcomeStatus.textContent = !refreshed
+        ? "Result saved locally. Some views could not refresh; reopen Saved Shots to retry."
+        : replaced ? `A newer saved result is now shown: ${result}` : clear ? "Result cleared" : `Saved ${result}`;
+    }
+    if (!isDemo && syncAdapter) {
+      Promise.resolve().then(() => syncAdapter.triggerSync()).catch((error) =>
+        bus.emit("log", `Target result saved locally; cloud sync failed: ${error.message}`));
+    }
     bus.emit(
       "log",
       clear
         ? `Cleared target result for shot ${updatedShot.id.slice(0, 8)}.`
         : `Saved arrow ${formatShotOutcome(updatedShot, { includeContext: true })} for shot ${updatedShot.id.slice(0, 8)}.`,
     );
-    return updatedShot;
+    return latestShot;
   }
 
   async function loadShotHistoryList() {
@@ -307,6 +406,9 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       );
       const hadSessions = !!el.historyList.querySelector(".session-group");
       const availableIds = new Set(shots.map((shot) => shot.id));
+      for (const [id, operation] of sessionOperations) {
+        if (!operation.busy && ![...operation.shotIds].some((shotId) => availableIds.has(shotId))) sessionOperations.delete(id);
+      }
       for (const id of selectedShotIds) {
         if (!availableIds.has(id)) selectedShotIds.delete(id);
       }
@@ -314,7 +416,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
       if (shots.length === 0) {
         el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center;">No saved shots yet. Shots taken within ${Math.round(SESSION_GAP_MS / 60000)} minutes of each other are grouped into a session automatically.</p>`;
-        return;
+        return true;
       }
 
       const bowMap = new Map(bows.map(b => [b.id, b]));
@@ -329,7 +431,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       let sessionIndex = 0;
       for (const group of groups) {
         const contentId = `session-content-${++sessionIndex}`;
-        const override = overrideMap.get(group.anchorId) || null;
+        const override = sessionOverrideForGroup(group, overrideMap);
         const groupEl = document.createElement("div");
         const expanded = hadSessions
           ? expandedSessions.has(group.anchorId) || group.shots.some((shot) => expandedShotIds.has(shot.id))
@@ -342,16 +444,20 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         const dateStr = new Date(group.startTime).toLocaleString();
 
         const bow = override && override.bow_profile_id ? bowMap.get(override.bow_profile_id) : null;
-        const bowName = bowDisplayName(bow);
+        const bowName = override?.bow_profile_id && !bow ? "Unavailable bow profile" : bowDisplayName(bow);
 
         const shotCount = group.shots.length;
         const avgScore = roundedScore(averageShotScore(group.shots)) ?? "--";
 
+        const draft = drafts.find((candidate) => group.shots.some((shot) => candidate.shotIds.has(shot.id)));
+        const editorBowId = draft ? draft.bow : override?.bow_profile_id || "";
         const bowOptions = ['<option value="">Default Bow</option>']
           .concat(bows.map(b => {
-            const sel = override && override.bow_profile_id === b.id ? " selected" : "";
+            const sel = editorBowId === b.id ? " selected" : "";
             return `<option value="${escapeHtml(b.id)}"${sel}>${escapeHtml(bowDisplayName(b))}</option>`;
           }))
+          .concat(editorBowId && !bowMap.has(editorBowId)
+            ? [`<option value="${escapeHtml(editorBowId)}" selected>Unavailable bow profile</option>`] : [])
           .join("");
 
         groupEl.innerHTML = `
@@ -396,6 +502,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
               <button class="session-cancel-btn" type="button">Cancel</button>
             </div>
           </div>
+          <p class="session-edit-status note" role="status"></p>
           <div class="session-scorecard-slot">${buildSessionScorecard(group.shots, override?.arrows_per_end)}</div>
           ${buildSessionReview(group.shots)}
           ${buildSessionOutcomeReview(group.shots)}
@@ -409,7 +516,6 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         const contentEl = groupEl.querySelector(".session-content");
         const editorEl = groupEl.querySelector(".session-editor");
         const editButton = groupEl.querySelector(".session-edit-btn");
-        const draft = drafts.find((candidate) => group.shots.some((shot) => candidate.shotIds.has(shot.id)));
         if (draft) {
           editorEl.classList.remove("hidden");
           editButton.setAttribute("aria-expanded", "true");
@@ -424,6 +530,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         toggle.addEventListener("click", () => setExpanded(contentEl.hidden));
 
         editButton.addEventListener("click", () => {
+          if (sessionOperation(group)?.busy) return;
           const open = editorEl.classList.contains("hidden") || contentEl.hidden;
           setExpanded(true);
           editorEl.classList.toggle("hidden", !open);
@@ -432,6 +539,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         });
         groupEl.querySelector(".session-cancel-btn").addEventListener("click", (e) => {
           e.stopPropagation();
+          if (sessionOperation(group)?.busy) return;
           editorEl.classList.add("hidden");
           editButton.setAttribute("aria-expanded", "false");
           editButton.focus();
@@ -440,25 +548,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
           e.stopPropagation();
           const nameVal = groupEl.querySelector(".session-name-input").value.trim();
           const bowVal = groupEl.querySelector(".session-bow-input").value || null;
-          try {
-            const record = {
-              ...await get("session_overrides", group.anchorId),
-              id: group.anchorId,
-              name: nameVal || null,
-              bow_profile_id: bowVal,
-              updated_at: new Date().toISOString(),
-            };
-            await put("session_overrides", record);
-            editorEl.classList.add("hidden");
-            bus.emit("log", `Updated session "${nameVal || defaultSessionName(group.startTime)}".`);
-            await loadShotHistoryList();
-            [...el.historyList.querySelectorAll(".session-group")]
-              .find((item) => item.dataset.sessionId === group.anchorId)
-              ?.querySelector(".session-edit-btn")?.focus();
-          } catch (err) {
-            console.error("Error saving session override:", err);
-            bus.emit("log", `Error saving session: ${err.message}`);
-          }
+          await persistSessionSettings(group, { name: nameVal || null, bow_profile_id: bowVal }, { editing: true });
         });
         groupEl.addEventListener("click", (event) => {
           const button = event.target.closest("[data-review-shot-id]");
@@ -469,24 +559,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         });
         groupEl.addEventListener("change", async (event) => {
           if (!event.target.matches(".session-end-size")) return;
-          const select = event.target;
-          select.disabled = true;
-          try {
-            const current = await get("session_overrides", group.anchorId);
-            const arrowsPerEnd = Number(select.value) === 6 ? 6 : 3;
-            await put("session_overrides", {
-              ...current,
-              id: group.anchorId,
-              arrows_per_end: arrowsPerEnd,
-              updated_at: new Date().toISOString(),
-            });
-            groupEl.querySelector(".session-scorecard-slot").innerHTML = buildSessionScorecard(group.shots, arrowsPerEnd);
-            groupEl.querySelector(".session-end-size")?.focus();
-          } catch (error) {
-            select.disabled = false;
-            bus.emit("log", `Could not save scorecard grouping: ${error.message}`);
-            alert(`Could not save scorecard grouping: ${error.message}`);
-          }
+          await persistSessionSettings(group, { arrows_per_end: Number(event.target.value) === 6 ? 6 : 3 });
         });
 
         const containerEl = groupEl.querySelector(".session-shots-container");
@@ -510,7 +583,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
             reviewShotTrace(shot);
           });
           const deleteBtn = item.querySelector(".history-item-delete-btn");
-          if (deleteBtn) deleteBtn.disabled = deletionInProgress;
+          if (deleteBtn) deleteBtn.disabled = deletionInProgress || exportInProgress;
           item.querySelector(".history-review-btn").addEventListener("click", (event) => {
             event.stopPropagation();
             reviewShotTrace(shot);
@@ -521,16 +594,20 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
             deleteSavedShot(shot.id);
           });
           const exportBtn = item.querySelector(".history-item-export-btn");
+          if (exportBtn) exportBtn.disabled = exportInProgress || deletionInProgress;
           exportBtn?.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
-            exportSingleShot(shot.id);
+            return exportSingleShot(shot.id, exportBtn);
           });
           containerEl.appendChild(item);
           historyPreviewJobs.push({ item, shot });
         }
 
         el.historyList.appendChild(groupEl);
+        const endSize = groupEl.querySelector(".session-end-size");
+        if (endSize) endSize.dataset.savedValue = endSize.value;
+        sessionControls(groupEl, sessionOperation(group));
       }
 
       if (focusSelector && !focused.isConnected && document.activeElement === document.body) {
@@ -544,10 +621,23 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
       await paintHistoryShotPreviews(historyPreviewJobs);
       updateBulkSelectCount();
+      return true;
     } catch (error) {
       if (request !== historyRequest) return;
       console.error("Error loading shot history:", error);
-      el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center; color: var(--red);">Failed to load history: ${error.message}</p>`;
+      if (el.historyList.querySelector(".session-group")) {
+        let message = el.historyList.querySelector(".history-load-status");
+        if (!message) {
+          message = document.createElement("p");
+          message.className = "history-load-status note";
+          message.setAttribute("role", "status");
+          el.historyList.prepend(message);
+        }
+        message.textContent = `Could not refresh Saved Shots: ${error.message}. The displayed history and drafts are kept; open Saved Shots again to retry.`;
+      } else {
+        el.historyList.innerHTML = `<p class="note" style="padding: 24px; text-align: center; color: var(--red);">Failed to load history: ${escapeHtml(error.message)}</p>`;
+      }
+      return false;
     }
   }
 
@@ -599,12 +689,13 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         compareShotLabel: "",
         compareThresholdG: 12,
       });
-      return;
+      return true;
     }
 
     try {
-      const shot = await get("shots", shotId);
-      const trace = await get("shot_traces", shotId);
+      const snapshot = await readSavedReview(shotId);
+      const shot = snapshot.shots.find((candidate) => candidate.id === shotId);
+      const trace = snapshot.trace;
       if (request !== compareRequest || !store.get().reviewMode || store.get().reviewShotId !== primaryId) return;
       if (!shot || !trace || !trace.payload || trace.payload.length < 2) {
         store.set({
@@ -615,7 +706,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         });
         if (el.reviewCompareSelect) el.reviewCompareSelect.value = "";
         bus.emit("log", "Compare shot has no saved trace.");
-        return;
+        return true;
       }
 
       const label = shot.label ? shotHistoryLabel(shot) : formatShotCompareLabel(shot);
@@ -629,110 +720,29 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         compareTraceSource: trace.source || null,
       });
       bus.emit("log", `Comparing with shot ${shotId.slice(0, 8)}…`);
+      return true;
     } catch (error) {
       console.error("Failed to load compare shot:", error);
       bus.emit("log", `Compare load failed: ${error.message}`);
+      return false;
     }
   }
 
-  async function getActiveArrowSpeed() {
-    const activeBowId = localStorage.getItem("openfloat_active_bow_id");
-    if (activeBowId) {
-      try {
-        const profile = await get("bow_profiles", activeBowId);
-        if (profile && profile.arrow_speed != null) {
-          return Number(profile.arrow_speed);
-        }
-      } catch (error) {
-        console.error("Error getting active bow speed:", error);
+  function getReviewArrowSpeed(shot, session, snapshot) {
+    try {
+      const override = session ? sessionOverrideForGroup(session,
+        new Map(snapshot.overrides.map((record) => [record.id, record]))) : null;
+      const assignedBowId = override?.bow_profile_id || shot.bow_profile_id;
+      const bowId = assignedBowId || localStorage.getItem("openfloat_active_bow_id");
+      if (bowId) {
+        const profile = snapshot.bowProfiles.find((record) => record.id === bowId);
+        const fps = arrowSpeedFps(profile?.arrow_speed);
+        if (fps !== null) return { fps, source: assignedBowId ? "assigned" : "active" };
       }
+    } catch (error) {
+      console.error("Error getting review bow speed:", error);
     }
-    return 280; // Fallback default speed
-  }
-
-  function estimateShotRange(trace, sampleRateHz, bowSpeedFps, releaseIdx, recordedReleaseTime) {
-    if (!trace || !trace.payload || trace.payload.length === 0) return null;
-    const payload = trace.payload;
-    const hz = sampleRateHz || 52;
-
-    const getTimeMs = (idx) => {
-      const f = payload[idx];
-      if (f.tUs !== undefined) return f.tUs / 1000.0;
-      return (idx * 1000.0) / hz;
-    };
-
-    const releaseTime = Number.isFinite(recordedReleaseTime) ? recordedReleaseTime : getTimeMs(releaseIdx);
-
-    let searchStartIdx = -1;
-    for (let i = releaseIdx; i < payload.length; i++) {
-      if (getTimeMs(i) >= releaseTime + 200) {
-        searchStartIdx = i;
-        break;
-      }
-    }
-
-    if (searchStartIdx === -1) {
-      return null;
-    }
-
-    let firstAbove15Idx = -1;
-    for (let i = searchStartIdx; i < payload.length; i++) {
-      const dt = getTimeMs(i) - releaseTime;
-      if (dt > 2200) {
-        break;
-      }
-      if ((payload[i].micAmp || 0) > 15) {
-        firstAbove15Idx = i;
-        break;
-      }
-    }
-
-    if (firstAbove15Idx === -1) {
-      return null;
-    }
-
-    let bestPeakIdx = firstAbove15Idx;
-    let maxMic = payload[firstAbove15Idx].micAmp || 0;
-    for (let i = firstAbove15Idx + 1; i < payload.length; i++) {
-      const dt = getTimeMs(i) - releaseTime;
-      if (dt > 2200) break;
-      const mic = payload[i].micAmp || 0;
-      if (mic <= 15) break;
-      if (mic > maxMic) {
-        maxMic = mic;
-        bestPeakIdx = i;
-      }
-    }
-
-    let hitIdx = bestPeakIdx;
-    while (hitIdx > searchStartIdx && (payload[hitIdx].micAmp || 0) >= 10) {
-      hitIdx--;
-    }
-
-    const hitTime = getTimeMs(hitIdx);
-    const totalTimeSec = (hitTime - releaseTime) / 1000.0;
-    if (totalTimeSec <= 0) return null;
-
-    const V_sound = 1125.0;
-    const b = 0.075;
-    const A = b;
-    const B = -(V_sound + bowSpeedFps + totalTimeSec * b * V_sound);
-    const C = totalTimeSec * bowSpeedFps * V_sound;
-
-    const discriminant = B * B - 4 * A * C;
-    if (discriminant < 0) return null;
-
-    const distanceFt = (-B - Math.sqrt(discriminant)) / (2 * A);
-    if (distanceFt <= 0) return null;
-
-    return {
-      yards: distanceFt / 3.0,
-      feet: distanceFt,
-      releaseIdx,
-      releaseTime,
-      hitIdx,
-      hitTime
-    };
+    return { fps: ASSUMED_ARROW_SPEED_FPS, source: "assumed" };
   }
 
   function reviewTraceState(shot, trace, speed) {
@@ -740,18 +750,21 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     const thresholdG = shot.threshold_g != null ? Number(shot.threshold_g) : 12;
     const captureKind = canRecordArrowOutcome(shot) ? "arrow" : "hold";
     const phases = tracePhases(trace.payload, { thresholdG, captureKind, source: trace.source, sampleRateHz });
-    const range = phases.hasRelease ? estimateShotRange(trace, sampleRateHz, speed, phases.releaseIdx, phases.releaseTimeMs) : null;
+    const micSeries = resolveReviewMicSeries(trace, sampleRateHz);
+    const hitTimeMs = phases.hasRelease ? findImpactTimeMs(micSeries, phases.releaseTimeMs) : null;
+    const range = calculateRangeFromTimes(phases.releaseTimeMs, hitTimeMs, speed.fps);
     return {
       reviewTrace: trace.payload,
       reviewTraceSource: trace.source || null,
-      reviewMicSeries: resolveReviewMicSeries(trace, sampleRateHz),
+      reviewMicSeries: micSeries,
       reviewSampleRateHz: sampleRateHz,
       reviewThresholdG: thresholdG,
-      reviewRangeEst: range ? `| Est. Range: ${range.yards.toFixed(1)} yds (${Math.round(range.feet)} ft) @ ${speed} fps` : "",
+      reviewRangeSpeed: speed,
+      reviewRangeEst: formatRangeEstimate(range, speed),
       reviewReleaseIdx: phases.hasRelease ? phases.releaseIdx : null,
       reviewReleaseTimeMs: phases.releaseTimeMs,
-      reviewHitIdx: range ? range.hitIdx : null,
-      reviewHitTimeMs: range ? range.hitTime : null,
+      reviewHitIdx: hitTimeMs === null ? null : Math.max(0, timelineIndexAt(traceTimeline(trace.payload, sampleRateHz), hitTimeMs * 1000)),
+      reviewHitTimeMs: hitTimeMs,
     };
   }
 
@@ -792,7 +805,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       // shot's trace may still be in flight. Poll briefly before giving up.
       if (!trace || !trace.payload) {
         const ageMs = Date.now() - new Date(shot.timestamp).getTime();
-        if (ageMs < 4000) {
+        if (ageMs >= 0 && ageMs < 4000) {
           bus.emit("log", "Trace still being captured (follow-through); waiting…");
           const deadline = Date.now() + 4000;
           while ((!trace || !trace.payload) && Date.now() < deadline) {
@@ -803,6 +816,11 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         }
       }
 
+      const snapshot = await readSavedReview(shotId);
+      const shots = snapshot.shots;
+      shot = shots.find((candidate) => candidate.id === shotId);
+      if (!shot || request !== reviewRequest) return;
+      trace = snapshot.trace;
       if (!trace || !trace.payload) {
         trace = { payload: [], sample_rate_hz: 52 };
         bus.emit(
@@ -811,13 +829,12 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         );
       }
 
-      const [speed, shots] = await Promise.all([getActiveArrowSpeed(), getAll("shots")]);
-      shot = shots.find((candidate) => candidate.id === shotId);
-      if (!shot || request !== reviewRequest) return;
       const sessions = groupShotsByTime(shots);
       const session = sessions.find((group) => group.shots.some((arrow) => arrow.id === shot.id));
+      const speed = getReviewArrowSpeed(shot, session, snapshot);
       if (request !== reviewRequest) return;
       reviewArrows = buildScorecard(session?.shots || [shot]).arrows;
+      reviewedTraceRecord = trace;
 
       store.set({
         ...reviewMetrics(shot),
@@ -857,6 +874,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     compareRequest += 1;
     compareOptionsRequest += 1;
     reviewArrows = [];
+    reviewedTraceRecord = null;
+    outcomeDirty = false;
     store.set({
       reviewMode: false,
       reviewShotId: null,
@@ -866,6 +885,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       reviewThresholdG: 12,
       reviewInfo: "",
       reviewRangeEst: "",
+      reviewRangeSpeed: null,
       reviewReleaseIdx: null,
       reviewReleaseTimeMs: null,
       reviewHitIdx: null,
@@ -913,39 +933,45 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
   el.exitReviewBtn.addEventListener("click", () => exitReview());
 
-  async function exportSingleShot(shotId) {
-    try {
-      const shot = await get("shots", shotId);
-      if (!shot) {
-        alert("Shot not found in database.");
-        return;
-      }
-      const trace = await get("shot_traces", shotId);
-      
-      const payload = {
-        format: "openfloat-shot-export",
-        version: 1,
-        exportedAt: new Date().toISOString(),
-        shot,
-        trace
-      };
+  function setExportStatus(message, shotId) {
+    if (el.historyExportStatus) el.historyExportStatus.textContent = message;
+    if (el.reviewExportStatus && store.get().reviewMode && store.get().reviewShotId === shotId) {
+      reviewExportShotId = shotId;
+      el.reviewExportStatus.textContent = message;
+    }
+  }
 
-      const json = JSON.stringify(payload, null, 2);
-      const blob = new Blob([json], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const dateStr = new Date(shot.timestamp).toISOString().slice(0, 19).replace(/[:T]/g, "-");
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `openfloat-shot-${shotId.slice(0, 8)}-${dateStr}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      
-      bus.emit("log", `Exported single shot ${shotId.slice(0, 8)} successfully.`);
+  function restoreExportFocus(control, hadFocus, shotId) {
+    if (!hadFocus || document.activeElement !== document.body) return;
+    if (control === el.exportShotBtn && store.get().reviewShotId !== shotId) return;
+    const replacement = control?.matches(".history-item-export-btn")
+      ? [...el.historyList.querySelectorAll(".history-item")].find((row) => row.dataset.shotId === shotId)?.querySelector(".history-item-export-btn")
+      : control;
+    if (replacement?.isConnected && replacement.getClientRects().length) replacement.focus();
+  }
+
+  async function exportSingleShot(shotId, control = document.activeElement) {
+    if (exportInProgress || deletionInProgress) return;
+    const hadFocus = document.activeElement === control;
+    exportInProgress = true;
+    updateBulkSelectCount();
+    setExportStatus("Preparing shot export...", shotId);
+    try {
+      const payload = await exportShotData(shotId);
+      const shortId = shotId.slice(0, 8).replace(/[^a-zA-Z0-9_-]/g, "_");
+      const filename = `openfloat-shot-${shortId}-${exportFileStamp(payload.shot.timestamp)}.json`;
+      await download(payload, filename, 2);
+      const message = `Exported capture ${shortId}${payload.trace ? "" : " without a saved trace"}. Restore this file from Settings.`;
+      setExportStatus(message, shotId);
+      bus.emit("log", message);
+      return payload;
     } catch (error) {
-      console.error("Single shot export failed:", error);
-      alert(`Failed to export shot: ${error.message}`);
+      setExportStatus(`Export failed: ${error.message}`, shotId);
+      bus.emit("log", `Single shot export failed: ${error.message}`);
+    } finally {
+      exportInProgress = false;
+      updateBulkSelectCount();
+      restoreExportFocus(control, hadFocus, shotId);
     }
   }
 
@@ -953,7 +979,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     el.exportShotBtn.addEventListener("click", () => {
       const currentShotId = store.get().reviewShotId;
       if (currentShotId) {
-        exportSingleShot(currentShotId);
+        return exportSingleShot(currentShotId, el.exportShotBtn);
       } else {
         alert("No shot is currently being reviewed.");
       }
@@ -968,6 +994,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
 
   el.outcomeScoreButtons?.querySelectorAll("[data-outcome-score]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (outcomeSaving) return;
+      outcomeDirty = true;
       selectedOutcome = {
         score: Number(button.dataset.outcomeScore),
         isX: button.dataset.outcomeX === "true",
@@ -979,17 +1007,23 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     });
   });
 
+  for (const input of [el.outcomeDistanceInput, el.outcomeDistanceUnit, el.outcomeFaceInput]) {
+    input?.addEventListener("input", () => { if (!outcomeSaving) outcomeDirty = true; });
+    input?.addEventListener("change", () => { if (!outcomeSaving) outcomeDirty = true; });
+  }
+
   async function saveOutcome({ clear = false, advance = false } = {}) {
     if (outcomeSaving) return;
     const returnFocus = document.activeElement;
     const shotId = currentOutcomeShotId;
-    const arrowIndex = reviewArrows.findIndex((shot) => shot.id === shotId);
-    const nextId = arrowIndex >= 0 ? reviewArrows[arrowIndex + 1]?.id : null;
+    let saved = null, nextId = null;
     outcomeSaving = true;
     updateOutcomeButtons();
     try {
-      const saved = await persistArrowOutcome({ clear });
+      saved = await persistArrowOutcome({ clear });
       if (saved && advance && store.get().reviewShotId === shotId) {
+        const arrowIndex = reviewArrows.findIndex((shot) => shot.id === shotId);
+        nextId = arrowIndex >= 0 ? reviewArrows[arrowIndex + 1]?.id : null;
         const next = nextId ? await get("shots", nextId) : null;
         if (store.get().reviewShotId !== shotId) return;
         if (next) {
@@ -1002,11 +1036,12 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       }
     } catch (error) {
       console.error("Failed to save arrow outcome:", error);
-      bus.emit("log", `Target result save failed: ${error.message}`);
+      bus.emit("log", saved ? `Target result saved; could not advance review: ${error.message}` : `Target result save failed: ${error.message}`);
       if (store.get().reviewShotId === shotId && el.reviewOutcomeStatus) {
-        el.reviewOutcomeStatus.textContent = `Save failed: ${error.message}`;
+        el.reviewOutcomeStatus.textContent = saved ? "Result saved locally. Open the next shot from Saved Shots."
+          : `Save failed: ${error.message}`;
       }
-      alert(error.message);
+      if (!saved) alert(error.message);
     } finally {
       outcomeSaving = false;
       updateOutcomeButtons();
@@ -1025,6 +1060,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   el.saveNextOutcomeBtn?.addEventListener("click", () => saveOutcome({ advance: true }));
 
   el.clearImpactBtn?.addEventListener("click", () => {
+    if (outcomeSaving) return;
+    outcomeDirty = true;
     selectedImpact = null;
     impactTarget?.setImpact(null);
     updateImpactHint();
@@ -1036,10 +1073,15 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   el.clearOutcomeBtn?.addEventListener("click", () => saveOutcome({ clear: true }));
 
   store.subscribe((currentState) => {
+    if (el.reviewExportStatus && (!currentState.reviewMode || currentState.reviewShotId !== reviewExportShotId)) {
+      el.reviewExportStatus.textContent = "";
+    }
     if (currentState.reviewMode) return;
     currentOutcomeShotId = null;
     selectedOutcome = null;
     selectedImpact = null;
+    outcomeDirty = false;
+    reviewedTraceRecord = null;
     impactTarget?.setImpact(null);
     el.reviewOutcomePanel?.classList.add("hidden");
   });
@@ -1129,7 +1171,6 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   function setDeletionInProgress(value) {
     deletionInProgress = value;
     updateBulkSelectCount();
-    el.historyList?.querySelectorAll(".history-item-delete-btn").forEach((button) => { button.disabled = value; });
   }
 
   async function refreshAfterDeletion(ids) {
@@ -1171,7 +1212,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   }
 
   async function deleteSavedShot(shotId) {
-    if (!shotId || deletionInProgress) return;
+    if (!shotId || deletionInProgress || exportInProgress) return;
     const returnFocus = document.activeElement;
     setDeletionInProgress(true);
     try {
@@ -1316,7 +1357,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     try {
       const result = run();
       if (result && typeof result.then === "function") {
-        return result.then(finish, finish);
+        return result.then((value) => { finish(); return value; }, (error) => { finish(); throw error; });
       }
       finish();
       return result;
@@ -1335,7 +1376,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
       if (request !== recentRequest) return;
       if (!shots || shots.length === 0) {
         el.recentShotsList.innerHTML = `<p class="note" style="padding: 12px; text-align: center; width: 100%;">No shots captured in this session yet.</p>`;
-        return;
+        return true;
       }
 
       shots.sort(newestFirst);
@@ -1364,42 +1405,72 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
         [...el.recentShotsList.querySelectorAll(".recent-shot-card")]
           .find((card) => card.dataset.shotId === focusedId)?.focus({ preventScroll: true });
       }
+      return true;
     } catch (error) {
       if (request !== recentRequest) return;
       console.error("Error loading recent shots:", error);
       el.recentShotsList.innerHTML = `<p class="note" style="padding: 12px; text-align: center; width: 100%;">Failed to load recent shots.</p>`;
+      return false;
     }
   }
 
-  async function refreshReviewedCapture(localShotId) {
+  async function refreshReviewedCapture(localShotId, { restored = false } = {}) {
     if (!localShotId || !store.get().reviewMode || store.get().reviewShotId !== localShotId) return;
     const request = ++reviewUpdateRequest;
     const review = reviewRequest;
-    const [shot, trace, speed] = await Promise.all([get("shots", localShotId), get("shot_traces", localShotId), getActiveArrowSpeed()]);
+    const snapshot = await readSavedReview(localShotId);
+    const { shots } = snapshot;
+    const shot = shots.find((candidate) => candidate.id === localShotId);
+    const trace = snapshot.trace?.payload ? snapshot.trace : { payload: [], sample_rate_hz: 52 };
     if (request !== reviewUpdateRequest || review !== reviewRequest || store.get().reviewShotId !== localShotId) return;
     if (!shot) { exitReview({ restoreFocus: false }); return; }
+    const session = groupShotsByTime(shots).find((group) => group.shots.some((arrow) => arrow.id === localShotId));
+    const speed = getReviewArrowSpeed(shot, session, snapshot);
     // Refresh telemetry without resetting an unsaved target result or moving
     // focus away from its editor. A changed trace stops the old replay clock.
     const patch = reviewMetrics(shot);
-    if (trace?.payload) Object.assign(patch, {
+    const current = store.get();
+    const traceChanged = JSON.stringify(trace) !== JSON.stringify(reviewedTraceRecord)
+      || patch.reviewCaptureKind !== current.reviewCaptureKind || Number(shot.threshold_g ?? 12) !== current.reviewThresholdG;
+    if (traceChanged) Object.assign(patch, {
       ...reviewTraceState(shot, trace, speed),
       replayActive: false,
       replayPaused: false,
     });
+    else Object.assign(patch, {
+      reviewRangeSpeed: speed,
+      reviewRangeEst: formatRangeEstimate(calculateRangeFromTimes(current.reviewReleaseTimeMs, current.reviewHitTimeMs, speed.fps), speed),
+    });
+    reviewedTraceRecord = trace;
     store.set(patch);
+    if (restored) {
+      reviewArrows = buildScorecard(session?.shots || [shot]).arrows;
+      if (!outcomeDirty || !canRecordArrowOutcome(shot)) renderOutcomeEditor(shot);
+      else {
+        savedOutcomeExists = !!normalizeArrowOutcome(shot) || !!normalizeImpact(shot);
+        updateReviewProgress();
+        updateOutcomeButtons();
+        if (el.reviewOutcomeStatus) el.reviewOutcomeStatus.textContent = "Saved data refreshed. Your unsaved target edits are still here.";
+      }
+    }
+    return shot;
   }
 
-  async function refreshCaptureViews(payload) {
+  async function refreshCaptureViews(payload, { restored = false } = {}) {
     if (payload?.duplicate) return;
     try {
-      await Promise.all([
+      const [views] = await Promise.all([
         withPreservedScroll(() => Promise.all([loadRecentShotsList(), loadShotHistoryList()])),
-        refreshReviewedCapture(payload?.localShotId),
+        refreshReviewedCapture(restored ? store.get().reviewShotId : payload?.localShotId, { restored }),
       ]);
       const current = store.get();
       if (current.reviewMode && current.reviewShotId) await refreshReviewCompareOptions(current.reviewShotId);
+      let compared = true;
+      if (restored && store.get().reviewMode && store.get().compareShotId) compared = (await loadReviewCompareShot(store.get().compareShotId)) !== false;
+      return compared && views.every((result) => result !== false);
     } catch (error) {
       bus.emit("log", `Could not refresh saved captures: ${error.message}`);
+      return false;
     }
   }
 
@@ -1419,8 +1490,11 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     if (el.bulkSelectCount) {
       el.bulkSelectCount.textContent = `${selectedCount} selected`;
     }
-    if (el.bulkDeleteBtn) el.bulkDeleteBtn.disabled = selectedCount === 0 || deletionInProgress;
+    const busy = exportInProgress || deletionInProgress;
+    if (el.bulkDeleteBtn) el.bulkDeleteBtn.disabled = selectedCount === 0 || busy;
     if (el.bulkExportBtn) el.bulkExportBtn.disabled = selectedCount === 0 || exportInProgress || deletionInProgress;
+    if (el.exportShotBtn) el.exportShotBtn.disabled = busy;
+    el.historyList?.querySelectorAll(".history-item-export-btn,.history-item-delete-btn").forEach((button) => { button.disabled = busy; });
   }
 
   if (el.historySelectModeBtn) {
@@ -1479,40 +1553,32 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
   el.bulkExportBtn?.addEventListener("click", async () => {
     if (exportInProgress || deletionInProgress || !selectedShotIds.size) return;
     const ids = [...selectedShotIds];
+    const hadFocus = document.activeElement === el.bulkExportBtn;
     exportInProgress = true;
     updateBulkSelectCount();
     el.historyExportStatus.textContent = "Preparing selected shots...";
     try {
       const payload = await exportSelectedShots(ids);
-      const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `openfloat-selected-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await download(payload, `openfloat-selected-${exportFileStamp(new Date().toISOString())}.json`);
       const shotCount = payload.stores.shots.length;
       const traceCount = payload.stores.shot_traces.length;
       const message = `Exported ${shotCount} shot${shotCount === 1 ? "" : "s"} and ${traceCount} trace${traceCount === 1 ? "" : "s"}. Restore this file from Settings.`;
       el.historyExportStatus.textContent = message;
       bus.emit("log", message);
+      return payload;
     } catch (error) {
       el.historyExportStatus.textContent = `Export failed: ${error.message}`;
       bus.emit("log", `Selected shot export failed: ${error.message}`);
     } finally {
       exportInProgress = false;
       updateBulkSelectCount();
-      if (document.activeElement === document.body && el.bulkExportBtn.getClientRects().length) {
-        el.bulkExportBtn.focus();
-      }
+      restoreExportFocus(el.bulkExportBtn, hadFocus);
     }
   });
 
   if (el.bulkDeleteBtn) {
     el.bulkDeleteBtn.addEventListener("click", async () => {
-      if (deletionInProgress || !selectedShotIds.size) return;
+      if (deletionInProgress || exportInProgress || !selectedShotIds.size) return;
       const ids = [...selectedShotIds];
       const confirmed = confirm(
         `Delete ${ids.length} selected capture${ids.length === 1 ? "" : "s"} from this browser?\n\nCloud copies are unchanged. This cannot be undone.`,
@@ -1553,5 +1619,6 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab 
     exportSingleShot,
     deleteSavedShot,
     refreshAfterDeletion,
+    refreshSavedData: () => refreshCaptureViews(null, { restored: true }),
   };
 }
