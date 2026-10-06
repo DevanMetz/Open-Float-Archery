@@ -122,7 +122,8 @@ def main():
             path.write_text(text, encoding="ascii")
         executable = shim / "zms_capacity_test.exe"
         flags = [
-            "-std=c11", "-Wall", "-Wextra", "-Werror",
+            # The SDK Settings backend needs strnlen's POSIX declaration on Linux.
+            "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
             "-Wno-unused-parameter", "-Wno-sign-compare",
             f"-I{repo / 'firmware/src'}", f"-I{shim}", "-include", str(shim / "host.h"),
         ]

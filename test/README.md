@@ -318,6 +318,10 @@ source (no SDK files are modified), run:
 python tools/verify_trace_storage.py --zephyr C:/ncs/v3.3.0/zephyr --cc clang
 ```
 
+The host build keeps strict C11 and enables POSIX.1-2008 declarations so the
+SDK's `strnlen` call also compiles on Linux
+([Linux manual](https://man7.org/linux/man-pages/man3/strnlen.3.html)).
+
 This uses a single-threaded 64 KB byte-alterable flash model with 4 KB sectors
 and 16-byte writes. It reserves conservative settings-name/index space and
 retains four complete traces through 100 full saves, 100 maximum-size shot-log
