@@ -381,9 +381,11 @@ architecture, design intent, and forward-looking targets, see
   precached with the app. Dashboard, Bow Shop, and alignment previews no longer
   need a CDN connection. Open the app online before range use so its initial
   offline cache can finish installing; optional cloud sync still needs internet.
-- **In-app Guide**: Browse Quick Start, Feature Status, and the BLE command
-  reference locally. Guide links stay in the app, section links scroll to their
-  headings below the header, and images resolve beside their Markdown source.
+- **In-app Guide**: Browse Quick Start, Feature Status, the BLE command
+  reference, and the translation workflow locally. Guide links stay in the app,
+  section links scroll to their headings below the header, and images resolve
+  beside their Markdown source. The selected locale loads its translated
+  Markdown page when one is mapped.
   Guide pages and the Quick Start screenshot are precached for offline reading. Late page
   responses cannot replace the latest selection; failed loads can be retried
   by reopening Guide.
@@ -446,3 +448,32 @@ architecture, design intent, and forward-looking targets, see
   Uploads recover work interrupted by a reload and pick up records added during
   an upload. Chrome and Edge coordinate queue processing across tabs with Web
   Locks; a failed upload stays pending for the next sync trigger.
+
+## Languages, Shot Counter, and OBS
+
+- **English and Brazilian Portuguese**: Choose **English (United States)** or
+  **Português (Brasil)** in **Settings → Preferences**. The language is stored
+  in the current browser profile and restored on the next visit. The app locale
+  JSON files are `locales/en-US.json` and `locales/pt-BR.json`; locale changes
+  apply to static labels, accessible names, dynamic messages, confirmations,
+  overlays, and the localized Guide pages. See the [Translation Guide](translation-guide.md)
+  for the JSON format, exact phrases, patterns, Guide page mapping, offline
+  cache, and validation workflow.
+- **Shot-count correction**: **+**, **−**, and **Reset** adjust the displayed
+  dashboard count in the browser. The correction persists locally and clamps
+  the shown count at zero. It does not delete shot records or issue the
+  firmware's `shotreset` command; the device lifetime count remains separate.
+  Restoring factory preferences also preserves this displayed count.
+- **Factory preferences reset**: The Settings action restores the default
+  language, overlay, theme, bow selection, and cached sensor preferences.
+  Saved shots, bow profiles, the locally adjusted shot counter, and cloud-sync
+  credentials are retained. Sensor defaults are sent when the device next
+  connects.
+- **Four independent OBS Browser Sources**: Select one of four generated URLs
+  in **Settings → OBS Studio Overlay**: `?overlay=counter` (actual and planned
+  shot count), `?overlay=target` (latest Pin Float trace), `?overlay=metrics`
+  (latest shot), or `?overlay=review` (current session summary). The URLs have
+  separate routes so each OBS source can use only its selected view. The
+  overlay supports font selection, 14–40 px font size, text/background/accent
+  colors, and 0–999 planned session shots. Live data requires the dashboard and
+  OBS Browser Source to use the same origin and browser profile.

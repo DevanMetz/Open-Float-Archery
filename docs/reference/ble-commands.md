@@ -36,6 +36,11 @@ bring-up and debugging.
 - `shotdump` — Request upload of any stored-shot backlog plus a storage-status
   frame.
 
+The Dashboard's `+`, `−`, and **Reset** controls only adjust the count displayed
+by the browser; they do not send `shotset` or `shotreset` and do not delete
+saved shots. Use the BLE commands above only when intentionally changing the
+firmware's persisted lifetime count or queue.
+
 Shot values (`shotset`, `shotack`, and the three trace request commands) must be
 unsigned decimal digits. Empty values, signs, whitespace, suffixes, and values
 above `4294967295` are rejected without changing a count or starting a transfer.

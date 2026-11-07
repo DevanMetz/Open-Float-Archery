@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenFloat Shot Trainer</title>
+  <title data-i18n-title="appTitle">OpenFloat Shot Trainer</title>
   <link rel="stylesheet" href="styles.css?v=shot-store-178">
   <link rel="stylesheet" href="theme-graph-paper.css?v=proto-2" id="graphThemeLink">
   <meta name="theme-color" content="#061014" id="themeMetaColor">
@@ -43,35 +43,53 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png?v=shot-store-118">
 </head>
 <body>
+  <div id="obsOverlayRoot" class="obs-overlay-root hidden" aria-live="polite">
+    <div class="obs-overlay-count overlay-card">
+      <span data-i18n="overlayShots">Shots</span>
+      <strong><span id="obsShotCount">0</span><small> / <span id="obsPlannedCount">0</span></small></strong>
+    </div>
+    <section id="obsTargetCard" class="overlay-card obs-target-card">
+      <h2 data-i18n="overlayPinFloat">Pin Float</h2>
+      <canvas id="obsTargetCanvas" aria-label="Pin Float shot target"></canvas>
+    </section>
+    <section id="obsMetricsCard" class="overlay-card obs-metrics-card">
+      <h2 data-i18n="overlayLastShot">Last Shot</h2>
+      <div id="obsLastShotMetrics" class="obs-metrics-grid"></div>
+    </section>
+    <section id="obsReviewCard" class="overlay-card obs-review-card">
+      <h2 data-i18n="overlaySessionReview">Session Review</h2>
+      <div id="obsSessionReview" class="obs-review-grid"></div>
+    </section>
+  </div>
   <div class="app">
     <header>
       <div class="brand">
         <div class="mark">OF</div>
         <div>
-          <h1>OpenFloat Shot Trainer</h1>
-          <p class="subtitle">Real-time bow movement, release quality, and practice history</p>
+          <h1 data-i18n="appTitle">OpenFloat Shot Trainer</h1>
+          <p class="subtitle" data-i18n="appSubtitle">Real-time bow movement, release quality, and practice history</p>
         </div>
       </div>
 
       <!-- Tab Navigation Bar -->
       <nav class="tab-navigation" aria-label="Main App Navigation">
         <button id="navDashboardBtn" class="nav-tab active">
-          <span class="nav-icon">📈</span> Dashboard
+          <span class="nav-icon">📈</span> <span data-i18n="navDashboard">Dashboard</span>
         </button>
         <button id="navTrainingBtn" class="nav-tab">
-          <span class="nav-icon">🏹</span> Steady Aim
+          <span class="nav-icon">🏹</span> <span data-i18n="navTraining">Steady Aim</span>
         </button>
         <button id="navHistoryBtn" class="nav-tab">
-          <span class="nav-icon">🎯</span> Saved Shots
+          <span class="nav-icon">🎯</span> <span data-i18n="navHistory">Saved Shots</span>
         </button>
         <button id="navBowShopBtn" class="nav-tab">
-          <span class="nav-icon">B</span> Bow Shop
+          <span class="nav-icon">B</span> <span data-i18n="navBowShop">Bow Shop</span>
         </button>
         <button id="navSettingsBtn" class="nav-tab">
-          <span class="nav-icon">⚙️</span> Settings
+          <span class="nav-icon">⚙️</span> <span data-i18n="navSettings">Settings</span>
         </button>
         <button id="navGuideBtn" class="nav-tab">
-          <span class="nav-icon">📖</span> Guide
+          <span class="nav-icon">📖</span> <span data-i18n="navGuide">Guide</span>
         </button>
       </nav>
 
@@ -122,8 +140,8 @@
           <div class="visualizer-row">
             <section class="orientation-visualizer panel" aria-label="Live bow orientation visualizer">
               <div class="orientation-copy">
-                <span class="eyebrow">Calibration View</span>
-                <h2>Bow Orientation</h2>
+                <span class="eyebrow" data-i18n="calibrationView">Calibration View</span>
+                <h2 data-i18n="bowOrientation">Bow Orientation</h2>
               </div>
               <div class="orientation-readouts">
                 <span>Cal Roll <strong id="orientationRollValue">0.0</strong> deg</span>
@@ -152,7 +170,7 @@
               </div>
               <small id="levelAlertText">Level</small>
               <div class="level-controls">
-                <button id="toggleLevelTuneBtn" class="mini-btn secondary-btn" style="margin-bottom: 8px; width: 100%;">Tune Bubble Settings</button>
+                <button id="toggleLevelTuneBtn" class="mini-btn secondary-btn" style="margin-bottom: 8px; width: 100%;" data-i18n="tuneBubble">Tune Bubble Settings</button>
                 
                 <div id="levelTuneSection" class="level-tune-section hidden" style="margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 200px;">
                   <div class="tune-field">
@@ -186,15 +204,18 @@
           <div class="panel chart-panel">
             <div class="panel-head">
               <div class="chart-header-title">
-                <h2 id="chartTitle">Shot Sequence Trace</h2>
+                <h2 id="chartTitle" data-i18n="shotSequenceTrace">Shot Sequence Trace</h2>
                 <div class="chart-metrics-inline">
                   <span class="inline-metric-item" title="Live telemetry stream rate">
                     <span class="metric-dot live"></span>
                     <span id="hzValue">0</span> Hz
                   </span>
                   <span class="metric-divider">/</span>
-                  <span class="inline-metric-item" title="Shots detected during active session">
-                    <strong>Shots:</strong> <span id="shotCountValue">0</span>
+                  <span class="inline-metric-item shot-counter" title="Shots detected during active session">
+                    <strong><span data-i18n="shots">Shots</span>:</strong> <span id="shotCountValue">0</span>
+                    <button id="shotCountMinusBtn" class="counter-btn" type="button" data-i18n-aria-label="subtractShot" data-i18n-title="subtractShot" aria-label="Subtract one shot" title="Subtract one shot">−</button>
+                    <button id="shotCountPlusBtn" class="counter-btn" type="button" data-i18n-aria-label="addShot" data-i18n-title="addShot" aria-label="Add one shot" title="Add one shot">+</button>
+                    <button id="shotCountResetBtn" class="counter-reset-btn" type="button" data-i18n="resetCounter" data-i18n-aria-label="resetCounterAria" data-i18n-title="resetCounterAria" aria-label="Reset shot counter" title="Reset shot counter">Reset</button>
                   </span>
                   <span class="metric-divider">/</span>
                   <span id="micVolumeItem" class="inline-metric-item mic-volume-item hidden" title="Acoustic Envelope">
@@ -220,8 +241,8 @@
                 </button>
                 <button id="discardRecordBtn" class="toggle-btn discard-btn hidden" title="Discard recording">Discard</button>
                 <span class="chart-toggle-divider"></span>
-                <button id="viewTraceBtn" class="toggle-btn">Motion</button>
-                <button id="viewTargetBtn" class="toggle-btn active">Pin Float</button>
+                <button id="viewTraceBtn" class="toggle-btn" data-i18n="motion">Motion</button>
+                <button id="viewTargetBtn" class="toggle-btn active" data-i18n="overlayPinFloat">Pin Float</button>
                 <span class="chart-toggle-divider" id="liveDurationDivider"></span>
                 <div class="live-duration-container" id="liveDurationContainer" title="Length of live data shown on plots">
                   <label for="liveDurationSlider">Live: <strong id="liveDurationValue">10</strong>s</label>
@@ -327,7 +348,7 @@
           <!-- Recent Shots Panel -->
           <div class="panel recent-shots-panel" id="recentShotsPanel">
             <div class="panel-head">
-              <h2>Recent Shots</h2>
+              <h2 data-i18n="recentShots">Recent Shots</h2>
               <span class="note" style="font-size: 11px;">Last 5 Shots</span>
             </div>
             <div class="recent-shots-grid" id="recentShotsList">
@@ -343,8 +364,8 @@
           <!-- Training Setup & Controls -->
           <div class="panel training-control-card">
             <div class="panel-head">
-              <h2>Adaptive Trainer</h2>
-              <p class="note">Turn your recent telemetry into a focused dry-practice recommendation.</p>
+              <h2 data-i18n="adaptiveTrainer">Adaptive Trainer</h2>
+              <p class="note" data-i18n="adaptiveTrainerDescription">Turn your recent telemetry into a focused dry-practice recommendation.</p>
             </div>
 
             <div class="adaptive-coach-card" aria-live="polite">
@@ -507,6 +528,77 @@
       <!-- 4. Sensor Settings View (Hidden by default) -->
       <div id="tabSettings" class="tab-view hidden-view">
         <section class="settings-workspace">
+          <div class="panel settings-card settings-card-wide">
+            <h3 data-i18n="preferences">Preferences</h3>
+            <div class="settings-field-grid">
+              <div class="field">
+                <label for="languageSelect" data-i18n="language">Language</label>
+                <select id="languageSelect" aria-label="Language">
+                  <option value="en-US">English (United States)</option>
+                  <option value="pt-BR">Português (Brasil)</option>
+                </select>
+              </div>
+            </div>
+            <div class="factory-settings-row">
+              <div>
+                <strong data-i18n="factorySettings">Factory settings</strong>
+                <p class="note" data-i18n="factorySettingsDescription">Restore the app's default preferences and cached sensor settings. Saved shots, bow profiles and cloud-sync credentials are kept; defaults are sent to the sensor the next time it connects.</p>
+              </div>
+              <button id="factoryResetBtn" type="button" class="danger" data-i18n="resetSettings">Reset settings</button>
+            </div>
+            <p id="factoryResetStatus" class="note" role="status" aria-live="polite"></p>
+          </div>
+          <div class="panel settings-card settings-card-wide obs-settings-card">
+            <h3 data-i18n="obsOverlaySettings">OBS Studio Overlay</h3>
+            <p class="note" data-i18n="obsOverlayInstructions">Use the URL below as a Browser Source in OBS Studio. Keep this app open in the same browser profile to stream live session data.</p>
+            <div class="field">
+              <label for="obsOverlayType" data-i18n="overlayType">Overlay to use</label>
+              <select id="obsOverlayType">
+                <option value="counter" data-i18n="overlayCounter">Shot counter</option>
+                <option value="target" data-i18n="overlayTarget">Pin Float target</option>
+                <option value="metrics" data-i18n="overlayMetrics">Last shot metrics</option>
+                <option value="review" data-i18n="overlayReview">Session review</option>
+              </select>
+            </div>
+            <label class="obs-url-label" for="obsOverlayUrl" data-i18n="obsBrowserUrl">Browser Source URL</label>
+            <div class="obs-url-row">
+              <input id="obsOverlayUrl" type="url" readonly>
+              <button id="copyObsOverlayUrlBtn" type="button" class="accent" data-i18n="copyUrl">Copy URL</button>
+              <a id="openObsOverlayLink" class="mini-btn secondary-btn" target="_blank" rel="noopener noreferrer" data-i18n="previewOverlay">Preview overlay</a>
+            </div>
+            <div class="settings-field-grid">
+              <div class="field">
+                <label for="obsFontSelect" data-i18n="overlayFont">Font</label>
+                <select id="obsFontSelect">
+                  <option value="Inter, Arial, sans-serif">Inter / Arial</option>
+                  <option value="Arial, sans-serif">Arial</option>
+                  <option value="Georgia, serif">Georgia</option>
+                  <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="obsFontSize" data-i18n="overlayFontSize">Font size</label>
+                <input id="obsFontSize" type="range" min="14" max="40" step="1" value="22">
+              </div>
+              <div class="field">
+                <label for="obsTextColor" data-i18n="overlayTextColor">Text color</label>
+                <input id="obsTextColor" type="color" value="#e6f4ef">
+              </div>
+              <div class="field">
+                <label for="obsBackgroundColor" data-i18n="overlayBackgroundColor">Background color</label>
+                <input id="obsBackgroundColor" type="color" value="#071014">
+              </div>
+              <div class="field">
+                <label for="obsAccentColor" data-i18n="overlayAccentColor">Accent color</label>
+                <input id="obsAccentColor" type="color" value="#35c7e8">
+              </div>
+              <div class="field">
+                <label for="obsPlannedShotCount" data-i18n="plannedSessionShots">Planned shots per session</label>
+                <input id="obsPlannedShotCount" type="number" min="0" max="999" step="1" value="0">
+              </div>
+            </div>
+            <p id="obsOverlayStatus" class="note" role="status"></p>
+          </div>
           <!-- Card C: Sensor Power Settings (full width, top) -->
           <div class="panel settings-card settings-card-wide">
             <h3>Power Management</h3>
@@ -918,6 +1010,13 @@
     })();
   </script>
 
-  <script type="module" src="app/main.js?v=shot-store-200"></script>
+  <script type="module">
+    if (new URLSearchParams(location.search).has("overlay")) {
+      document.body.classList.add("obs-overlay-mode");
+      import("./app/ui/obs-overlay.js?v=1");
+    } else {
+      import("./app/main.js?v=shot-store-202");
+    }
+  </script>
 </body>
 </html>

@@ -4,6 +4,7 @@
 import { calculateRangeFromTimes, formatRangeEstimate } from "../telemetry/range.js?v=shot-store-163";
 import { drawTraceChart, reviewChartTimeRangeUs } from "./trace-chart.js?v=shot-store-155";
 import { replayPosition, traceTimeline, timelineIndexAt } from "./replay.js?v=shot-store-155";
+import { displayShotCount } from "./shot-counter.js?v=1";
 import {
   calibratedAngle,
   initOrientationVisualizer,
@@ -262,7 +263,7 @@ export function mountDashboard({ store, telemetry, el }) {
     el.hzValue.textContent = s.reviewMode ? "--" : String(s.hz || 0);
     el.lossValue.textContent = s.reviewMode ? "--" : String(s.lost || 0);
     el.frameCountValue.textContent = s.reviewMode ? "--" : String(s.frameCount || 0);
-    el.shotCountValue.textContent = String(s.shotCount || 0);
+    el.shotCountValue.textContent = String(displayShotCount(s.shotCount, s.shotCountAdjustment));
 
     let hasMic = s.connected && !s.reviewMode && s.sample && s.sample.micAmp !== undefined;
     let micPct = hasMic ? Math.round((s.sample.micAmp / 255) * 100) : 0;

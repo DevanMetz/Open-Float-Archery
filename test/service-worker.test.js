@@ -102,7 +102,12 @@ test("a new build precaches fresh assets and Guide pages instead of a stale HTTP
     return new Response(request.cache === "reload" ? "Current deployment" : "Stale HTTP copy");
   });
   await worker.install();
-  for (const path of ["/app/main.js", "/styles.css", "/docs/quick-start.md"]) {
+  for (const path of [
+    "/app/main.js",
+    "/styles.css",
+    "/docs/quick-start.md",
+    "/docs/pt-BR/translation-guide.md",
+  ]) {
     const response = await worker.cacheFor(cacheName).match(`${origin}${path}`);
     assert.ok(response, `${path} was not precached`);
     assert.equal(await response.text(), "Current deployment", `${path} reused stale content`);

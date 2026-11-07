@@ -388,6 +388,9 @@ input[type="range"] {
 .orientation-cal-offsets {
   right: 18px;
   bottom: 14px;
+  max-width: 138px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -410,18 +413,25 @@ input[type="range"] {
 .orientation-copy {
   left: 18px;
   top: 16px;
+  max-width: 46%;
 }
 
 .orientation-copy h2 {
   margin-top: 6px;
   color: var(--text);
+  max-width: 100%;
+  font-size: clamp(16px, 1.8vw, 22px);
+  line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 
 .orientation-readouts {
-  right: 18px;
-  top: 18px;
+  left: 18px;
+  right: 150px;
+  bottom: 14px;
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   color: var(--muted);
   font-family: "JetBrains Mono", Consolas, ui-monospace, monospace;
   font-size: 12px;
@@ -2987,6 +2997,179 @@ canvas,
   min-height: 40px;
 }
 
+.shot-counter {
+  gap: 5px;
+}
+
+.counter-btn,
+.counter-reset-btn {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel-soft);
+  color: var(--text);
+  font-weight: 800;
+  line-height: 1;
+}
+
+.counter-reset-btn {
+  padding-inline: 7px;
+  font-size: 10px;
+}
+
+.counter-btn:hover,
+.counter-reset-btn:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+
+.obs-url-label {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.obs-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+}
+
+.obs-url-row input {
+  min-width: 0;
+  width: 100%;
+}
+
+.obs-overlay-options {
+  display: grid;
+  gap: 8px;
+}
+
+.obs-overlay-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.obs-overlay-root {
+  --overlay-font: Inter, Arial, sans-serif;
+  --overlay-font-size: 22px;
+  --overlay-text: #e6f4ef;
+  --overlay-background: #071014;
+  --overlay-accent: #35c7e8;
+  min-height: 100vh;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: minmax(280px, 480px);
+  align-content: start;
+  gap: 12px;
+  color: var(--overlay-text);
+  font-family: var(--overlay-font);
+  font-size: var(--overlay-font-size);
+}
+
+.obs-overlay-mode {
+  min-height: 100vh;
+  background: transparent;
+  color: var(--overlay-text);
+}
+
+.obs-overlay-mode .obs-overlay-root {
+  background: transparent;
+}
+
+.obs-overlay-mode #themeProtoToggle {
+  display: none !important;
+}
+
+.overlay-card {
+  min-width: 0;
+  padding: 14px;
+  border: 2px solid var(--overlay-accent);
+  border-radius: 12px;
+  background: var(--overlay-background);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+}
+
+.overlay-card h2 {
+  margin: 0 0 10px;
+  color: var(--overlay-accent);
+  font-size: 0.8em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.obs-overlay-count {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 800;
+}
+
+.obs-overlay-count strong {
+  color: var(--overlay-accent);
+  font-size: 1.8em;
+  font-variant-numeric: tabular-nums;
+}
+
+.obs-overlay-count small {
+  color: var(--overlay-text);
+  font-size: 0.55em;
+}
+
+.obs-target-card canvas {
+  display: block;
+  width: min(100%, 340px);
+  aspect-ratio: 1;
+  margin: 0 auto;
+}
+
+.obs-metrics-grid,
+.obs-review-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.obs-metric {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--overlay-accent) 12%, transparent);
+}
+
+.obs-metric span {
+  color: var(--overlay-text);
+  font-size: 0.55em;
+  opacity: 0.8;
+}
+
+.obs-metric strong {
+  color: var(--overlay-accent);
+  font-size: 1em;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 560px) {
+  .obs-overlay-root {
+    grid-template-columns: 1fr;
+    padding: 8px;
+  }
+
+  .obs-overlay-count {
+    grid-column: auto;
+  }
+
+  .obs-url-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Full-width settings cards with a responsive field grid
    (Telemetry & Buffer, Power Management). */
 .settings-card-wide {
@@ -3001,6 +3184,32 @@ canvas,
 
 .settings-field-grid .field {
   margin-top: 0;
+}
+
+.factory-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.factory-settings-row .note {
+  margin: 6px 0 0;
+  max-width: 760px;
+}
+
+#factoryResetStatus:empty {
+  display: none;
+}
+
+@media (max-width: 560px) {
+  .factory-settings-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 /* Combined sensor-mount + 3D-model alignment card */

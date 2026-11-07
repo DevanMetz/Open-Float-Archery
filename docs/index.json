@@ -24,6 +24,12 @@
       "name": "Quick Start",
       "id": "quick-start",
       "path": "docs/quick-start.md"
+    },
+    {
+      "type": "file",
+      "name": "Translating OpenFloat",
+      "id": "translation-guide",
+      "path": "docs/translation-guide.md"
     }
   ]
 }

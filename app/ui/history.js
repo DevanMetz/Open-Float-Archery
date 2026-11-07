@@ -26,6 +26,7 @@ import {
 } from "./session-review.js?v=shot-store-150";
 import { mountImpactTarget } from "./impact-target.js?v=shot-store-138";
 import { tracePhases } from "./trace-phases.js?v=shot-store-155";
+import { translateMessage } from "./localization.js?v=3";
 
 export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab, download = downloadJson }) {
   // Escape user-entered text before injecting into innerHTML.
@@ -865,7 +866,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab,
       await refreshReviewCompareOptions(shot.id);
     } catch (error) {
       console.error("Failed to load trace:", error);
-      alert("Error fetching trace payload: " + error.message);
+      alert(translateMessage(`Error fetching trace payload: ${error.message}`));
     }
   }
 
@@ -981,7 +982,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab,
       if (currentShotId) {
         return exportSingleShot(currentShotId, el.exportShotBtn);
       } else {
-        alert("No shot is currently being reviewed.");
+        alert(translateMessage("No shot is currently being reviewed."));
       }
     });
   }
@@ -1041,7 +1042,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab,
         el.reviewOutcomeStatus.textContent = saved ? "Result saved locally. Open the next shot from Saved Shots."
           : `Save failed: ${error.message}`;
       }
-      if (!saved) alert(error.message);
+      if (!saved) alert(translateMessage(error.message));
     } finally {
       outcomeSaving = false;
       updateOutcomeButtons();
@@ -1221,7 +1222,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab,
       const title = shotHistoryLabel(shot);
       const timeStr = new Date(shot.timestamp).toLocaleString();
       const confirmed = confirm(
-        `Delete this saved capture from this browser?\n\n${title}\n${timeStr}\n\nCloud copies are unchanged. This cannot be undone.`,
+        `${translateMessage("Delete this saved capture from this browser?")}\n\n` +
+          `${title}\n${timeStr}\n\n${translateMessage("Cloud copies are unchanged. This cannot be undone.")}`,
       );
       if (!confirmed) return;
       const rows = [...el.historyList.querySelectorAll(".history-item")];
@@ -1234,7 +1236,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab,
     } catch (error) {
       console.error("Failed to delete capture:", error);
       bus.emit("log", `Delete failed: ${error.message}`);
-      alert(`Could not delete capture: ${error.message}`);
+      alert(translateMessage(`Could not delete capture: ${error.message}`));
     } finally {
       setDeletionInProgress(false);
       if (document.activeElement === document.body && returnFocus?.isConnected && returnFocus.getClientRects().length) {
@@ -1581,7 +1583,8 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab,
       if (deletionInProgress || exportInProgress || !selectedShotIds.size) return;
       const ids = [...selectedShotIds];
       const confirmed = confirm(
-        `Delete ${ids.length} selected capture${ids.length === 1 ? "" : "s"} from this browser?\n\nCloud copies are unchanged. This cannot be undone.`,
+        `${translateMessage(`Delete ${ids.length} selected capture${ids.length === 1 ? "" : "s"} from this browser?`)}\n\n` +
+          translateMessage("Cloud copies are unchanged. This cannot be undone."),
       );
       if (!confirmed) return;
       setDeletionInProgress(true);
@@ -1593,7 +1596,7 @@ export function initHistory({ bus, store, state, el, syncAdapter, selectViewTab,
         el.historySelectModeBtn?.focus();
       } catch (error) {
         console.error("Bulk deletion failed:", error);
-        alert(`Could not delete captures: ${error.message}`);
+        alert(translateMessage(`Could not delete captures: ${error.message}`));
       } finally {
         setDeletionInProgress(false);
       }

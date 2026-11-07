@@ -1,13 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { renderMarkdown, mountGuide } from "../app/ui/guide.js";
+import { guidePagePath, renderMarkdown, mountGuide } from "../app/ui/guide.js";
 
 const pageUrl = "https://example.com/openfloat/docs/feature-status.md";
 const pages = new Map([
   [pageUrl, "feature-status"],
   ["https://example.com/openfloat/docs/quick-start.md", "quick-start"],
   ["https://example.com/openfloat/docs/reference/ble-commands.md", "reference/ble-commands"],
+  ["https://example.com/openfloat/docs/translation-guide.md", "translation-guide"],
 ]);
 const render = (md) => renderMarkdown(md, { pageUrl, pages });
 
@@ -41,6 +42,35 @@ test("inline code is literal and formatting inside link labels stays readable", 
   const html = render('`[example](quick-start.md)` [**Quick Start**](quick-start.md)');
   assert.match(html, /<code>\[example\]\(quick-start.md\)<\/code>/);
   assert.match(html, /<a href="#\/guide\/quick-start"><strong>Quick Start<\/strong><\/a>/);
+});
+
+test("the guide uses locale-specific Markdown paths when configured", () => {
+  const page = { id: "quick-start", path: "docs/quick-start.md" };
+  assert.equal(guidePagePath(page, {}), page.path);
+  assert.equal(guidePagePath(page, {
+    _guidePages: { "quick-start": "docs/pt-BR/quick-start.md" },
+  }), "docs/pt-BR/quick-start.md");
+});
+
+test("changing language reloads the open guide page from its localized Markdown", async (t) => {
+  const f = guideFixture(t);
+  const opening = f.guide.show();
+  await flush();
+  f.waiting.get("quick-start").resolve("# Quick Start");
+  await opening;
+
+  f.window.events["openfloat-locale-changed"]({
+    detail: {
+      locale: "pt-BR",
+      messages: { _guidePages: { "quick-start": "docs/pt-BR/quick-start.md" } },
+    },
+  });
+  await flush();
+  assert.ok(f.calls.some((path) => path.endsWith("/docs/pt-BR/quick-start.md")));
+  f.waiting.get("quick-start").resolve("# Início rápido");
+  await flush();
+  await flush();
+  assert.match(f.content.innerHTML, /Início rápido/);
 });
 
 test("guide content cannot introduce executable URL schemes or HTML attributes", () => {
@@ -90,7 +120,12 @@ function guideFixture(t, indexFailures = 0) {
     };
   }
   const location = { hash: "" };
-  for (const [key, value] of Object.entries({ window: { location }, document: { createElement: element } })) {
+  const window = {
+    location,
+    events: {},
+    addEventListener(type, callback) { this.events[type] = callback; },
+  };
+  for (const [key, value] of Object.entries({ window, document: { createElement: element } })) {
     const original = Object.getOwnPropertyDescriptor(globalThis, key);
     Object.defineProperty(globalThis, key, { configurable: true, value });
     t.after(() => {
@@ -114,7 +149,7 @@ function guideFixture(t, indexFailures = 0) {
   });
   const sidebar = element(), content = element();
   const guide = mountGuide({ sidebar, content });
-  return { guide, sidebar, content, location, waiting, calls, scrolled };
+  return { guide, sidebar, content, location, waiting, calls, scrolled, window };
 }
 
 for (const failOld of [false, true]) {

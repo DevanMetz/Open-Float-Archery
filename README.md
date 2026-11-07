@@ -15,6 +15,7 @@ app store, no account, and no cloud required.
 🏗 **[Architecture Blueprint](Blueprint.md)** ·
 🎛 **[BLE Commands](docs/reference/ble-commands.md)** ·
 🤝 **[Contributing](CONTRIBUTING.md)**
+🌐 **[Translation Guide](docs/translation-guide.md)**
 
 <p align="center">
   <img src="docs/images/hero-shot-trace.webp" width="420"
@@ -91,6 +92,18 @@ Shop 3D customizer,
 full local backup/restore, and an optional self-hosted Supabase sync that never
 gates local use.
 
+The interface supports English (United States) and Brazilian Portuguese; change
+the language in **Settings → Preferences**. The selection persists in the
+browser. The Dashboard counter has local **+**, **−**, and **Reset** display
+corrections; it does not delete shots or reset the hardware counter. Factory
+settings reset preferences while preserving saved shots, bow profiles, the
+counter, and cloud-sync credentials. Settings also generates four separate OBS
+Studio Browser Source URLs: shot counter, Pin Float target, last-shot metrics,
+and session review. Font, size, colors, and planned shots can be customized.
+Live session updates require the dashboard and Browser Source to share the same
+origin's local browser storage. Contributors can use the
+[Translation Guide](docs/translation-guide.md) to add a locale or Guide page.
+
 <!-- Current capture uses the built-in demo stream; reshoot connected to real
      hardware to show the ~1110 Hz live rate in the header. -->
 ![Live dashboard: bubble level, 3D bow visualizer, and the live telemetry trace](docs/images/dashboard-live.png)
@@ -114,8 +127,9 @@ gates local use.
   follow-through trace verifier.
 - `Blender/` and `FreeCAD/` contain visual/mechanical assets used by the app and
   enclosure work.
-- `docs/` is the documentation site source (Quick Start, Feature Status, and
-  BLE command reference) plus the README images in `docs/images/`.
+- `docs/` is the documentation site source (Quick Start, Feature Status,
+  translation workflow, and BLE command reference) plus the README images in
+  `docs/images/`; translated user guides live under `docs/pt-BR/`.
 - `Blueprint.md` is the detailed architecture and implementation status.
 
 ## BLE Telemetry Test Client

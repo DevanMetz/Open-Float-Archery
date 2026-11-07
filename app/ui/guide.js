@@ -4,9 +4,15 @@
 // deep-linkable via the URL hash (`#/guide/<pageId>`) so individual guides can
 // be shared. Regenerate the index with `python tools/build_docs_index.py`.
 
+import { getActiveMessages } from "./localization.js?v=2";
+
 const HASH_PREFIX = "#/guide/";
 const APP_URL = new URL("../../", import.meta.url);
 const INDEX_URL = new URL("docs/index.json", APP_URL);
+
+export function guidePagePath(page, messages = getActiveMessages()) {
+  return messages._guidePages?.[page.id] || page.path;
+}
 
 function escapeHtml(text) {
   return text
@@ -215,6 +221,7 @@ export function mountGuide({ sidebar, content, header }) {
   const pageByUrl = new Map();
   const linkById = new Map();
   const firstRef = { id: null };
+  let localeMessages = getActiveMessages();
   let defaultId = null;
   let activeId = null;
   let activeAnchor = "";
@@ -249,27 +256,28 @@ export function mountGuide({ sidebar, content, header }) {
     if (!page) return;
     activeAnchor = anchor;
     if (page.id === activeId) {
-      if (fetchCache.has(page.id) && anchor) scrollPage(anchor);
+      if (fetchCache.has(guidePagePath(page, localeMessages)) && anchor) scrollPage(anchor);
       return;
     }
     const request = ++pageRequest;
     activeId = page.id;
     highlight(page.id);
 
-    if (fetchCache.has(page.id)) {
-      content.innerHTML = fetchCache.get(page.id);
+    const pagePath = guidePagePath(page, localeMessages);
+    if (fetchCache.has(pagePath)) {
+      content.innerHTML = fetchCache.get(pagePath);
       scrollPage(activeAnchor);
       return;
     }
 
     content.innerHTML = '<p class="guide-loading">Loading…</p>';
     try {
-      const pageUrl = new URL(page.path, APP_URL);
+      const pageUrl = new URL(pagePath, APP_URL);
       const res = await fetch(pageUrl);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const md = await res.text();
       const rendered = renderMarkdown(md, { pageUrl, pages: pageByUrl });
-      fetchCache.set(page.id, rendered);
+      fetchCache.set(pagePath, rendered);
       if (request !== pageRequest) return;
       content.innerHTML = rendered;
       scrollPage(activeAnchor);
@@ -352,8 +360,9 @@ export function mountGuide({ sidebar, content, header }) {
         pageByUrl.clear();
         firstRef.id = null;
         indexFiles(tree, pages, firstRef);
-        pages.forEach((page) => {
-          pageByUrl.set(new URL(page.path, APP_URL).href, page.id);
+        pages.forEach((page) => pageByUrl.set(new URL(page.path, APP_URL).href, page.id));
+        Object.entries(localeMessages._guidePages || {}).forEach(([id, path]) => {
+          if (pages.has(id)) pageByUrl.set(new URL(path, APP_URL).href, id);
         });
         defaultId = chooseDefault(pages, firstRef);
         sidebar.innerHTML = "";
@@ -368,6 +377,20 @@ export function mountGuide({ sidebar, content, header }) {
     return loadingIndex;
   }
   loadIndex();
+
+  window.addEventListener("openfloat-locale-changed", (event) => {
+    localeMessages = event.detail?.messages || getActiveMessages();
+    pageByUrl.clear();
+    pages.forEach((page) => pageByUrl.set(new URL(page.path, APP_URL).href, page.id));
+    Object.entries(event.detail?.messages?._guidePages || {}).forEach(([id, path]) => {
+      if (pages.has(id)) pageByUrl.set(new URL(path, APP_URL).href, id);
+    });
+    if (activeId) {
+      const pageId = activeId;
+      activeId = null;
+      void loadPage(pageId, activeAnchor);
+    }
+  });
 
   async function show() {
     await loadIndex();

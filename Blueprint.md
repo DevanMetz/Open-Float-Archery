@@ -962,6 +962,13 @@ UI
     cards, plus a combined collapsible Sensor & 3D Alignment section (sensor
     mount axis mapping and 3D model display) sharing one 3D preview with axis
     labels for the model/mount rotation controls
+  - English (United States) and Brazilian Portuguese localization from
+    `locales/*.json`, with exact and patterned translations for dynamic text,
+    translated Guide pages, and a browser-persisted language preference
+  - browser-local shot-count display correction controls (`+`, `-`, reset)
+    that preserve saved captures and the device's lifetime count
+  - four distinct OBS Browser Source routes (`?overlay=counter|target|metrics|review`)
+    for the shot count, Pin Float trace, latest-shot metrics, and session review
   - calibrated glassmorphic spirit bubble level (custom range & tolerance sweet-spot sliders)
   - low-pass filtered (EMA) bubble visualizer for smooth and responsive tracking
   - real-time recent shots grid list (syncing with device shot events & manual recordings)
@@ -1194,6 +1201,25 @@ Local storage responsibilities:
 - Sync queue.
 
 Cloud sync should upload after local persistence succeeds, not before.
+
+Browser-only preferences remain in `localStorage`: the selected locale
+(`openfloat_locale`), sensor settings, OBS appearance and planned count, active
+bow selection, and the dashboard shot-count display adjustment. Factory reset
+clears the locale, cached preferences, OBS configuration, active bow, and theme,
+but preserves IndexedDB shot data, bow profiles, the adjusted shot counter, and
+cloud-sync credentials.
+
+Locale JSON is loaded from `locales/` and shares one key structure across
+languages. `_text` handles exact phrases and `_patterns` handles changing
+values. The Guide keeps stable English source page IDs in `docs/index.json`;
+`_guidePages` in the selected locale maps those IDs to translated Markdown.
+Same-origin Guide pages are cached by the service worker for offline use.
+
+The OBS Browser Source is a separate app route selected by the `overlay` query
+parameter: `counter`, `target`, `metrics`, or `review`. The dashboard publishes
+the current visible shot count, overlay configuration, latest shot/trace, and
+session summary to same-origin browser storage and a `BroadcastChannel`; the OBS
+page reads those snapshots and applies the shared local visual preferences.
 
 ## 13. Cloud Architecture
 

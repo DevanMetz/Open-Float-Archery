@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Generate docs/index.json: a tree of every Markdown file under docs/.
+"""Generate docs/index.json: a tree of the source-language Markdown under docs/.
 
 The in-app Guide tab renders this tree as its sidebar. Static hosts such as
 Cloudflare Pages do not expose directory listings, so the browser cannot
 discover files at runtime; this script produces a portable index instead.
 
-Run it whenever you add, rename, or remove a guide page:
+Run it whenever you add, rename, or remove an English source Guide page.
+Locale-specific docs folders are omitted; the selected locale maps the same
+page IDs to translated Markdown through its `_guidePages` object:
 
     python tools/build_docs_index.py
 
@@ -58,10 +60,22 @@ def sort_key(path: Path):
     return (path.is_file(), path.name.lower())
 
 
+def localized_doc_dirs() -> set[Path]:
+    """Return docs subfolders that contain locale-specific page translations."""
+    locale_dir = REPO_ROOT / "locales"
+    return {
+        DOCS_DIR / locale_file.stem
+        for locale_file in locale_dir.glob("*.json")
+        if locale_file.stem != "en-US"
+    }
+
+
 def build_node(path: Path) -> dict | None:
     rel = path.relative_to(DOCS_DIR).as_posix()
 
     if path.is_dir():
+        if path in localized_doc_dirs():
+            return None
         children = []
         for child in sorted(path.iterdir(), key=sort_key):
             node = build_node(child)
