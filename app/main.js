@@ -3,7 +3,7 @@
 
 import { createStore, EventBus } from "./core/store.js?v=shot-store-180";
 import { watchSavedData } from "./core/saved-data.js?v=shot-store-174";
-import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-200";
+import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-202";
 import { createAdapter } from "./device/adapters.js?v=shot-store-200";
 import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-163";
 import { createReplayController, traceTimeline } from "./ui/replay.js?v=shot-store-155";
@@ -19,7 +19,7 @@ import {
 } from "./ui/bow-3d.js?v=shot-store-157";
 import { initDb, get, getAll, put, removeSavedShots, groupShotsByTime } from "./core/db.js?v=shot-store-176";
 import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-176";
-import { mountTraining } from "./ui/training.js?v=shot-store-200";
+import { mountTraining } from "./ui/training.js?v=shot-store-202";
 import { mountGuide } from "./ui/guide.js?v=shot-store-161";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-176";
 import { initHistory } from "./ui/history.js?v=shot-store-184";
@@ -30,7 +30,7 @@ import { getActiveMessages, initLocalization, translateMessage } from "./ui/loca
 import { isObsOverlayEnabled, resetFactorySettings } from "./ui/preferences.js?v=2";
 import { adjustShotCountOffset, displayShotCount } from "./ui/shot-counter.js?v=1";
 
-const APP_BUILD = "shot-store-206";
+const APP_BUILD = "shot-store-209";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [

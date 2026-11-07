@@ -1,4 +1,4 @@
-const CACHE_NAME = "openfloat-v209";
+const CACHE_NAME = "openfloat-v211";
 const ASSETS = [
   "./",
   "./index.html",
