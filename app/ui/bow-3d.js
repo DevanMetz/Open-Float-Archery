@@ -569,6 +569,25 @@ function applyBowCustomization(modelRoot, state = {}) {
   });
 }
 
+function bowSceneSettingsChanged(previous, state) {
+  return !previous ||
+    previous.mountOrientation !== state.mountOrientation ||
+    previous.mountAxes !== state.mountAxes ||
+    previous.mountRotation !== state.mountRotation ||
+    previous.mountPositionOffset !== state.mountPositionOffset ||
+    previous.modelAlignmentRotation !== state.modelAlignmentRotation ||
+    previous.bowMaterialColors !== state.bowMaterialColors ||
+    previous.bowRiserColor !== state.bowRiserColor ||
+    previous.bowHandleColor !== state.bowHandleColor;
+}
+
+function updateBowSceneSettings(bow, state) {
+  applyModuleOrientation(bow.userData.xiaoModule, state);
+  applyModulePosition(bow.userData.xiaoModule, state);
+  applyModelAlignment(bow.userData.modelRoot, state);
+  applyBowCustomization(bow.userData.modelRoot, state);
+}
+
 function renderBowMaterialColorControls(materials, store, el, saveSettingsToCache = null) {
   if (!el.bowMaterialColorList) return;
   const currentColors = bowMaterialColors(store.get());
@@ -917,6 +936,7 @@ export async function initOrientationVisualizer(el, store) {
   let viewRoll = 0;
   let targetQuat = null;
   let visualQuat = null;
+  let previousSceneSettings = null;
 
   store.subscribe((state) => {
     let roll = state.roll;
@@ -936,10 +956,10 @@ export async function initOrientationVisualizer(el, store) {
     targetRoll = calibratedAngle(roll, state.cantOffset);
     targetPitch = calibratedAngle(pitch, state.pitchOffset);
     targetYaw = wrapAngleDeg(calibratedAngle(yaw, state.yawOffset));
-    applyModuleOrientation(bow.userData.xiaoModule, state);
-    applyModulePosition(bow.userData.xiaoModule, state);
-    applyModelAlignment(bow.userData.modelRoot, state);
-    applyBowCustomization(bow.userData.modelRoot, state);
+    if (bowSceneSettingsChanged(previousSceneSettings, state)) {
+      updateBowSceneSettings(bow, state);
+      previousSceneSettings = state;
+    }
     viewRoll = viewRollDegrees(state);
     modelRollSign = state.modelInvertRoll ? -1 : 1;
     modelPitchSign = state.modelInvertPitch ? 1 : -1;
@@ -1042,7 +1062,7 @@ export async function initOrientationVisualizer(el, store) {
   animateCanvasWhenVisible(canvas, animate);
 }
 
-export async function mountOrientationSettings({ store, el }) {
+export async function mountOrientationSettings({ store, el, bus }) {
   if (!el.mountOrientationCanvas) return;
 
   let THREE;
@@ -1101,6 +1121,7 @@ export async function mountOrientationSettings({ store, el }) {
   let modelPitchSign = -1;
   let modelSwapRollPitch = false;
   let modelIgnoreYaw = false;
+  let previousSceneSettings = null;
 
   function updateOrientation(state) {
     targetRoll = calibratedAngle(state.roll, state.cantOffset);
@@ -1114,10 +1135,10 @@ export async function mountOrientationSettings({ store, el }) {
     if (el.mountLivePitchValue) el.mountLivePitchValue.textContent = targetPitch.toFixed(1);
 
     const orientation = mountOrientationState(state);
-    applyModuleOrientation(bow.userData.xiaoModule, state);
-    applyModulePosition(bow.userData.xiaoModule, state);
-    applyModelAlignment(bow.userData.modelRoot, state);
-    applyBowCustomization(bow.userData.modelRoot, state);
+    if (bowSceneSettingsChanged(previousSceneSettings, state)) {
+      updateBowSceneSettings(bow, state);
+      previousSceneSettings = state;
+    }
     if (el.mountOrientationDescription) {
       el.mountOrientationDescription.textContent = orientation.description;
     }
@@ -1150,7 +1171,17 @@ export async function mountOrientationSettings({ store, el }) {
     if (el.mountPositionZSlider) el.mountPositionZSlider.value = String(position[2]);
   }
 
-  store.subscribe(updateOrientation);
+  store.subscribe((state) => {
+    if (!el.tabSettings?.classList.contains("hidden-view")) {
+      updateOrientation(state);
+    } else if (bowSceneSettingsChanged(previousSceneSettings, state)) {
+      updateBowSceneSettings(bow, state);
+      previousSceneSettings = state;
+    }
+  });
+  bus?.on("view-changed", (viewId) => {
+    if (viewId === "tabSettings") updateOrientation(store.get());
+  });
   updateOrientation(store.get());
 
   function resize() {
@@ -1255,8 +1286,13 @@ export async function mountBowShop({ store, el, saveSettingsToCache = null }) {
     applyBowCustomization(bow.userData.modelRoot, state);
   }
 
-  store.subscribe(updateCustomization);
-  updateCustomization(store.get());
+  let previousSceneSettings = null;
+  store.subscribe((state) => {
+    if (bowSceneSettingsChanged(previousSceneSettings, state)) {
+      updateCustomization(state);
+      previousSceneSettings = state;
+    }
+  });
 
   function resize() {
     const rect = canvas.getBoundingClientRect();

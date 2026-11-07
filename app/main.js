@@ -16,7 +16,7 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/bow-3d.js?v=shot-store-156";
+} from "./ui/bow-3d.js?v=shot-store-157";
 import { initDb, get, getAll, put, removeSavedShots, groupShotsByTime } from "./core/db.js?v=shot-store-176";
 import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-176";
 import { mountTraining } from "./ui/training.js?v=shot-store-200";
@@ -30,7 +30,7 @@ import { getActiveMessages, initLocalization, translateMessage } from "./ui/loca
 import { resetFactorySettings } from "./ui/preferences.js?v=1";
 import { adjustShotCountOffset, displayShotCount } from "./ui/shot-counter.js?v=1";
 
-const APP_BUILD = "shot-store-205";
+const APP_BUILD = "shot-store-206";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -659,7 +659,7 @@ const bowProfilesUi = mountBowProfiles({ el, bus, syncAdapter });
 mountDashboard({ store, telemetry, el, bus });
 mountTraining({ store, el, bus });
 mountLog(bus, el.eventLog);
-mountOrientationSettings({ store, el });
+mountOrientationSettings({ store, el, bus });
 mountBowShop({ store, el, saveSettingsToCache });
 
 // Initialize settings fields from localStorage cache on load
