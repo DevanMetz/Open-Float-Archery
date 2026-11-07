@@ -1,4 +1,5 @@
 import { fetchLocale, DEFAULT_LOCALE } from "./localization.js?v=1";
+import { isObsOverlayEnabled } from "./preferences.js?v=2";
 
 const SNAPSHOT_KEY = "openfloat_obs_snapshot";
 const CONFIG_KEY = "openfloat_overlay_settings";
@@ -24,6 +25,7 @@ function readConfig(saved = null) {
       backgroundColor: /^#[0-9a-f]{6}$/i.test(config.backgroundColor) ? config.backgroundColor : "#071014",
       accentColor: /^#[0-9a-f]{6}$/i.test(config.accentColor) ? config.accentColor : "#35c7e8",
       plannedShots: Math.min(999, Math.max(0, Math.trunc(Number(config.plannedShots) || 0))),
+      enabled: isObsOverlayEnabled(config),
     };
   } catch (error) {
     console.error("Could not read OBS overlay preferences:", error);
@@ -35,7 +37,7 @@ function readConfigDefaults() {
   return {
     font: "Inter, Arial, sans-serif", fontSize: 22,
     textColor: "#e6f4ef", backgroundColor: "#071014", accentColor: "#35c7e8",
-    plannedShots: 0,
+    plannedShots: 0, enabled: true,
   };
 }
 
@@ -158,7 +160,6 @@ async function start() {
     root.textContent = messages.overlayInvalidType || "Choose a valid overlay type in Settings.";
     return;
   }
-  root.classList.remove("hidden");
   document.querySelector(".app")?.classList.add("hidden");
   let locale = DEFAULT_LOCALE;
   try {
@@ -178,18 +179,33 @@ async function start() {
   } catch (error) {
     console.error("Failed to load overlay language:", error);
   }
-  readSnapshot();
+  let channel = null;
+  function setEnabled(enabled) {
+    root.classList.toggle("hidden", !enabled);
+    if (!enabled) {
+      channel?.close();
+      channel = null;
+      return;
+    }
+    readSnapshot();
+    if ("BroadcastChannel" in window && !channel) {
+      channel = new BroadcastChannel("openfloat-obs");
+      channel.addEventListener("message", (event) => {
+        if (isObsOverlayEnabled(readConfig())) renderSnapshot(event.data);
+      });
+    }
+  }
+  setEnabled(readConfig().enabled);
   window.addEventListener("storage", (event) => {
-    if (event.key === SNAPSHOT_KEY || event.key === CONFIG_KEY) readSnapshot();
-    if (event.key === "openfloat_locale") void refreshLocale(event.newValue || DEFAULT_LOCALE);
+    if (event.key === CONFIG_KEY) setEnabled(readConfig().enabled);
+    else if (event.key === SNAPSHOT_KEY && isObsOverlayEnabled(readConfig())) readSnapshot();
+    if (event.key === "openfloat_locale" && isObsOverlayEnabled(readConfig())) {
+      void refreshLocale(event.newValue || DEFAULT_LOCALE);
+    }
   });
   window.addEventListener("openfloat-locale-changed", (event) => {
-    void refreshLocale(event.detail.locale);
+    if (isObsOverlayEnabled(readConfig())) void refreshLocale(event.detail.locale);
   });
-  if ("BroadcastChannel" in window) {
-    const channel = new BroadcastChannel("openfloat-obs");
-    channel.addEventListener("message", (event) => renderSnapshot(event.data));
-  }
 }
 
 async function refreshLocale(locale) {
@@ -209,6 +225,7 @@ async function refreshLocale(locale) {
 }
 
 window.addEventListener("resize", () => {
+  if (root.classList.contains("hidden") || overlayType !== "target") return;
   try {
     const snapshot = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || "null");
     drawTarget(snapshot?.latestTrace || []);

@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resetFactorySettings } from "../app/ui/preferences.js";
+import { isObsOverlayEnabled, resetFactorySettings } from "../app/ui/preferences.js";
+
+test("OBS overlay stays enabled for existing preferences and honors an explicit off state", () => {
+  assert.equal(isObsOverlayEnabled({}), true);
+  assert.equal(isObsOverlayEnabled(null), true);
+  assert.equal(isObsOverlayEnabled({ enabled: false }), false);
+  assert.equal(isObsOverlayEnabled({ enabled: 0 }), true);
+});
 
 test("factory reset clears app preferences but preserves saved data and cloud credentials", () => {
   const values = new Map([

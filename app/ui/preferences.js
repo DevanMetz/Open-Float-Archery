@@ -6,6 +6,10 @@ const FACTORY_RESET_KEYS = [
   "of-theme-proto",
 ];
 
+export function isObsOverlayEnabled(config) {
+  return config?.enabled !== false;
+}
+
 export function resetFactorySettings(storage) {
   for (const key of FACTORY_RESET_KEYS) storage.removeItem(key);
 }

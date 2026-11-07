@@ -27,7 +27,7 @@ import { mountBowProfiles } from "./ui/bow-profiles.js?v=shot-store-177";
 import { mountBrowserSupport } from "./ui/browser-support.js?v=shot-store-178";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 import { getActiveMessages, initLocalization, translateMessage } from "./ui/localization.js?v=3";
-import { resetFactorySettings } from "./ui/preferences.js?v=1";
+import { isObsOverlayEnabled, resetFactorySettings } from "./ui/preferences.js?v=2";
 import { adjustShotCountOffset, displayShotCount } from "./ui/shot-counter.js?v=1";
 
 const APP_BUILD = "shot-store-206";
@@ -95,7 +95,7 @@ const ELEMENT_IDS = [
   "sampleDataCard", "clearSamplesBtn", "sampleDataStatus",
   "languageSelect", "shotCountPlusBtn", "shotCountMinusBtn", "shotCountResetBtn",
   "factoryResetBtn", "factoryResetStatus",
-  "obsOverlayUrl", "obsOverlayType", "copyObsOverlayUrlBtn", "openObsOverlayLink", "obsFontSelect",
+  "obsOverlayUrl", "obsOverlayType", "obsOverlayToggleBtn", "copyObsOverlayUrlBtn", "openObsOverlayLink", "obsFontSelect",
   "obsFontSize", "obsTextColor", "obsBackgroundColor", "obsAccentColor",
   "obsPlannedShotCount", "obsOverlayStatus",
   "toggleLevelTuneBtn", "levelTuneSection", "levelRangeSlider",
@@ -147,6 +147,7 @@ function readObsConfig() {
       showTarget: config.showTarget !== false,
       showMetrics: config.showMetrics !== false,
       showReview: config.showReview !== false,
+      enabled: isObsOverlayEnabled(config),
       overlayType: ["counter", "target", "metrics", "review"].includes(config.overlayType)
         ? config.overlayType
         : "counter",
@@ -177,6 +178,36 @@ function initObsOverlaySettings() {
   el.obsBackgroundColor.value = config.backgroundColor || "#071014";
   el.obsAccentColor.value = config.accentColor || "#35c7e8";
   el.obsPlannedShotCount.value = config.plannedShots || 0;
+  const updateOverlayToggle = (enabled) => {
+    const messages = getActiveMessages();
+    el.obsOverlayToggleBtn.textContent = messages[enabled ? "disableObsOverlay" : "enableObsOverlay"] ||
+      (enabled ? "Disable OBS overlay" : "Enable OBS overlay");
+    el.obsOverlayToggleBtn.setAttribute("aria-pressed", String(enabled));
+  };
+  updateOverlayToggle(isObsOverlayEnabled(config));
+  window.addEventListener("openfloat-locale-changed", () => {
+    updateOverlayToggle(isObsOverlayEnabled(readObsConfig()));
+  });
+  el.obsOverlayToggleBtn.addEventListener("click", () => {
+    const enabled = !isObsOverlayEnabled(readObsConfig());
+    try {
+      localStorage.setItem(OBS_CONFIG_KEY, JSON.stringify({
+        ...readObsConfig(),
+        enabled,
+      }));
+      updateOverlayToggle(enabled);
+      el.obsOverlayStatus.textContent = getActiveMessages()[
+        enabled ? "obsOverlayEnabled" : "obsOverlayDisabled"
+      ] || (enabled ? "OBS overlay enabled." : "OBS overlay disabled.");
+      if (enabled) {
+        void publishObsSnapshot();
+      }
+    } catch (error) {
+      console.error("Could not change OBS overlay state:", error);
+      el.obsOverlayStatus.textContent = "Could not save overlay settings in this browser.";
+      bus.emit("log", `OBS overlay state could not be changed: ${error.message}`);
+    }
+  });
   const updateOverlayUrl = () => {
     try {
       localStorage.setItem(OBS_CONFIG_KEY, JSON.stringify({
@@ -200,6 +231,7 @@ function initObsOverlaySettings() {
       accentColor: el.obsAccentColor.value,
       overlayType: el.obsOverlayType.value,
       plannedShots: Math.min(999, Math.max(0, Math.trunc(Number(el.obsPlannedShotCount.value) || 0))),
+      enabled: isObsOverlayEnabled(readObsConfig()),
     };
     try {
       localStorage.setItem(OBS_CONFIG_KEY, JSON.stringify(updated));
@@ -229,6 +261,7 @@ function initObsOverlaySettings() {
 let publishingObsSnapshot = false;
 let publishObsSnapshotAgain = false;
 async function publishObsSnapshot() {
+  if (!isObsOverlayEnabled(readObsConfig())) return;
   if (publishingObsSnapshot) {
     publishObsSnapshotAgain = true;
     return;
@@ -253,6 +286,7 @@ async function publishObsSnapshot() {
         ? tracePayload.filter((_, index) => index % Math.ceil(tracePayload.length / 240) === 0)
         : tracePayload;
       const config = readObsConfig();
+      if (!isObsOverlayEnabled(config)) continue;
       const snapshot = {
         shotCount: displayShotCount(store.get().shotCount, store.get().shotCountAdjustment),
         plannedShots: config.plannedShots || 0,
