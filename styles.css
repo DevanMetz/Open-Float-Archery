@@ -188,6 +188,11 @@ button {
   padding: 0 12px;
 }
 
+option {
+  background-color: var(--panel);
+  color: var(--text);
+}
+
 button {
   cursor: pointer;
   font-weight: 800;

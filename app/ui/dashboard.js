@@ -9,7 +9,7 @@ import {
   calibratedAngle,
   initOrientationVisualizer,
   wrapAngleDeg,
-} from "./bow-3d.js?v=shot-store-155";
+} from "./bow-3d.js?v=shot-store-156";
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));

@@ -30,6 +30,49 @@ const BOW_COMPOUND_PART_NAMES = [
   "Top_Text",
 ];
 
+function animateCanvasWhenVisible(canvas, renderFrame) {
+  let frameId = null;
+  let intersectsViewport = true;
+  const observer = typeof IntersectionObserver === "function"
+    ? new IntersectionObserver((entries) => {
+      intersectsViewport = entries.some((entry) => entry.isIntersecting);
+      syncAnimation();
+    })
+    : null;
+
+  function isVisible() {
+    return !document.hidden &&
+      canvas.getClientRects().length > 0 &&
+      intersectsViewport;
+  }
+
+  function animate() {
+    frameId = null;
+    if (!isVisible()) return;
+    renderFrame();
+    syncAnimation();
+  }
+
+  function syncAnimation() {
+    if (isVisible()) {
+      if (frameId === null) frameId = requestAnimationFrame(animate);
+    } else if (frameId !== null) {
+      cancelAnimationFrame(frameId);
+      frameId = null;
+    }
+  }
+
+  observer?.observe(canvas);
+  document.addEventListener("visibilitychange", syncAnimation);
+  syncAnimation();
+
+  return () => {
+    observer?.disconnect();
+    document.removeEventListener("visibilitychange", syncAnimation);
+    if (frameId !== null) cancelAnimationFrame(frameId);
+  };
+}
+
 export const MOUNT_ORIENTATIONS = [
   {
     id: "firmware-x-90",
@@ -992,12 +1035,11 @@ export async function initOrientationVisualizer(el, store) {
     if (controls) controls.update();
     applyCameraViewRoll(camera, viewRoll, baseCameraQuaternion, controls);
     renderer.render(scene, camera);
-    requestAnimationFrame(animate);
   }
 
   window.addEventListener("resize", resize);
   resize();
-  animate();
+  animateCanvasWhenVisible(canvas, animate);
 }
 
 export async function mountOrientationSettings({ store, el }) {
@@ -1146,12 +1188,11 @@ export async function mountOrientationSettings({ store, el }) {
     if (controls) controls.update();
     applyCameraViewRoll(camera, viewRoll, baseCameraQuaternion, controls);
     renderer.render(scene, camera);
-    requestAnimationFrame(animate);
   }
 
   window.addEventListener("resize", resize);
   resize();
-  animate();
+  animateCanvasWhenVisible(canvas, animate);
 }
 
 export async function mountBowShop({ store, el, saveSettingsToCache = null }) {
@@ -1236,10 +1277,9 @@ export async function mountBowShop({ store, el, saveSettingsToCache = null }) {
     bow.rotation.y = radians(12);
     if (controls) controls.update();
     renderer.render(scene, camera);
-    requestAnimationFrame(animate);
   }
 
   window.addEventListener("resize", resize);
   resize();
-  animate();
+  animateCanvasWhenVisible(canvas, animate);
 }
