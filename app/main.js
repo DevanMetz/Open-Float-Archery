@@ -5,7 +5,8 @@ import { createStore, EventBus } from "./core/store.js?v=shot-store-180";
 import { watchSavedData } from "./core/saved-data.js?v=shot-store-174";
 import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-200";
 import { createAdapter } from "./device/adapters.js?v=shot-store-200";
-import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-163";
+import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-201";
+import { initializeLocalization } from "./ui/localization.js?v=shot-store-201";
 import { createReplayController, traceTimeline } from "./ui/replay.js?v=shot-store-155";
 import { tracePhases } from "./ui/trace-phases.js?v=shot-store-155";
 import {
@@ -27,14 +28,16 @@ import { mountBowProfiles } from "./ui/bow-profiles.js?v=shot-store-176";
 import { mountBrowserSupport } from "./ui/browser-support.js?v=shot-store-178";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
 
-const APP_BUILD = "shot-store-200";
+const APP_BUILD = "shot-store-201";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
   "statusBadge", "statusText", "demoBtn", "demoBtnText",
   "protocolValue", "typeValue", "sourceValue", "seqValue", "lossValue",
   "dtValue", "hzValue", "frameCountValue", "micVolumeItem", "volBar",
-  "shotCountValue", "uploadStatusItem", "uploadCountValue", "eventLog", "traceCanvas",
+  "shotCountValue", "shotCountDecreaseBtn", "shotCountResetBtn", "shotCountIncreaseBtn",
+  "localeSelect", "localeStatus",
+  "uploadStatusItem", "uploadCountValue", "eventLog", "traceCanvas",
   "orientationCanvas", "orientationRollValue", "orientationPitchValue", "orientationYawValue",
   "syncBadge", "syncText", "cloudModal", "closeCloudModalBtn",
   "sbUrlInput", "sbKeyInput", "saveCloudSettingsBtn", "clearCloudSettingsBtn",
@@ -97,6 +100,7 @@ const ELEMENT_IDS = [
 
 const el = {};
 for (const id of ELEMENT_IDS) el[id] = document.getElementById(id);
+void initializeLocalization({ select: el.localeSelect, status: el.localeStatus });
 
 // Load cached settings from localStorage
 const cached = (() => {
@@ -431,7 +435,7 @@ const syncAdapter = new CloudSyncAdapter(bus, store);
 telemetry.syncAdapter = syncAdapter; // Register sync on telemetry store
 const bowProfilesUi = mountBowProfiles({ el, bus, syncAdapter });
 
-mountDashboard({ store, telemetry, el });
+mountDashboard({ store, telemetry, el, setShotCount: setDeviceShotCount });
 mountTraining({ store, el, bus });
 mountLog(bus, el.eventLog);
 mountOrientationSettings({ store, el });
@@ -615,6 +619,32 @@ el.clearCloudSettingsBtn.addEventListener("click", async () => {
 });
 
 let adapter = null;
+
+async function setDeviceShotCount(count) {
+  if (!adapter?.connected || store.get().statusMode !== "live") {
+    bus.emit("log", "Connect the sensor over BLE to adjust the shot count.");
+    return false;
+  }
+  if (!Number.isInteger(count) || count < 0 || count > 0xffffffff) {
+    bus.emit("log", "Shot count must be between 0 and 4294967295.");
+    return false;
+  }
+
+  try {
+    const sent = await adapter.sendControl(`shotset:${count}`);
+    if (!sent) {
+      bus.emit("log", `Failed to set the device shot count to ${count}.`);
+      return false;
+    }
+    store.set({ shotCount: count });
+    return true;
+  } catch (error) {
+    bus.emit("log", `Failed to set the device shot count: ${error.message}`);
+    console.error("Failed to set device shot count:", error);
+    return false;
+  }
+}
+
 let connectionAttempt = 0;
 
 function transport() {

@@ -207,10 +207,45 @@ export function mountReviewMarkers({ store, canvas }) {
   canvas.addEventListener("touchcancel", endDrag);
 }
 
-export function mountDashboard({ store, telemetry, el }) {
+export function mountDashboard({ store, telemetry, el, setShotCount }) {
   const ctx = el.traceCanvas.getContext("2d");
   initOrientationVisualizer(el, store);
   mountReviewMarkers({ store, canvas: el.traceCanvas });
+
+  let shotCountCommandPending = false;
+  const updateShotCountControls = () => {
+    const state = store.get();
+    const count = Number(state.shotCount) || 0;
+    const canControlDevice = state.connected && state.statusMode === "live";
+    const disabled = !canControlDevice || shotCountCommandPending;
+    el.shotCountDecreaseBtn.disabled = disabled || count <= 0;
+    el.shotCountResetBtn.disabled = disabled || count <= 0;
+    el.shotCountIncreaseBtn.disabled = disabled || count >= 0xffffffff;
+  };
+  const setShotCountFromDashboard = async (count) => {
+    if (shotCountCommandPending) return;
+    shotCountCommandPending = true;
+    updateShotCountControls();
+    try {
+      await setShotCount(count);
+    } finally {
+      shotCountCommandPending = false;
+      updateShotCountControls();
+    }
+  };
+
+  el.shotCountDecreaseBtn.addEventListener("click", () => {
+    const count = Number(store.get().shotCount) || 0;
+    if (count > 0) void setShotCountFromDashboard(count - 1);
+  });
+  el.shotCountResetBtn.addEventListener("click", () => {
+    if ((Number(store.get().shotCount) || 0) > 0) void setShotCountFromDashboard(0);
+  });
+  el.shotCountIncreaseBtn.addEventListener("click", () => {
+    const count = Number(store.get().shotCount) || 0;
+    if (count < 0xffffffff) void setShotCountFromDashboard(count + 1);
+  });
+  updateShotCountControls();
 
   let filteredRoll = null;
   let lastUpdateTime = null;
@@ -263,6 +298,7 @@ export function mountDashboard({ store, telemetry, el }) {
     el.lossValue.textContent = s.reviewMode ? "--" : String(s.lost || 0);
     el.frameCountValue.textContent = s.reviewMode ? "--" : String(s.frameCount || 0);
     el.shotCountValue.textContent = String(s.shotCount || 0);
+    updateShotCountControls();
 
     let hasMic = s.connected && !s.reviewMode && s.sample && s.sample.micAmp !== undefined;
     let micPct = hasMic ? Math.round((s.sample.micAmp / 255) * 100) : 0;

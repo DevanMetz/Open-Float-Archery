@@ -1,4 +1,4 @@
-const CACHE_NAME = "openfloat-v200";
+const CACHE_NAME = "openfloat-v201";
 const ASSETS = [
   "./",
   "./index.html",
@@ -30,6 +30,7 @@ const ASSETS = [
   "./app/telemetry/outcome.js",
   "./app/telemetry/sync.js",
   "./app/ui/dashboard.js",
+  "./app/ui/localization.js",
   "./app/ui/bow-profiles.js",
   "./app/ui/browser-support.js",
   "./app/ui/bow-3d.js",
@@ -46,6 +47,9 @@ const ASSETS = [
   "./app/ui/training-coach.js",
   "./app/ui/guide.js",
   "./docs/index.json",
+  "./locales/index.json",
+  "./locales/en-US.json",
+  "./locales/pt-BR.json",
   "./docs/images/dashboard-live.png"
 ];
 

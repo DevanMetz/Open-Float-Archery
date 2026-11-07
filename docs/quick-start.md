@@ -195,6 +195,8 @@ python -m http.server 4178
 
 Then open **http://localhost:4178/** in Chrome or Edge. The app also runs fully
 offline once loaded, and the hosted build lives at `openfloatarchery.com`.
+Choose **Settings → Language** to switch between English (US) and Brazilian
+Portuguese. The selection is saved on this device.
 
 ---
 
@@ -232,3 +234,8 @@ and the firmware resumes advertising — usually it reconnects on its own.
 That's it — take a shot and it appears in **Recent Shots** with an OpenFloat
 Float Score. From here, explore **Steady Aim** for hold drills and **Saved
 Shots** for session review.
+
+The Dashboard's **Shots** controls adjust the connected device's lifetime
+count: use **−** or **+** to change it by one, or **Reset** to set it to zero.
+This keeps the device's stored-shot upload queue intact. The controls are
+available only while connected to the sensor.

@@ -1,0 +1,14 @@
+{
+  "languages": [
+    {
+      "code": "en-US",
+      "name": "English (US)",
+      "file": "locales/en-US.json"
+    },
+    {
+      "code": "pt-BR",
+      "name": "Português (Brasil)",
+      "file": "locales/pt-BR.json"
+    }
+  ]
+}

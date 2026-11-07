@@ -124,6 +124,16 @@ architecture, design intent, and forward-looking targets, see
 
 ## Browser Dashboard
 
+- **Shot Count Controls**: Adjust the connected sensor's persisted lifetime
+  count by one or set it to zero from the Dashboard. These controls send
+  `shotset:<n>` and do not clear the stored-shot upload queue; unlike
+  `shotreset`, they preserve shots waiting to sync. They are disabled when no
+  live sensor is connected.
+- **Interface Languages**: Switch between English (US) and Brazilian
+  Portuguese in **Settings → Language**. The language options are loaded from
+  JSON files listed in `locales/index.json`, and the selected language is saved
+  on the current device. Portuguese UI labels use concise wording to fit the
+  existing layout.
 - Live calibration views include a calibrated digital bubble level and a 3D bow
   orientation visualizer. Both apply the current zero offsets before rendering,
   so a properly zeroed bow appears level.

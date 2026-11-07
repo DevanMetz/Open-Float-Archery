@@ -10,6 +10,7 @@ import "./connection.test.js";
 import "./browser-support.test.js";
 import "./score.test.js";
 import "./trace.test.js";
+import "./localization.test.js";
 import "./training-coach.test.js";
 import "./outcome.test.js";
 import "./impact-target.test.js";

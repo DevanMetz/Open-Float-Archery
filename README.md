@@ -90,6 +90,11 @@ cant/pitch-to-direction signals, automatic practice-session grouping, a Bow
 Shop 3D customizer,
 full local backup/restore, and an optional self-hosted Supabase sync that never
 gates local use.
+The Dashboard also lets you adjust the sensor's lifetime shot count without
+clearing its upload queue. The interface supports English (US) and Brazilian
+Portuguese; choose a language under **Settings → Language**.
+
+See the [Changelog](CHANGELOG.md) for recent user-facing changes.
 
 <!-- Current capture uses the built-in demo stream; reshoot connected to real
      hardware to show the ~1110 Hz live rate in the header. -->

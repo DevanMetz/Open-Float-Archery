@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en-US">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenFloat Shot Trainer</title>
-  <link rel="stylesheet" href="styles.css?v=shot-store-178">
+  <link rel="stylesheet" href="styles.css?v=shot-store-201">
   <link rel="stylesheet" href="theme-graph-paper.css?v=proto-2" id="graphThemeLink">
   <meta name="theme-color" content="#061014" id="themeMetaColor">
   <script>
@@ -193,8 +193,13 @@
                     <span id="hzValue">0</span> Hz
                   </span>
                   <span class="metric-divider">/</span>
-                  <span class="inline-metric-item" title="Shots detected during active session">
+                  <span class="inline-metric-item shot-count-metric" title="Device shot count">
                     <strong>Shots:</strong> <span id="shotCountValue">0</span>
+                    <span class="shot-count-controls" aria-label="Adjust shot count">
+                      <button id="shotCountDecreaseBtn" class="mini-btn" type="button" aria-label="Decrease shot count" title="Decrease shot count">−</button>
+                      <button id="shotCountResetBtn" class="mini-btn" type="button" aria-label="Reset shot count to zero" title="Set shot count to zero">Reset</button>
+                      <button id="shotCountIncreaseBtn" class="mini-btn" type="button" aria-label="Increase shot count" title="Increase shot count">+</button>
+                    </span>
                   </span>
                   <span class="metric-divider">/</span>
                   <span id="micVolumeItem" class="inline-metric-item mic-volume-item hidden" title="Acoustic Envelope">
@@ -507,6 +512,16 @@
       <!-- 4. Sensor Settings View (Hidden by default) -->
       <div id="tabSettings" class="tab-view hidden-view">
         <section class="settings-workspace">
+          <div class="panel settings-card settings-card-wide">
+            <h3>Language</h3>
+            <div class="field" style="max-width: 360px; margin-top: 10px;">
+              <label for="localeSelect">Interface language</label>
+              <select id="localeSelect" aria-describedby="localeStatus"></select>
+              <p class="note">Choose a language for the app. Available languages are loaded from their JSON translation files.</p>
+              <p id="localeStatus" class="note" role="status" aria-live="polite"></p>
+            </div>
+          </div>
+
           <!-- Card C: Sensor Power Settings (full width, top) -->
           <div class="panel settings-card settings-card-wide">
             <h3>Power Management</h3>
@@ -918,6 +933,6 @@
     })();
   </script>
 
-  <script type="module" src="app/main.js?v=shot-store-200"></script>
+  <script type="module" src="app/main.js?v=shot-store-201"></script>
 </body>
 </html>
