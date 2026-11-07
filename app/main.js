@@ -30,7 +30,7 @@ import { getActiveMessages, initLocalization, translateMessage } from "./ui/loca
 import { resetFactorySettings } from "./ui/preferences.js?v=1";
 import { adjustShotCountOffset, displayShotCount } from "./ui/shot-counter.js?v=1";
 
-const APP_BUILD = "shot-store-204";
+const APP_BUILD = "shot-store-205";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -656,7 +656,7 @@ const syncAdapter = new CloudSyncAdapter(bus, store);
 telemetry.syncAdapter = syncAdapter; // Register sync on telemetry store
 const bowProfilesUi = mountBowProfiles({ el, bus, syncAdapter });
 
-mountDashboard({ store, telemetry, el });
+mountDashboard({ store, telemetry, el, bus });
 mountTraining({ store, el, bus });
 mountLog(bus, el.eventLog);
 mountOrientationSettings({ store, el });

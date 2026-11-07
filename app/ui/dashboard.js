@@ -208,7 +208,7 @@ export function mountReviewMarkers({ store, canvas }) {
   canvas.addEventListener("touchcancel", endDrag);
 }
 
-export function mountDashboard({ store, telemetry, el }) {
+export function mountDashboard({ store, telemetry, el, bus }) {
   const ctx = el.traceCanvas.getContext("2d");
   initOrientationVisualizer(el, store);
   mountReviewMarkers({ store, canvas: el.traceCanvas });
@@ -349,14 +349,47 @@ export function mountDashboard({ store, telemetry, el }) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  function draw() {
-    drawTraceChart(ctx, el.traceCanvas, store, telemetry);
-    requestAnimationFrame(draw);
+  let drawFrame = null;
+  let lastDrawTime = 0;
+  function dashboardVisible() {
+    return !document.hidden && !el.tabDashboard?.classList.contains("hidden-view");
   }
 
+  function draw(timestamp) {
+    drawFrame = null;
+    if (!dashboardVisible()) return;
+
+    if (timestamp - lastDrawTime >= 50) {
+      drawTraceChart(ctx, el.traceCanvas, store, telemetry);
+      lastDrawTime = timestamp;
+    }
+    drawFrame = requestAnimationFrame(draw);
+  }
+
+  function pauseDrawing() {
+    if (drawFrame !== null) {
+      cancelAnimationFrame(drawFrame);
+      drawFrame = null;
+    }
+  }
+
+  function resumeDrawing() {
+    if (dashboardVisible() && drawFrame === null) {
+      drawFrame = requestAnimationFrame(draw);
+    }
+  }
+
+  bus.on("view-changed", (viewId) => {
+    if (viewId === "tabDashboard") resumeDrawing();
+    else pauseDrawing();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) pauseDrawing();
+    else resumeDrawing();
+  });
   window.addEventListener("resize", resize);
   resize();
-  draw();
+  resumeDrawing();
 }
 
 export function mountLog(bus, logEl) {
