@@ -475,5 +475,5 @@ architecture, design intent, and forward-looking targets, see
   (latest shot), or `?overlay=review` (current session summary). The URLs have
   separate routes so each OBS source can use only its selected view. The
   overlay supports font selection, 14–40 px font size, text/background/accent
-  colors, and 0–999 planned session shots. Live data requires the dashboard and
-  OBS Browser Source to use the same origin and browser profile.
+  colors, and 0–999 planned session shots. Live data streams in real time
+  through the local server relay (`./run.sh`).

@@ -28,7 +28,7 @@
   "factorySettingsConfirm": "Restaurar as preferências do aplicativo para os padrões de fábrica? Idioma, overlay, tema, arco selecionado e configurações de sensor em cache serão redefinidos. Disparos, perfis de arco, contador de tiros e credenciais da nuvem serão mantidos.",
   "factorySettingsError": "Não foi possível restaurar todas as configurações. Algumas preferências podem já ter sido redefinidas; tente novamente.",
   "obsOverlaySettings": "Sobreposição do OBS Studio",
-  "obsOverlayInstructions": "Use o link abaixo como uma Fonte de Navegador no OBS Studio. Mantenha este aplicativo aberto no mesmo perfil do navegador para transmitir os dados da sessão ao vivo.",
+  "obsOverlayInstructions": "Use o link abaixo como uma Fonte de Navegador no OBS Studio. Inicie o servidor com ./run.sh para transmitir os dados da sessão ao vivo em tempo real.",
   "enableObsOverlay": "Ativar overlay do OBS",
   "disableObsOverlay": "Desativar overlay do OBS",
   "obsOverlayEnabled": "Overlay do OBS ativado.",

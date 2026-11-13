@@ -112,6 +112,12 @@ const OBS_SNAPSHOT_KEY = "openfloat_obs_snapshot";
 const OBS_CONFIG_KEY = "openfloat_overlay_settings";
 const COUNTER_SYNCED_KEY = "openfloat_counter_synced";
 const COUNTER_PENDING_REBASE_KEY = "openfloat_counter_pending_rebase";
+let obsBroadcastChannel = null;
+if ("BroadcastChannel" in window) {
+  try {
+    obsBroadcastChannel = new BroadcastChannel("openfloat-obs");
+  } catch (_) {}
+}
 let counterSynced = false;
 try {
   counterSynced = localStorage.getItem(COUNTER_SYNCED_KEY) === "1";
@@ -291,6 +297,7 @@ async function publishObsSnapshot() {
         shotCount: displayShotCount(store.get().shotCount, store.get().shotCountAdjustment),
         plannedShots: config.plannedShots || 0,
         overlayConfig: config,
+        locale: localStorage.getItem("openfloat_locale") || "en-US",
         latestShot,
         latestTrace: latestTrace.map((point) => ({ roll: Number(point.roll) || 0, pitch: Number(point.pitch) || 0 })),
         sessionReview: sessionShots.length ? {
@@ -305,15 +312,18 @@ async function publishObsSnapshot() {
       };
       try {
         localStorage.setItem(OBS_SNAPSHOT_KEY, JSON.stringify(snapshot));
-        if ("BroadcastChannel" in window) {
-          const channel = new BroadcastChannel("openfloat-obs");
-          channel.postMessage(snapshot);
-          channel.close();
-        }
+        obsBroadcastChannel?.postMessage(snapshot);
       } catch (error) {
-        console.error("Failed to publish OBS overlay data:", error);
+        console.error("Failed to publish OBS overlay data locally:", error);
         bus.emit("log", `OBS overlay data could not be published: ${error.message}`);
       }
+      try {
+        fetch("/api/overlay/snapshot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(snapshot),
+        }).catch(() => {});
+      } catch (_) {}
     } while (publishObsSnapshotAgain);
   } catch (error) {
     console.error("Could not build OBS overlay session data:", error);

@@ -28,7 +28,7 @@
   "factorySettingsConfirm": "Reset app preferences to their factory defaults? The language, overlay, theme, bow selection and cached sensor settings will reset. Saved shots, bow profiles, shot counter and cloud-sync credentials will be kept.",
   "factorySettingsError": "Could not reset all settings. Some preferences may already have been reset; please try again.",
   "obsOverlaySettings": "OBS Studio Overlay",
-  "obsOverlayInstructions": "Use the URL below as a Browser Source in OBS Studio. Keep this app open in the same browser profile to stream live session data.",
+  "obsOverlayInstructions": "Use the URL below as a Browser Source in OBS Studio. Start the server with ./run.sh to stream live session data in real time.",
   "enableObsOverlay": "Enable OBS overlay",
   "disableObsOverlay": "Disable OBS overlay",
   "obsOverlayEnabled": "OBS overlay enabled.",

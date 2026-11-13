@@ -253,8 +253,8 @@ To add a view to OBS Studio:
    (`?overlay=counter`, `?overlay=target`, `?overlay=metrics`, or
    `?overlay=review`); use the URL from Settings so the source points to the
    right view.
-3. In OBS, add a **Browser Source** and paste the URL. Keep the dashboard and
-   OBS Browser Source on the same origin and browser profile for live data.
+3. In OBS, add a **Browser Source** and paste the URL. Start the server with
+   `./run.sh` to stream live session data to OBS in real time.
 4. Choose the font, font size (14–40 px), text/background/accent colors, and
    planned session shots (0–999) in Settings. Changes are saved in the browser
    and update the overlay.

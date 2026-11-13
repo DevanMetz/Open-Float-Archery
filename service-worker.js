@@ -149,6 +149,9 @@ self.addEventListener("fetch", (event) => {
 
   if (!isLocal) return;
 
+  // Real-time overlay events and REST snapshot endpoints must bypass service worker cache
+  if (url.pathname.startsWith("/api/")) return;
+
   event.respondWith(
     fetch(event.request)
       .then((networkResponse) => networkResponse.status >= 500

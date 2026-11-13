@@ -100,8 +100,8 @@ settings reset preferences while preserving saved shots, bow profiles, the
 counter, and cloud-sync credentials. Settings also generates four separate OBS
 Studio Browser Source URLs: shot counter, Pin Float target, last-shot metrics,
 and session review. Font, size, colors, and planned shots can be customized.
-Live session updates require the dashboard and Browser Source to share the same
-origin's local browser storage. Contributors can use the
+Live session updates stream in real time through the local server relay (`./run.sh`).
+Contributors can use the
 [Translation Guide](docs/translation-guide.md) to add a locale or Guide page.
 
 <!-- Current capture uses the built-in demo stream; reshoot connected to real

@@ -144,14 +144,45 @@ function renderSnapshot(snapshot) {
   }
 }
 
+let latestSnapshot = null;
+
+function applySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return;
+  latestSnapshot = snapshot;
+  if (isObsOverlayEnabled(readConfig(snapshot.overlayConfig))) {
+    renderSnapshot(snapshot);
+    if (snapshot.locale && snapshot.locale !== document.documentElement.lang) {
+      void refreshLocale(snapshot.locale);
+    }
+  }
+}
+
 function readSnapshot() {
   try {
-    const snapshot = localStorage.getItem(SNAPSHOT_KEY);
-    renderSnapshot(snapshot ? JSON.parse(snapshot) : null);
+    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    if (raw) {
+      applySnapshot(JSON.parse(raw));
+    } else if (!latestSnapshot) {
+      renderSnapshot(null);
+    }
   } catch (error) {
     console.error("Could not read OBS overlay session data:", error);
     document.getElementById("obsSessionReview").textContent = messages.overlayLoadError || "Could not read live session data.";
   }
+}
+
+async function fetchServerSnapshot() {
+  try {
+    const res = await fetch("/api/overlay/snapshot", { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data === "object" && Object.keys(data).length > 0) {
+        applySnapshot(data);
+        return true;
+      }
+    }
+  } catch (_) {}
+  return false;
 }
 
 async function start() {
@@ -180,18 +211,59 @@ async function start() {
     console.error("Failed to load overlay language:", error);
   }
   let channel = null;
+  let eventSource = null;
+  let pollInterval = null;
+
+  function setupServerSync() {
+    if (eventSource || pollInterval) return;
+
+    if ("EventSource" in window) {
+      try {
+        eventSource = new EventSource("/api/overlay/events");
+        eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            applySnapshot(data);
+          } catch (err) {
+            console.error("Could not parse overlay event data:", err);
+          }
+        };
+      } catch (_) {}
+    }
+
+    pollInterval = setInterval(() => {
+      if (!eventSource || eventSource.readyState !== EventSource.OPEN) {
+        void fetchServerSnapshot();
+      }
+    }, 1500);
+  }
+
+  function stopServerSync() {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+  }
+
   function setEnabled(enabled) {
     root.classList.toggle("hidden", !enabled);
     if (!enabled) {
       channel?.close();
       channel = null;
+      stopServerSync();
       return;
     }
     readSnapshot();
+    void fetchServerSnapshot();
+    setupServerSync();
     if ("BroadcastChannel" in window && !channel) {
       channel = new BroadcastChannel("openfloat-obs");
       channel.addEventListener("message", (event) => {
-        if (isObsOverlayEnabled(readConfig())) renderSnapshot(event.data);
+        applySnapshot(event.data);
       });
     }
   }
@@ -218,7 +290,8 @@ async function refreshLocale(locale) {
       if (message) element.textContent = message;
     });
     document.title = messages.appTitle || document.title;
-    readSnapshot();
+    if (latestSnapshot) renderSnapshot(latestSnapshot);
+    else readSnapshot();
   } catch (error) {
     console.error("Failed to update OBS overlay language:", error);
   }
@@ -227,8 +300,9 @@ async function refreshLocale(locale) {
 window.addEventListener("resize", () => {
   if (root.classList.contains("hidden") || overlayType !== "target") return;
   try {
-    const snapshot = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || "null");
-    drawTarget(snapshot?.latestTrace || []);
+    const trace = latestSnapshot?.latestTrace ||
+      JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || "null")?.latestTrace || [];
+    drawTarget(trace);
   } catch (error) {
     console.error("Could not resize OBS target:", error);
   }

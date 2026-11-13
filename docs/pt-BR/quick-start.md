@@ -256,9 +256,8 @@ Para adicionar uma visualização ao OBS Studio:
 2. Copie a **URL da Fonte de Navegador** gerada. Cada opção tem uma URL própria
    (`?overlay=counter`, `?overlay=target`, `?overlay=metrics` ou
    `?overlay=review`); use o link mostrado nas Configurações.
-3. No OBS, adicione uma **Fonte de Navegador** e cole a URL. Para receber dados
-   ao vivo, mantenha o Painel e a fonte do OBS na mesma origem e no mesmo perfil
-   do navegador.
+3. No OBS, adicione uma **Fonte de Navegador** e cole a URL. Inicie o servidor
+   com `./run.sh` para transmitir os disparos da sessão em tempo real para o OBS.
 4. Nas Configurações, escolha fonte, tamanho (14–40 px), cores do texto/fundo/
    destaque e quantidade prevista de disparos (0–999). As alterações ficam
    salvas no navegador e atualizam o overlay.
