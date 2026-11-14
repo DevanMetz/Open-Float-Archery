@@ -224,8 +224,10 @@ export function mountTraining({ store, el, bus }) {
     if (sample.source === "demo") sessionIsDemo = true;
     
     const state = store.get();
-    const roll = state.roll - (state.cantOffset || 0);
-    const pitch = state.pitch - (state.pitchOffset || 0);
+    const roll = (Number.isFinite(sample.rollDeg) ? sample.rollDeg : state.roll) -
+      (state.cantOffset || 0);
+    const pitch = (Number.isFinite(sample.pitchDeg) ? sample.pitchDeg : state.pitch) -
+      (state.pitchOffset || 0);
     if (!Number.isFinite(roll) || !Number.isFinite(pitch)) return;
     if (trainingSamples.length === 0) {
       // Anchor the target to the first usable frame in this hold.

@@ -232,3 +232,34 @@ and the firmware resumes advertising — usually it reconnects on its own.
 That's it — take a shot and it appears in **Recent Shots** with an OpenFloat
 Float Score. From here, explore **Steady Aim** for hold drills and **Saved
 Shots** for session review.
+
+## 9. Choose a language, correct the shot count, and use OBS
+
+Open **Settings → Preferences** and choose **English (United States)** or
+**Português (Brasil)**. The selection is saved in this browser profile and is
+shared with OBS overlays opened from the same origin.
+
+The Dashboard shot counter has **−**, **+**, and **Reset** controls. They
+correct the count shown by this browser; they do not erase saved shots or send a
+shot-reset command to the sensor. The correction is saved locally. Resetting the
+displayed count is separate from restoring factory preferences, which also
+keeps the counter.
+
+To add a view to OBS Studio:
+
+1. Open **Settings → OBS Studio Overlay** and choose one view: **Shot counter**,
+   **Pin Float target**, **Last shot metrics**, or **Session review**.
+2. Copy the generated **Browser Source URL**. Each selection has its own URL
+   (`?overlay=counter`, `?overlay=target`, `?overlay=metrics`, or
+   `?overlay=review`); use the URL from Settings so the source points to the
+   right view.
+3. In OBS, add a **Browser Source** and paste the URL. Start the server with
+   `./run.sh` to stream live session data to OBS in real time.
+4. Choose the font, font size (14–40 px), text/background/accent colors, and
+   planned session shots (0–999) in Settings. Changes are saved in the browser
+   and update the overlay.
+
+The counter overlay shows actual and planned shots, the target overlay shows
+the latest Pin Float trace, the metrics overlay shows the latest shot, and the
+review overlay summarizes the current session. For language contributors, see
+the [Translation Guide](translation-guide.md).

@@ -2,7 +2,7 @@
 // view with phase-colored Pin Float trace, or the line view with accel /
 // quaternion series and the mic band) from store state each frame.
 
-import { cssVar } from "./bow-3d.js?v=shot-store-155";
+import { cssVar } from "./bow-3d.js?v=shot-store-157";
 import { replayPosition, traceTimeline } from "./replay.js?v=shot-store-155";
 import { tracePhases, phaseForIndex } from "./trace-phases.js?v=shot-store-155";
 

@@ -4,11 +4,12 @@
 import { calculateRangeFromTimes, formatRangeEstimate } from "../telemetry/range.js?v=shot-store-163";
 import { drawTraceChart, reviewChartTimeRangeUs } from "./trace-chart.js?v=shot-store-155";
 import { replayPosition, traceTimeline, timelineIndexAt } from "./replay.js?v=shot-store-155";
+import { displayShotCount } from "./shot-counter.js?v=1";
 import {
   calibratedAngle,
   initOrientationVisualizer,
   wrapAngleDeg,
-} from "./bow-3d.js?v=shot-store-155";
+} from "./bow-3d.js?v=shot-store-157";
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -207,7 +208,7 @@ export function mountReviewMarkers({ store, canvas }) {
   canvas.addEventListener("touchcancel", endDrag);
 }
 
-export function mountDashboard({ store, telemetry, el }) {
+export function mountDashboard({ store, telemetry, el, bus }) {
   const ctx = el.traceCanvas.getContext("2d");
   initOrientationVisualizer(el, store);
   mountReviewMarkers({ store, canvas: el.traceCanvas });
@@ -262,7 +263,7 @@ export function mountDashboard({ store, telemetry, el }) {
     el.hzValue.textContent = s.reviewMode ? "--" : String(s.hz || 0);
     el.lossValue.textContent = s.reviewMode ? "--" : String(s.lost || 0);
     el.frameCountValue.textContent = s.reviewMode ? "--" : String(s.frameCount || 0);
-    el.shotCountValue.textContent = String(s.shotCount || 0);
+    el.shotCountValue.textContent = String(displayShotCount(s.shotCount, s.shotCountAdjustment));
 
     let hasMic = s.connected && !s.reviewMode && s.sample && s.sample.micAmp !== undefined;
     let micPct = hasMic ? Math.round((s.sample.micAmp / 255) * 100) : 0;
@@ -348,14 +349,47 @@ export function mountDashboard({ store, telemetry, el }) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  function draw() {
-    drawTraceChart(ctx, el.traceCanvas, store, telemetry);
-    requestAnimationFrame(draw);
+  let drawFrame = null;
+  let lastDrawTime = 0;
+  function dashboardVisible() {
+    return !document.hidden && !el.tabDashboard?.classList.contains("hidden-view");
   }
 
+  function draw(timestamp) {
+    drawFrame = null;
+    if (!dashboardVisible()) return;
+
+    if (timestamp - lastDrawTime >= 50) {
+      drawTraceChart(ctx, el.traceCanvas, store, telemetry);
+      lastDrawTime = timestamp;
+    }
+    drawFrame = requestAnimationFrame(draw);
+  }
+
+  function pauseDrawing() {
+    if (drawFrame !== null) {
+      cancelAnimationFrame(drawFrame);
+      drawFrame = null;
+    }
+  }
+
+  function resumeDrawing() {
+    if (dashboardVisible() && drawFrame === null) {
+      drawFrame = requestAnimationFrame(draw);
+    }
+  }
+
+  bus.on("view-changed", (viewId) => {
+    if (viewId === "tabDashboard") resumeDrawing();
+    else pauseDrawing();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) pauseDrawing();
+    else resumeDrawing();
+  });
   window.addEventListener("resize", resize);
   resize();
-  draw();
+  resumeDrawing();
 }
 
 export function mountLog(bus, logEl) {

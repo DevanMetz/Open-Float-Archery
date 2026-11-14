@@ -1,4 +1,4 @@
-const CACHE_NAME = "openfloat-v200";
+const CACHE_NAME = "openfloat-v211";
 const ASSETS = [
   "./",
   "./index.html",
@@ -16,6 +16,12 @@ const ASSETS = [
   "./vendor/three/examples/jsm/controls/OrbitControls.js",
   "./vendor/three/examples/jsm/utils/BufferGeometryUtils.js",
   "./app/main.js",
+  "./app/ui/localization.js",
+  "./app/ui/shot-counter.js",
+  "./app/ui/preferences.js",
+  "./app/ui/obs-overlay.js",
+  "./locales/en-US.json",
+  "./locales/pt-BR.json",
   "./app/data/sample-data.js",
   "./app/data/sample-shots-data.js",
   "./app/core/db.js",
@@ -46,7 +52,11 @@ const ASSETS = [
   "./app/ui/training-coach.js",
   "./app/ui/guide.js",
   "./docs/index.json",
-  "./docs/images/dashboard-live.png"
+  "./docs/images/dashboard-live.png",
+  "./docs/pt-BR/quick-start.md",
+  "./docs/pt-BR/feature-status.md",
+  "./docs/pt-BR/reference/ble-commands.md",
+  "./docs/pt-BR/translation-guide.md"
 ];
 
 // Collect every Markdown file path from the generated docs index tree.
@@ -138,6 +148,9 @@ self.addEventListener("fetch", (event) => {
   const isLocal = url.origin === self.location.origin;
 
   if (!isLocal) return;
+
+  // Real-time overlay events and REST snapshot endpoints must bypass service worker cache
+  if (url.pathname.startsWith("/api/")) return;
 
   event.respondWith(
     fetch(event.request)

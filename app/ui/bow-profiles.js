@@ -1,10 +1,11 @@
 import * as browserDb from "../core/db.js?v=shot-store-176";
+import { translateMessage } from "./localization.js?v=3";
 
 const ACTIVE_BOW_KEY = "openfloat_active_bow_id";
 const DELETE_MESSAGE = "Are you sure you want to delete this bow profile? This will not delete historical shots associated with it.";
 
 export function mountBowProfiles({ el, bus, syncAdapter, database = browserDb, preferences,
-  confirmDelete = () => globalThis.confirm(DELETE_MESSAGE) }) {
+  confirmDelete = () => globalThis.confirm(translateMessage(DELETE_MESSAGE)) }) {
   const select = el.bowProfileSelect;
   const fields = {
     model: el.bowModelInput, draw_weight: el.drawWeightInput, arrow_speed: el.bowSpeedInput,

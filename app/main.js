@@ -3,7 +3,7 @@
 
 import { createStore, EventBus } from "./core/store.js?v=shot-store-180";
 import { watchSavedData } from "./core/saved-data.js?v=shot-store-174";
-import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-200";
+import { TelemetryStore } from "./telemetry/telemetry.js?v=shot-store-202";
 import { createAdapter } from "./device/adapters.js?v=shot-store-200";
 import { mountDashboard, mountLog } from "./ui/dashboard.js?v=shot-store-163";
 import { createReplayController, traceTimeline } from "./ui/replay.js?v=shot-store-155";
@@ -16,18 +16,21 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/bow-3d.js?v=shot-store-155";
-import { initDb, getAll, put, removeSavedShots } from "./core/db.js?v=shot-store-176";
+} from "./ui/bow-3d.js?v=shot-store-157";
+import { initDb, get, getAll, put, removeSavedShots, groupShotsByTime } from "./core/db.js?v=shot-store-176";
 import { CloudSyncAdapter } from "./telemetry/sync.js?v=shot-store-176";
-import { mountTraining } from "./ui/training.js?v=shot-store-200";
+import { mountTraining } from "./ui/training.js?v=shot-store-202";
 import { mountGuide } from "./ui/guide.js?v=shot-store-161";
 import { initDataBackup } from "./ui/data-backup.js?v=shot-store-176";
-import { initHistory } from "./ui/history.js?v=shot-store-183";
-import { mountBowProfiles } from "./ui/bow-profiles.js?v=shot-store-176";
+import { initHistory } from "./ui/history.js?v=shot-store-184";
+import { mountBowProfiles } from "./ui/bow-profiles.js?v=shot-store-177";
 import { mountBrowserSupport } from "./ui/browser-support.js?v=shot-store-178";
 import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=shot-store-137";
+import { getActiveMessages, initLocalization, translateMessage } from "./ui/localization.js?v=3";
+import { isObsOverlayEnabled, resetFactorySettings } from "./ui/preferences.js?v=2";
+import { adjustShotCountOffset, displayShotCount } from "./ui/shot-counter.js?v=1";
 
-const APP_BUILD = "shot-store-200";
+const APP_BUILD = "shot-store-209";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -90,6 +93,11 @@ const ELEMENT_IDS = [
   "recentShotsPanel", "recentShotsList",
   "exportDataBtn", "importDataBtn", "importDataInput", "dataBackupStatus",
   "sampleDataCard", "clearSamplesBtn", "sampleDataStatus",
+  "languageSelect", "shotCountPlusBtn", "shotCountMinusBtn", "shotCountResetBtn",
+  "factoryResetBtn", "factoryResetStatus",
+  "obsOverlayUrl", "obsOverlayType", "obsOverlayToggleBtn", "copyObsOverlayUrlBtn", "openObsOverlayLink", "obsFontSelect",
+  "obsFontSize", "obsTextColor", "obsBackgroundColor", "obsAccentColor",
+  "obsPlannedShotCount", "obsOverlayStatus",
   "toggleLevelTuneBtn", "levelTuneSection", "levelRangeSlider",
   "levelRangeValue", "levelToleranceSlider", "levelToleranceValue",
   "liveDurationSlider", "liveDurationValue", "liveDurationContainer", "liveDurationDivider"
@@ -97,6 +105,233 @@ const ELEMENT_IDS = [
 
 const el = {};
 for (const id of ELEMENT_IDS) el[id] = document.getElementById(id);
+void initLocalization(el.languageSelect);
+
+const SHOT_COUNT_OFFSET_KEY = "openfloat_shot_count_offset";
+const OBS_SNAPSHOT_KEY = "openfloat_obs_snapshot";
+const OBS_CONFIG_KEY = "openfloat_overlay_settings";
+const COUNTER_SYNCED_KEY = "openfloat_counter_synced";
+const COUNTER_PENDING_REBASE_KEY = "openfloat_counter_pending_rebase";
+let obsBroadcastChannel = null;
+if ("BroadcastChannel" in window) {
+  try {
+    obsBroadcastChannel = new BroadcastChannel("openfloat-obs");
+  } catch (_) {}
+}
+let counterSynced = false;
+try {
+  counterSynced = localStorage.getItem(COUNTER_SYNCED_KEY) === "1";
+} catch (error) {
+  console.error("Could not read shot counter sync state:", error);
+}
+
+function cachedShotCountOffset() {
+  try {
+    const value = Number(localStorage.getItem(SHOT_COUNT_OFFSET_KEY));
+    return Number.isFinite(value) ? Math.trunc(value) : 0;
+  } catch (error) {
+    console.error("Could not read shot counter adjustment:", error);
+    return 0;
+  }
+}
+
+function readObsConfig() {
+  try {
+    const config = JSON.parse(localStorage.getItem(OBS_CONFIG_KEY) || "{}");
+    const supportedFonts = [
+      "Inter, Arial, sans-serif",
+      "Arial, sans-serif",
+      "Georgia, serif",
+      "'JetBrains Mono', monospace",
+    ];
+    return {
+      font: supportedFonts.includes(config.font) ? config.font : "Inter, Arial, sans-serif",
+      fontSize: Math.min(40, Math.max(14, Number(config.fontSize) || 22)),
+      textColor: /^#[0-9a-f]{6}$/i.test(config.textColor) ? config.textColor : "#e6f4ef",
+      backgroundColor: /^#[0-9a-f]{6}$/i.test(config.backgroundColor) ? config.backgroundColor : "#071014",
+      accentColor: /^#[0-9a-f]{6}$/i.test(config.accentColor) ? config.accentColor : "#35c7e8",
+      showTarget: config.showTarget !== false,
+      showMetrics: config.showMetrics !== false,
+      showReview: config.showReview !== false,
+      enabled: isObsOverlayEnabled(config),
+      overlayType: ["counter", "target", "metrics", "review"].includes(config.overlayType)
+        ? config.overlayType
+        : "counter",
+      plannedShots: Math.min(999, Math.max(0, Math.trunc(Number(config.plannedShots) || 0))),
+    };
+  } catch (error) {
+    console.error("Failed to load OBS overlay preferences:", error);
+    return {};
+  }
+}
+
+function overlayUrl(type = "counter") {
+  const url = new URL(location.href);
+  url.searchParams.set("overlay", type);
+  url.hash = "";
+  return url.href;
+}
+
+function initObsOverlaySettings() {
+  if (!el.obsOverlayUrl) return;
+  const config = readObsConfig();
+  el.obsOverlayType.value = config.overlayType || "counter";
+  el.obsOverlayUrl.value = overlayUrl(el.obsOverlayType.value);
+  el.openObsOverlayLink.href = el.obsOverlayUrl.value;
+  el.obsFontSelect.value = config.font || "Inter, Arial, sans-serif";
+  el.obsFontSize.value = config.fontSize || 22;
+  el.obsTextColor.value = config.textColor || "#e6f4ef";
+  el.obsBackgroundColor.value = config.backgroundColor || "#071014";
+  el.obsAccentColor.value = config.accentColor || "#35c7e8";
+  el.obsPlannedShotCount.value = config.plannedShots || 0;
+  const updateOverlayToggle = (enabled) => {
+    const messages = getActiveMessages();
+    el.obsOverlayToggleBtn.textContent = messages[enabled ? "disableObsOverlay" : "enableObsOverlay"] ||
+      (enabled ? "Disable OBS overlay" : "Enable OBS overlay");
+    el.obsOverlayToggleBtn.setAttribute("aria-pressed", String(enabled));
+  };
+  updateOverlayToggle(isObsOverlayEnabled(config));
+  window.addEventListener("openfloat-locale-changed", () => {
+    updateOverlayToggle(isObsOverlayEnabled(readObsConfig()));
+  });
+  el.obsOverlayToggleBtn.addEventListener("click", () => {
+    const enabled = !isObsOverlayEnabled(readObsConfig());
+    try {
+      localStorage.setItem(OBS_CONFIG_KEY, JSON.stringify({
+        ...readObsConfig(),
+        enabled,
+      }));
+      updateOverlayToggle(enabled);
+      el.obsOverlayStatus.textContent = getActiveMessages()[
+        enabled ? "obsOverlayEnabled" : "obsOverlayDisabled"
+      ] || (enabled ? "OBS overlay enabled." : "OBS overlay disabled.");
+      if (enabled) {
+        void publishObsSnapshot();
+      }
+    } catch (error) {
+      console.error("Could not change OBS overlay state:", error);
+      el.obsOverlayStatus.textContent = "Could not save overlay settings in this browser.";
+      bus.emit("log", `OBS overlay state could not be changed: ${error.message}`);
+    }
+  });
+  const updateOverlayUrl = () => {
+    try {
+      localStorage.setItem(OBS_CONFIG_KEY, JSON.stringify({
+        ...readObsConfig(),
+        overlayType: el.obsOverlayType.value,
+      }));
+    } catch (error) {
+      console.error("Could not save chosen OBS overlay:", error);
+      el.obsOverlayStatus.textContent = "Could not save overlay selection.";
+    }
+    el.obsOverlayUrl.value = overlayUrl(el.obsOverlayType.value);
+    el.openObsOverlayLink.href = el.obsOverlayUrl.value;
+  };
+  el.obsOverlayType.addEventListener("change", updateOverlayUrl);
+  const save = () => {
+    const updated = {
+      font: el.obsFontSelect.value,
+      fontSize: Math.min(40, Math.max(14, Number(el.obsFontSize.value) || 22)),
+      textColor: el.obsTextColor.value,
+      backgroundColor: el.obsBackgroundColor.value,
+      accentColor: el.obsAccentColor.value,
+      overlayType: el.obsOverlayType.value,
+      plannedShots: Math.min(999, Math.max(0, Math.trunc(Number(el.obsPlannedShotCount.value) || 0))),
+      enabled: isObsOverlayEnabled(readObsConfig()),
+    };
+    try {
+      localStorage.setItem(OBS_CONFIG_KEY, JSON.stringify(updated));
+      el.obsOverlayStatus.textContent = "";
+      void publishObsSnapshot();
+    } catch (error) {
+      console.error("Failed to save OBS overlay preferences:", error);
+      el.obsOverlayStatus.textContent = "Could not save overlay settings in this browser.";
+    }
+  };
+  [
+    el.obsFontSelect, el.obsFontSize, el.obsTextColor, el.obsBackgroundColor,
+    el.obsAccentColor, el.obsPlannedShotCount,
+  ].forEach((input) => input.addEventListener("change", save));
+  el.copyObsOverlayUrlBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(el.obsOverlayUrl.value);
+      el.obsOverlayStatus.textContent = "OBS overlay URL copied.";
+    } catch (error) {
+      console.error("Could not copy OBS overlay URL:", error);
+      el.obsOverlayUrl.select();
+      el.obsOverlayStatus.textContent = "Copy is unavailable; select and copy the URL above.";
+    }
+  });
+}
+
+let publishingObsSnapshot = false;
+let publishObsSnapshotAgain = false;
+async function publishObsSnapshot() {
+  if (!isObsOverlayEnabled(readObsConfig())) return;
+  if (publishingObsSnapshot) {
+    publishObsSnapshotAgain = true;
+    return;
+  }
+  publishingObsSnapshot = true;
+  try {
+    do {
+      publishObsSnapshotAgain = false;
+      const shots = await getAll("shots");
+      const sessions = groupShotsByTime(shots);
+      const latestSession = sessions[0];
+      const sessionShots = latestSession?.shots || [];
+      const scored = sessionShots.map((shot) => shot.shot_score == null ? NaN : Number(shot.shot_score))
+        .filter((score) => Number.isFinite(score) && score >= 0);
+      const chronologicalScores = [...sessionShots].reverse()
+        .map((shot) => shot.shot_score == null ? NaN : Number(shot.shot_score))
+        .filter((score) => Number.isFinite(score) && score >= 0);
+      const latestShot = sessionShots[0] || null;
+      const latestTraceRecord = latestShot ? await get("shot_traces", latestShot.id) : null;
+      const tracePayload = Array.isArray(latestTraceRecord?.payload) ? latestTraceRecord.payload : [];
+      const latestTrace = tracePayload.length > 240
+        ? tracePayload.filter((_, index) => index % Math.ceil(tracePayload.length / 240) === 0)
+        : tracePayload;
+      const config = readObsConfig();
+      if (!isObsOverlayEnabled(config)) continue;
+      const snapshot = {
+        shotCount: displayShotCount(store.get().shotCount, store.get().shotCountAdjustment),
+        plannedShots: config.plannedShots || 0,
+        overlayConfig: config,
+        locale: localStorage.getItem("openfloat_locale") || "en-US",
+        latestShot,
+        latestTrace: latestTrace.map((point) => ({ roll: Number(point.roll) || 0, pitch: Number(point.pitch) || 0 })),
+        sessionReview: sessionShots.length ? {
+          total: sessionShots.length,
+          scored: scored.length,
+          average: scored.length ? Math.round(scored.reduce((sum, score) => sum + score, 0) / scored.length) : null,
+          best: scored.length ? Math.round(Math.max(...scored)) : null,
+          trend: chronologicalScores.length > 1
+            ? Math.round(chronologicalScores.at(-1) - chronologicalScores[0])
+            : null,
+        } : null,
+      };
+      try {
+        localStorage.setItem(OBS_SNAPSHOT_KEY, JSON.stringify(snapshot));
+        obsBroadcastChannel?.postMessage(snapshot);
+      } catch (error) {
+        console.error("Failed to publish OBS overlay data locally:", error);
+        bus.emit("log", `OBS overlay data could not be published: ${error.message}`);
+      }
+      try {
+        fetch("/api/overlay/snapshot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(snapshot),
+        }).catch(() => {});
+      } catch (_) {}
+    } while (publishObsSnapshotAgain);
+  } catch (error) {
+    console.error("Could not build OBS overlay session data:", error);
+    bus.emit("log", `OBS overlay data could not be refreshed: ${error.message}`);
+  } finally {
+    publishingObsSnapshot = false;
+  }
+}
 
 // Load cached settings from localStorage
 const cached = (() => {
@@ -108,6 +343,9 @@ const cached = (() => {
 })();
 
 const bus = new EventBus();
+bus.on("shot-saved", () => { void publishObsSnapshot(); });
+bus.on("shot-trace-saved", () => { void publishObsSnapshot(); });
+bus.on("saved-data-changed", () => { void publishObsSnapshot(); });
 const cachedMountOrientation = cached.mountOrientation === "custom"
   ? "custom"
   : mountOrientationById(cached.mountOrientation).id;
@@ -160,6 +398,7 @@ const store = createStore({
   accelG: 0,
   gyroMag: 0,
   shotCount: 0,
+  shotCountAdjustment: cachedShotCountOffset(),
   uploadPending: 0,
   wakeSensitivity: 2.0,
   threshold: cached.threshold !== undefined ? Number(cached.threshold) : 12.0,
@@ -237,6 +476,35 @@ const store = createStore({
   manualRecordElapsedSec: 0,
   liveTraceDuration: cached.liveTraceDuration !== undefined ? Number(cached.liveTraceDuration) : 10
 });
+
+function reconcileCounterOnDeviceSync(rawCount) {
+  if (rawCount == null || rawCount === "") return;
+  const count = Number(rawCount);
+  if (!Number.isInteger(count) || count < 0) return;
+  let pendingRebase = false;
+  try {
+    pendingRebase = localStorage.getItem(COUNTER_PENDING_REBASE_KEY) === "1";
+  } catch (error) {
+    console.error("Could not read pending counter reset:", error);
+    bus.emit("log", `Pending counter reset could not be read: ${error.message}`);
+  }
+  if (!counterSynced && pendingRebase) {
+    const current = store.get();
+    const desired = displayShotCount(current.shotCount, current.shotCountAdjustment);
+    setShotCountAdjustment(desired - count);
+  }
+  counterSynced = true;
+  try {
+    localStorage.setItem(COUNTER_SYNCED_KEY, "1");
+    localStorage.removeItem(COUNTER_PENDING_REBASE_KEY);
+  } catch (error) {
+    console.error("Could not save shot counter sync state:", error);
+    bus.emit("log", `Shot counter sync state could not be saved: ${error.message}`);
+  }
+}
+
+bus.on("shotcount", reconcileCounterOnDeviceSync);
+bus.on("upload-status", ({ shotCount }) => reconcileCounterOnDeviceSync(shotCount));
 
 function saveSettingsToCache() {
   try {
@@ -419,6 +687,7 @@ initDb().then(async (database) => {
     if (!await refreshSavedData(stores)) throw new Error("Some saved views could not refresh. Reopen Saved Shots or Settings to retry.");
   }, { onError: (error) => bus.emit("log", `Saved data remains local: ${error.message}`) });
   await seedSampleDataIfEmpty();
+  await publishObsSnapshot();
   await bowProfilesUi.load();
   await historyUi?.loadRecentShotsList();
   await updateSampleControls();
@@ -431,21 +700,70 @@ const syncAdapter = new CloudSyncAdapter(bus, store);
 telemetry.syncAdapter = syncAdapter; // Register sync on telemetry store
 const bowProfilesUi = mountBowProfiles({ el, bus, syncAdapter });
 
-mountDashboard({ store, telemetry, el });
+mountDashboard({ store, telemetry, el, bus });
 mountTraining({ store, el, bus });
 mountLog(bus, el.eventLog);
-mountOrientationSettings({ store, el });
+mountOrientationSettings({ store, el, bus });
 mountBowShop({ store, el, saveSettingsToCache });
 
 // Initialize settings fields from localStorage cache on load
 initSettingsFromCache();
+initObsOverlaySettings();
+el.factoryResetBtn?.addEventListener("click", () => {
+  const messages = getActiveMessages();
+  if (!window.confirm(messages.factorySettingsConfirm)) return;
+  try {
+    resetFactorySettings(localStorage);
+    location.reload();
+  } catch (error) {
+    console.error("Could not reset app preferences:", error);
+    el.factoryResetStatus.textContent = messages.factorySettingsError;
+    bus.emit("log", `App preferences could not be fully reset: ${error.message}`);
+  }
+});
+function setShotCountAdjustment(nextOffset) {
+  const adjustment = Math.trunc(Number(nextOffset) || 0);
+  try {
+    localStorage.setItem(SHOT_COUNT_OFFSET_KEY, String(adjustment));
+  } catch (error) {
+    console.error("Could not save shot counter adjustment:", error);
+    bus.emit("log", `Shot counter adjustment could not be saved: ${error.message}`);
+  }
+  if (!counterSynced) {
+    try {
+      localStorage.setItem(COUNTER_PENDING_REBASE_KEY, "1");
+    } catch (error) {
+      console.error("Could not save pending counter reset:", error);
+      bus.emit("log", `Counter reset could not be saved for the next device connection: ${error.message}`);
+    }
+  }
+  store.set({ shotCountAdjustment: adjustment });
+}
+
+el.shotCountPlusBtn?.addEventListener("click", () => {
+  const state = store.get();
+  setShotCountAdjustment(adjustShotCountOffset(state.shotCount, state.shotCountAdjustment, 1));
+});
+el.shotCountMinusBtn?.addEventListener("click", () => {
+  const state = store.get();
+  setShotCountAdjustment(adjustShotCountOffset(state.shotCount, state.shotCountAdjustment, -1));
+});
+el.shotCountResetBtn?.addEventListener("click", () => {
+  setShotCountAdjustment(-Math.max(0, Math.trunc(Number(store.get().shotCount) || 0)));
+});
 if (modelAttitudeMigrated) {
   saveSettingsToCache();
   bus.emit("log", "Updated model attitude defaults for the imported bow axes.");
 }
 
 // Sync UI states by subscribing to the store
+let lastObsCounterSignature = "";
 store.subscribe((state) => {
+  const obsCounterSignature = `${state.shotCount}|${state.shotCountAdjustment}|${state.lastShotSummary?.timestamp || ""}`;
+  if (obsCounterSignature !== lastObsCounterSignature) {
+    lastObsCounterSignature = obsCounterSignature;
+    void publishObsSnapshot();
+  }
   if (el.syncBadge && el.syncText) {
     el.syncText.textContent = state.syncText;
     el.syncBadge.setAttribute("aria-label", `Configure cloud sync: ${state.syncText}`);
@@ -600,7 +918,7 @@ el.saveCloudSettingsBtn.addEventListener("click", async () => {
     el.cloudModal.close();
     await syncAdapter.resetConfig();
   } else {
-    alert("Please enter both your Supabase URL and Anon Key.");
+    alert(translateMessage("Please enter both your Supabase URL and Anon Key."));
   }
 });
 
@@ -798,7 +1116,7 @@ el.recordToggleBtn.addEventListener("click", async () => {
 });
 el.discardRecordBtn.addEventListener("click", () => {
   if (store.get().manualRecordingSaving) return;
-  if (confirm("Are you sure you want to discard this manual recording?")) {
+  if (confirm(translateMessage("Are you sure you want to discard this manual recording?"))) {
     telemetry.discardManualRecording();
     if (!el.recordToggleBtn.disabled) el.recordToggleBtn.focus();
   }
@@ -815,11 +1133,12 @@ el.zeroBtn.addEventListener("click", () => {
   const pitch = store.get().pitch || 0;
   const yaw = store.get().yaw || 0;
   const confirmed = confirm(
-    "Run zero calibration?\n\n" +
-      "This sets the bow level reference from the sensor's current cant and pitch. " +
-      "Only do this when the bow is level and still.\n\n" +
-      `Current reading: Cant ${roll.toFixed(1)}°, Pitch ${pitch.toFixed(1)}°, Yaw ${yaw.toFixed(1)}°\n\n` +
-      "Your previous calibration will be replaced.",
+    `${translateMessage("Run zero calibration?")}\n\n` +
+      `${translateMessage("This sets the bow level reference from the sensor's current cant and pitch.")} ` +
+      `${translateMessage("Only do this when the bow is level and still.")}\n\n` +
+      `${translateMessage("Current reading:")} ${translateMessage("Cant")} ${roll.toFixed(1)}°, ` +
+      `${translateMessage("Pitch")} ${pitch.toFixed(1)}°, ${translateMessage("Yaw")} ${yaw.toFixed(1)}°\n\n` +
+      translateMessage("Your previous calibration will be replaced."),
   );
   if (!confirmed) return;
 

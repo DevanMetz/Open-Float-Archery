@@ -20,12 +20,14 @@ import {
 
 export const MAX_TRACE_POINTS = 1000;
 
+const LIVE_UI_UPDATE_INTERVAL_MS = 50;
 const ACCEL_TILT_MIN_G = 0.7;
 const ACCEL_TILT_MAX_G = 1.35;
 const ORIENTATION_CORRECTION_TIME_S = 0.45;
 const MAX_ORIENTATION_DT_S = 0.05;
 const BROWSER_SHOT_TRACE_RATES = [0, 208, 416, 832];
 const BROWSER_SHOT_TRACE_SECONDS = 20;
+const ROLLING_BUFFER_PRUNE_BATCH = 512;
 const BROWSER_SHOT_PRE_MS = 3500;
 const DEFAULT_FOLLOW_THROUGH_MS = 1500;
 const MAX_FOLLOW_THROUGH_MS = 3000;
@@ -146,6 +148,35 @@ function angleDistanceDeg(a, b) {
   return Math.abs(wrapAngleDeg(Number(a) - Number(b)));
 }
 
+function pruneTimestampBuffer(buffer, cutoffUs) {
+  if (!buffer.length || buffer[0].tUs >= cutoffUs) return;
+
+  let low = 0;
+  let high = buffer.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (buffer[middle].tUs < cutoffUs) low = middle + 1;
+    else high = middle;
+  }
+  const pruneBatch = Math.min(
+    ROLLING_BUFFER_PRUNE_BATCH,
+    Math.max(1, Math.floor(buffer.length * 0.05)),
+  );
+  if (buffer.length <= ROLLING_BUFFER_PRUNE_BATCH || low >= pruneBatch) {
+    buffer.splice(0, low);
+  }
+}
+
+function trimCapacityBuffer(buffer, capacity) {
+  const pruneBatch = Math.min(
+    ROLLING_BUFFER_PRUNE_BATCH,
+    Math.max(1, Math.floor(capacity * 0.25)),
+  );
+  if (buffer.length > capacity + pruneBatch) {
+    buffer.splice(0, buffer.length - capacity);
+  }
+}
+
 function sampleQuaternion(sample) {
   const qw = Number(sample.qw);
   const qx = Number(sample.qx);
@@ -184,6 +215,9 @@ export class TelemetryStore {
     this.micRingBuffer = [];
     this.history30s = []; // Rolling 30s telemetry buffer for manual captures
     this.pendingTraces = new Map();
+    this.liveUiTimer = null;
+    this.pendingLiveUiPatch = null;
+    this.pendingLiveScoreInput = null;
     this.reset();
 
     bus.on("sample", (sample) => this.ingest(sample));
@@ -222,6 +256,7 @@ export class TelemetryStore {
         });
       }
       if (!connected) {
+        this.cancelPendingLiveUiUpdate();
         this.connectionEpoch += 1;
         this.deviceCountSynced = false;
         this.connectionShotIds.clear();
@@ -246,6 +281,7 @@ export class TelemetryStore {
 
     // Per-second frame rate.
     setInterval(() => {
+      this.refreshBrowserShotTraceRate();
       this.store.set({ hz: this.framesThisSecond });
       this.framesThisSecond = 0;
     }, 1000);
@@ -254,6 +290,7 @@ export class TelemetryStore {
   reset() {
     // Switching transports must never erase an unsaved or pending capture.
     if (this.store.get().manualRecordingActive || this.isSavingManual) return false;
+    this.cancelPendingLiveUiUpdate();
     this.connectionEpoch = (this.connectionEpoch || 0) + 1;
     this.deviceCountSynced = false;
     this.lastSeq = null;
@@ -329,6 +366,48 @@ export class TelemetryStore {
       manualRecordElapsedSec: 0
     });
     return true;
+  }
+
+  cancelPendingLiveUiUpdate() {
+    if (this.liveUiTimer !== null) {
+      clearTimeout(this.liveUiTimer);
+      this.liveUiTimer = null;
+    }
+    this.pendingLiveUiPatch = null;
+    this.pendingLiveScoreInput = null;
+  }
+
+  refreshBrowserShotTraceRate() {
+    const rate = configuredBrowserShotTraceRateHz();
+    if (rate === this.shotTraceRateHz) return;
+
+    this.shotTraceRateHz = rate;
+    this.shotTraceDtUs = rate > 0 ? Math.round(1000000 / rate) : 0;
+    this.shotTraceCapacity = Math.max(1, Math.round(rate * BROWSER_SHOT_TRACE_SECONDS));
+    this.shotTraceBuffer = [];
+    this.lastShotTracePushUs = this.elapsedUs;
+  }
+
+  scheduleLiveUiUpdate(patch, scoreInput) {
+    this.pendingLiveUiPatch = patch;
+    this.pendingLiveScoreInput = scoreInput;
+    if (this.liveUiTimer !== null) return;
+
+    this.liveUiTimer = setTimeout(() => {
+      this.liveUiTimer = null;
+      const latestPatch = this.pendingLiveUiPatch;
+      const latestScoreInput = this.pendingLiveScoreInput;
+      this.pendingLiveUiPatch = null;
+      this.pendingLiveScoreInput = null;
+      if (!latestPatch || !latestScoreInput) return;
+
+      const score = computeLiveFloatScore({ ...latestScoreInput, trace: this.trace });
+      this.store.set({
+        ...latestPatch,
+        ...score,
+        ...coachForScore({ ...score, roll: latestScoreInput.roll }),
+      });
+    }, LIVE_UI_UPDATE_INTERVAL_MS);
   }
 
   ingest(sample) {
@@ -457,18 +536,6 @@ export class TelemetryStore {
       }
     }
 
-    const configuredShotTraceRate = configuredBrowserShotTraceRateHz();
-    if (configuredShotTraceRate !== this.shotTraceRateHz) {
-      this.shotTraceRateHz = configuredShotTraceRate;
-      this.shotTraceDtUs =
-        this.shotTraceRateHz > 0 ? Math.round(1000000 / this.shotTraceRateHz) : 0;
-      this.shotTraceCapacity = Math.max(
-        1,
-        Math.round(this.shotTraceRateHz * BROWSER_SHOT_TRACE_SECONDS),
-      );
-      this.shotTraceBuffer = [];
-      this.lastShotTracePushUs = this.elapsedUs;
-    }
     if (
       this.shotTraceRateHz > 0 &&
       (this.shotTraceBuffer.length === 0 ||
@@ -482,9 +549,7 @@ export class TelemetryStore {
         lost: this.lost,
       });
       this.lastShotTracePushUs = this.elapsedUs;
-      if (this.shotTraceBuffer.length > this.shotTraceCapacity) {
-        this.shotTraceBuffer.shift();
-      }
+      trimCapacityBuffer(this.shotTraceBuffer, this.shotTraceCapacity);
 
       this.history30s.push({
         ...tracePoint,
@@ -492,42 +557,34 @@ export class TelemetryStore {
         lost: this.lost
       });
       const historyCutoffUs = this.elapsedUs - 30000000;
-      while (this.history30s[0]?.tUs < historyCutoffUs) {
-        this.history30s.shift();
-      }
+      pruneTimestampBuffer(this.history30s, historyCutoffUs);
     }
 
     this.micRingBuffer.push({
       tUs: this.elapsedUs,
       micAmp: sample.micAmp || 0,
     });
-    if (this.micRingBuffer.length > MIC_RING_CAPACITY) {
-      this.micRingBuffer.shift();
-    }
+    trimCapacityBuffer(this.micRingBuffer, MIC_RING_CAPACITY);
 
+    let manualProgress = null;
     if (this.isRecordingManual) {
       this.manualRecordingBuffer.push({
         ...tracePoint,
         sample: sample.source === "demo",
       });
       this.manualRecordingDurationUs += sampleDtUs;
-      this.store.set({
+      manualProgress = {
         manualRecordSamples: this.manualRecordingBuffer.length,
-        manualRecordElapsedSec: Number((this.manualRecordingDurationUs / 1000000).toFixed(1))
-      });
+        manualRecordElapsedSec: Number((this.manualRecordingDurationUs / 1000000).toFixed(1)),
+      };
     }
 
-    const score = computeLiveFloatScore({ roll, pitch, gyroMag, accelG, trace: this.trace });
-    const coaching = coachForScore({ ...score, roll });
-
-    this.store.set({
+    const patch = {
       sample,
       frameCount: this.frameCount,
       lost: this.lost,
       accelG,
       gyroMag,
-      shotCount:
-        sample.shotCount != null ? sample.shotCount : this.store.get().shotCount,
       roll,
       pitch,
       yaw,
@@ -535,9 +592,10 @@ export class TelemetryStore {
       qx: quat ? quat.qx : null,
       qy: quat ? quat.qy : null,
       qz: quat ? quat.qz : null,
-      ...score,
-      ...coaching,
-    });
+      ...(sample.shotCount != null ? { shotCount: sample.shotCount } : {}),
+      ...(manualProgress || {}),
+    };
+    this.scheduleLiveUiUpdate(patch, { roll, pitch, gyroMag, accelG });
   }
 
   // Newest shot record with this sensor key and device_shot_id within the dedup

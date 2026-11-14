@@ -212,6 +212,35 @@ frames/s. A healthy device shows `fifo_overruns=0` and `fifo_resyncs=0` in the
 periodic `# CPU_LOAD` line. If a serial client sees no bytes, make sure no other
 app holds the port, then assert DTR/RTS and reset the board with the port open.
 
+## Update and build both device images
+
+With the NCS v3.3.0 workspace installed and the repository checked out on a
+branch with an upstream, run this from the repository root:
+
+```sh
+./tools/update_and_build_firmware.sh
+```
+
+The script fast-forward updates the current branch from its configured upstream
+and then builds both firmware variants. It stops before updating if tracked
+files have local changes; untracked files are left untouched, and Git will stop
+the update if one would be overwritten. The script does not flash either board.
+The output files are:
+
+```text
+firmware/build-RLFA1/OpenFloat-RLFA1.hex  # advertises as OpenFloat-RLFA1
+firmware/build-RLFA2/OpenFloat-RLFA2.hex  # advertises as OpenFloat-RLFA2
+```
+
+Flash each image to its matching board using the OpenOCD procedure below. The
+script expects the workspace at `~/ncs/workspace` and `nrfutil` on `PATH` or at
+`~/.local/bin/nrfutil`. Override these locations when needed:
+
+```sh
+NCS_WORKSPACE="/path/to/ncs/workspace" NRFUTIL="/path/to/nrfutil" \
+  ./tools/update_and_build_firmware.sh
+```
+
 ## How it runs (key tuning knobs)
 
 The IMU is configured through raw registers for **3332 Hz ODR** and read via an

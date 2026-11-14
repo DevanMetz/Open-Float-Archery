@@ -24,3 +24,6 @@ import "./review-markers.test.js";
 import "./range.test.js";
 import "./bow-profiles.test.js";
 import "./guide.test.js";
+import "./locales.test.js";
+import "./preferences.test.js";
+import "./shot-counter.test.js";

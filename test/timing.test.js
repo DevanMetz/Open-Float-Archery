@@ -71,6 +71,66 @@ function sample(sequence, dtUs) {
   return { sequence, dtUs, source: "demo", axMg: 0, ayMg: 0, azMg: 1000, rollDeg: 0, pitchDeg: 0, yawDeg: 0 };
 }
 
+test("live telemetry coalesces high-rate samples into bounded UI updates", (t) => {
+  const scheduled = [];
+  t.mock.method(globalThis, "setTimeout", (callback, delay) => {
+    assert.equal(delay, 50);
+    scheduled.push(callback);
+    return scheduled.length;
+  });
+  t.mock.method(globalThis, "clearTimeout", () => {});
+
+  const telemetry = recorder(t);
+  let notifications = 0;
+  telemetry.store.subscribe(() => { notifications++; });
+  for (let index = 0; index < 100; index++) {
+    telemetry.ingest(sample(index, 1000));
+  }
+
+  assert.equal(telemetry.trace.length, 100, "Every sensor sample remains available to capture and charting");
+  assert.equal(scheduled.length, 1, "A burst of samples schedules only one UI refresh");
+  assert.equal(notifications, 1, "Telemetry samples do not notify UI subscribers synchronously");
+
+  scheduled[0]();
+  assert.equal(notifications, 2);
+  assert.equal(telemetry.store.get().frameCount, 100);
+  assert.equal(telemetry.store.get().sample.sequence, 99);
+  assert.equal(telemetry.store.get().formScore, 100);
+
+  telemetry.bus.emit("status", { mode: "off", text: "Disconnected" });
+  assert.equal(telemetry.liveUiTimer, null, "Disconnect cancels a stale pending UI update");
+});
+
+test("browser shot trace settings are not reread for every live sample", (t) => {
+  let intervalCallback;
+  let reads = 0;
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { getItem: () => { reads++; return '{"bufferRate":1}'; } },
+  });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor);
+    else delete globalThis.localStorage;
+  });
+  t.mock.method(globalThis, "setInterval", (callback) => {
+    intervalCallback = callback;
+    return 1;
+  });
+  t.mock.method(globalThis, "setTimeout", () => 1);
+  t.mock.method(globalThis, "clearTimeout", () => {});
+
+  const telemetry = new TelemetryStore(new EventBus(), createStore({ liveTraceDuration: 3 }));
+  const initialReads = reads;
+  for (let index = 0; index < 100; index++) {
+    telemetry.ingest(sample(index, 1000));
+  }
+  assert.equal(reads, initialReads, "Incoming samples do not parse settings from localStorage");
+
+  intervalCallback();
+  assert.equal(reads, initialReads + 1, "The configured trace rate refreshes on the one-second status tick");
+});
+
 test("manual capture buffers retain each ingested sample timestamp", (t) => {
   const telemetry = recorder(t);
   telemetry.startManualRecording("Timing check");
@@ -84,6 +144,31 @@ test("the rolling capture retains at most thirty seconds even on a slow stream",
   for (let index = 0; index < 311; index += 1) telemetry.ingest(sample(index, 100000));
   assert.equal(telemetry.history30s.at(-1).tUs - telemetry.history30s[0].tUs, 30000000);
   assert.equal(telemetry.history30s.length, 301);
+});
+
+test("high-rate rolling buffers prune in batches instead of shifting on every sample", (t) => {
+  t.mock.method(globalThis, "setTimeout", () => 1);
+  t.mock.method(globalThis, "clearTimeout", () => {});
+
+  const telemetry = recorder(t);
+  telemetry.shotTraceRateHz = 20;
+  telemetry.shotTraceDtUs = 50000;
+  telemetry.shotTraceCapacity = 10;
+  telemetry.shotTraceBuffer.shift = () => { throw new Error("shot trace shifted"); };
+  telemetry.history30s.shift = () => { throw new Error("history shifted"); };
+  telemetry.micRingBuffer.shift = () => { throw new Error("microphone ring shifted"); };
+
+  for (let index = 0; index < 5000; index += 1) {
+    telemetry.ingest(sample(index, 50000));
+  }
+
+  assert.ok(telemetry.micRingBuffer.length <= 4512);
+  assert.ok(telemetry.micRingBuffer.length >= 4000);
+  assert.ok(telemetry.shotTraceBuffer.length <= 12);
+  assert.ok(
+    telemetry.history30s.at(-1).tUs - telemetry.history30s[0].tUs <= 31600000,
+    "Timestamp history remains close to its thirty-second target",
+  );
 });
 
 test("disconnect freezes manual recordings and prevents reset or replacement until save or discard", (t) => {
@@ -164,7 +249,10 @@ test("delayed browser captures retain their original connection buffers", async 
   const telemetry = recorder(t);
   let freeze;
   let context;
-  t.mock.method(globalThis, "setTimeout", (callback) => { freeze = callback; return 1; });
+  t.mock.method(globalThis, "setTimeout", (callback, delay) => {
+    if (delay > 50) freeze = callback;
+    return 1;
+  });
   telemetry.saveBrowserShotTrace = async (...args) => { context = args.at(-1); };
   telemetry.ingest(sample(0, 20000));
   telemetry.scheduleBrowserShotTraceCapture("saved", 1, 20000, {}, 1500, 52, 0);
